@@ -2,20 +2,9 @@
  * WezTerm CLI wrapper — low-level pane management and text injection.
  * All interaction with WezTerm happens through its CLI (`wezterm cli`).
  */
-const { execFileSync, spawn } = require('child_process');
-const os = require('os');
+const { execFileSync, execFile, spawn } = require('child_process');
 
-// Auto-detect WezTerm path based on platform
-function detectWezterm() {
-  if (process.env.WEZTERM_PATH) return process.env.WEZTERM_PATH;
-  switch (os.platform()) {
-    case 'win32': return 'C:\\Program Files\\WezTerm\\wezterm.exe';
-    case 'darwin': return '/Applications/WezTerm.app/Contents/MacOS/wezterm';
-    default: return 'wezterm'; // Linux: assume in PATH
-  }
-}
-
-const WEZTERM = detectWezterm();
+const WEZTERM = process.env.WEZTERM_PATH || 'C:\\Program Files\\WezTerm\\wezterm.exe';
 let guiLaunched = false;
 
 function wezCmd(args, opts = {}) {
@@ -38,6 +27,7 @@ function listPanes() {
   try {
     return JSON.parse(raw);
   } catch {
+    // Fallback: parse the text table
     const lines = raw.split('\n').filter(l => l.trim());
     if (lines.length < 2) return [];
     const headers = lines[0].toLowerCase().split(/\s+/);
@@ -53,27 +43,15 @@ function listPanes() {
 /** Ensure a visible WezTerm GUI is connected to the mux. */
 function ensureGui() {
   if (guiLaunched) return;
-
-  if (os.platform() === 'win32') {
-    try {
-      const { execSync } = require('child_process');
-      const tasks = execSync('tasklist', { encoding: 'utf-8', windowsHide: true });
-      if (tasks.includes('wezterm-gui.exe')) {
-        guiLaunched = true;
-        return;
-      }
-    } catch { /* ignore */ }
-  } else {
-    // On Unix, check if GUI process exists
-    try {
-      const { execSync } = require('child_process');
-      execSync('pgrep -f wezterm-gui', { encoding: 'utf-8' });
+  try {
+    const { execSync } = require('child_process');
+    const tasks = execSync('tasklist', { encoding: 'utf-8', windowsHide: true });
+    if (tasks.includes('wezterm-gui.exe')) {
       guiLaunched = true;
       return;
-    } catch { /* not running */ }
-  }
-
-  // Launch GUI connected to the unix mux domain
+    }
+  } catch { /* ignore */ }
+  // Launch GUI connected to the unix mux domain (makes panes visible)
   const child = spawn(WEZTERM, ['connect', 'unix'], {
     detached: true,
     stdio: 'ignore',
@@ -81,13 +59,8 @@ function ensureGui() {
   });
   child.unref();
   guiLaunched = true;
-
   // Give the GUI a moment to connect
-  if (os.platform() === 'win32') {
-    execFileSync('timeout', ['/t', '3', '/nobreak'], { windowsHide: true, stdio: 'ignore' });
-  } else {
-    execFileSync('sleep', ['3'], { stdio: 'ignore' });
-  }
+  execFileSync('timeout', ['/t', '3', '/nobreak'], { windowsHide: true, stdio: 'ignore' });
 }
 
 /** Spawn a new pane. Returns the pane ID (number). */
@@ -95,15 +68,18 @@ function spawnPane({ cwd, program, args: spawnArgs, splitFrom, splitDirection } 
   ensureGui();
   const cmdArgs = ['spawn'];
 
+  // Reference an existing pane so the mux knows the context
   const panes = listPanes();
   if (splitFrom !== undefined) {
     cmdArgs.push('--pane-id', String(splitFrom));
     if (splitDirection === 'horizontal') {
       cmdArgs.push('--horizontal');
+    } else if (splitDirection === 'vertical') {
+      cmdArgs.push('--vertical');  // not actually a flag, splits default vertical
     }
   } else if (panes.length > 0) {
+    // Spawn as a new tab in the same window (not a new window)
     cmdArgs.push('--pane-id', String(panes[0].pane_id || panes[0].paneid || 0));
-    cmdArgs.push('--new-window');
   }
 
   if (cwd) cmdArgs.push('--cwd', cwd);
@@ -153,14 +129,18 @@ function getFullText(paneId, scrollbackLines = 500) {
 function killPane(paneId) {
   try {
     wezCmd(['kill-pane', '--pane-id', String(paneId)]);
-  } catch { /* Pane may already be dead */ }
+  } catch {
+    // Pane may already be dead
+  }
 }
 
 /** Activate (focus) a pane. */
 function activatePane(paneId) {
   try {
     wezCmd(['activate-pane', '--pane-id', String(paneId)]);
-  } catch { /* ignore */ }
+  } catch {
+    // ignore
+  }
 }
 
 module.exports = {

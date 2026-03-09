@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Watchdog for WezBridge — auto-restarts the bot on crash.
+ * Watchdog for telegram-bot.cjs — auto-restarts on crash.
  * Usage: node bot-watchdog.cjs [--seed topicId:paneId:name ...]
  */
 const { spawn } = require('child_process');
@@ -16,16 +16,17 @@ let child = null;
 
 function startBot() {
   const args = process.argv.slice(2);
-  console.log(`[watchdog] Starting bot...`);
+  console.log(`[watchdog] Starting bot... (args: ${args.join(' ') || 'none'})`);
 
   child = spawn(process.execPath, [BOT_SCRIPT, ...args], {
     stdio: 'inherit',
-    cwd: path.join(__dirname, '..'),
+    cwd: path.join(__dirname, '..', '..'),
   });
 
   child.on('exit', (code, signal) => {
     console.log(`[watchdog] Bot exited: code=${code} signal=${signal}`);
 
+    // Track rapid restarts
     const now = Date.now();
     restartTimes.push(now);
     const recent = restartTimes.filter(t => now - t < RAPID_WINDOW_MS);
@@ -43,14 +44,15 @@ function startBot() {
   });
 }
 
+// Forward SIGINT/SIGTERM to child
 process.on('SIGINT', () => {
-  console.log('[watchdog] Stopping...');
+  console.log('[watchdog] SIGINT received, stopping bot...');
   if (child) child.kill('SIGINT');
   setTimeout(() => process.exit(0), 2000);
 });
 
 process.on('SIGTERM', () => {
-  console.log('[watchdog] Stopping...');
+  console.log('[watchdog] SIGTERM received, stopping bot...');
   if (child) child.kill('SIGTERM');
   setTimeout(() => process.exit(0), 2000);
 });

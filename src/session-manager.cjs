@@ -5,28 +5,83 @@
 const { EventEmitter } = require('events');
 const wez = require('./wezterm.cjs');
 
+// Event emitter for session lifecycle events
 const events = new EventEmitter();
+
+// Active sessions: Map<sessionId, SessionInfo>
 const sessions = new Map();
 let nextId = 1;
 
-// Completion detection patterns — Claude Code shows ❯ when waiting for input
-const WAITING_PATTERNS = [
-  /[❯>]\s*$/m,                    // Claude Code idle prompt
-  /\? \(y\/n\)/,                   // Yes/no prompt
-  /Press Enter to continue/,
-  /Do you want to proceed/,
+// Completion detection patterns with prompt type classification
+const PROMPT_PATTERN = /[❯>]\s*$/m;
+const COST_PATTERN = /Total cost:/;
+
+// Patterns mapped to prompt types
+const WAITING_PATTERN_MAP = [
+  { pattern: /[❯>]\s*$/m, type: 'idle' },
+  { pattern: /\? \(y\/n\)/, type: 'permission' },
+  { pattern: /\(Y\/n\)/i, type: 'permission' },
+  { pattern: /Do you want to proceed/i, type: 'permission' },
+  { pattern: /Allow .+\? \[y\/N\]/i, type: 'permission' },
+  { pattern: /❯\s*1\.\s*Yes/i, type: 'permission' },
+  { pattern: /\? Would you like/i, type: 'permission' },
+  { pattern: /\? Are you sure/i, type: 'permission' },
+  { pattern: /\? Proceed\?/i, type: 'permission' },
+  { pattern: /\? Select.*:/i, type: 'permission' },
+  { pattern: /Press Enter to continue/, type: 'continuation' },
+  { pattern: /\? Enter .+ to continue/, type: 'continuation' },
 ];
 
-// How many seconds to wait after sending a prompt before checking for completion.
-// Prevents false positives from the OLD ❯ still visible in scrollback.
-const COOLDOWN_MS = 8000;
+const WAITING_PATTERNS = WAITING_PATTERN_MAP.map(p => p.pattern);
 
-// How many terminal lines to check for the ❯ prompt.
-// Claude Code has a ~7 line status bar below the prompt, so we need enough lines.
-const DETECTION_WINDOW = 15;
+// Max history entries per session
+const MAX_HISTORY = 20;
+
+// Stability check: how many consecutive polls must show the same ❯ before we declare "done"
+// At 3s poll interval, STABILITY_COUNT=2 means 6s of stable ❯ before firing.
+// This prevents false triggers from ❯ flashing between tool calls.
+const STABILITY_COUNT = 2;
+
+// Patterns that indicate Claude is still actively working (even if ❯ is visible)
+const STILL_WORKING_PATTERNS = [
+  /Running in the background/i,
+  /background tasks? still running/i,
+  /waiting on .+ agent/i,
+  /waiting for .+ to/i,
+  /Brewed for \d+s/,
+  /\d+ background task/,
+  /still running/i,
+  /Thinking\.\.\./i,
+  /Choreographing/i,
+];
+
+// Compaction patterns — when detected, Claude will auto-continue after the ❯
+// We notify the user but keep waiting for the real completion
+const COMPACTION_PATTERNS = [
+  /Auto-compact/i,
+  /compacting conversation/i,
+  /\bcompacted\b/i,
+  /\/compact/,
+  /Context compressed/i,
+  /context window.*compact/i,
+  /messages were summarized/i,
+  /conversation was compressed/i,
+];
+
+// How long after compaction to suppress completion (ms).
+// Claude auto-continues within ~10s after compaction.
+const COMPACTION_COOLDOWN_MS = 20000;
 
 /**
  * Spawn a new Claude Code session in a WezTerm pane.
+ * @param {object} opts
+ * @param {string} opts.project - Project directory path
+ * @param {string} opts.name - Human-readable session name
+ * @param {string} [opts.initialPrompt] - Prompt to send after Claude starts
+ * @param {boolean} [opts.continueSession] - Use --continue flag
+ * @param {boolean} [opts.dangerouslySkipPermissions] - Use --dangerously-skip-permissions
+ * @param {string} [opts.taskId] - ClawTrol task ID to link
+ * @returns {object} Session info
  */
 function spawnSession(opts) {
   const {
@@ -47,30 +102,34 @@ function spawnSession(opts) {
     paneId,
     project,
     taskId,
-    status: 'starting',
+    status: 'starting',       // starting | running | waiting | completed | error
     createdAt: new Date().toISOString(),
     lastActivity: new Date().toISOString(),
     lastOutput: '',
     promptHistory: [],
+    completionHistory: [],  // V2: {prompt, response, diffStat, timestamp}
+    promptType: null,       // V2: 'idle' | 'permission' | 'continuation'
   };
 
   sessions.set(sessionId, session);
   events.emit('session:spawned', session);
 
+  // Build the claude command
   const claudeArgs = ['claude'];
   if (dangerouslySkipPermissions) claudeArgs.push('--dangerously-skip-permissions');
   if (continueSession) claudeArgs.push('--continue');
 
-  // Wait for shell to init, then launch claude
+  // Wait for bash to init, then launch claude
   setTimeout(() => {
     try {
-      wez.sendText(paneId, claudeArgs.join(' '));
+      wez.sendText(paneId, 'unset CLAUDECODE && ' + claudeArgs.join(' '));
       session.status = 'running';
 
+      // If there's an initial prompt, send it after Claude starts
       if (initialPrompt) {
         setTimeout(() => {
           sendPrompt(sessionId, initialPrompt);
-        }, 5000);
+        }, 5000); // Wait for Claude to fully initialize
       }
     } catch (err) {
       session.status = 'error';
@@ -92,6 +151,9 @@ function sendPrompt(sessionId, prompt) {
   session.status = 'running';
   session.lastActivity = new Date().toISOString();
   session.promptSentAt = Date.now();
+  session._compactionAt = null;  // Reset compaction state on new prompt
+  session._stabilityCount = 0;
+  session._lastScrollbackHash = null;
   session.promptHistory.push({
     prompt,
     sentAt: new Date().toISOString(),
@@ -107,41 +169,137 @@ function readOutput(sessionId) {
   const session = sessions.get(sessionId);
   if (!session) throw new Error(`Session ${sessionId} not found`);
 
-  const text = wez.getFullText(session.paneId, 500);
+  const text = wez.getText(session.paneId);
   session.lastOutput = text;
   return text;
 }
 
 /**
- * Check if a session is waiting for input (Claude finished its response).
+ * Check if a session is waiting for input (i.e., Claude finished its response).
+ *
+ * V2 stability logic:
+ * 1. Initial cooldown (8s after prompt sent) — prevents OLD ❯ false positive
+ * 2. When ❯ is detected, check for "still working" patterns — if found, skip
+ * 3. Take a scrollback hash — on next poll, if hash is SAME and ❯ still present,
+ *    mark as "waiting" (output is stable = Claude is truly done)
+ * 4. If hash changed between polls — reset counter (Claude was still outputting)
+ *
+ * Permission prompts (y/n) bypass stability — they're always immediate.
  */
 function checkCompletion(sessionId) {
   const session = sessions.get(sessionId);
   if (!session) return { waiting: false, session: null };
 
-  // Don't check too soon after sending a prompt
-  if (session.promptSentAt && (Date.now() - session.promptSentAt) < COOLDOWN_MS) {
+  // Don't check too soon after sending a prompt (give Claude 8s to start processing)
+  if (session.promptSentAt && (Date.now() - session.promptSentAt) < 8000) {
     return { waiting: false, session };
   }
 
   try {
     const text = wez.getFullText(session.paneId, 100);
     const lines = text.split('\n').filter(l => l.trim());
-    const lastLines = lines.slice(-DETECTION_WINDOW).join('\n');
+    const lastLines = lines.slice(-15).join('\n');
+    const scrollbackHash = simpleHash(lines.slice(-30).join('\n'));
 
     session.lastOutput = text;
 
-    const isWaiting = WAITING_PATTERNS.some(p => p.test(lastLines));
-
-    if (isWaiting && session.status === 'running') {
-      session.status = 'waiting';
-      session.lastActivity = new Date().toISOString();
-      session.promptSentAt = null;
-      events.emit('session:waiting', session);
-      console.log(`[session] ${sessionId} completed — detected prompt in tail`);
+    // Detect which pattern matched and classify prompt type
+    let isWaiting = false;
+    let detectedType = null;
+    for (const { pattern, type } of WAITING_PATTERN_MAP) {
+      if (pattern.test(lastLines)) {
+        isWaiting = true;
+        detectedType = type;
+        break;
+      }
     }
 
-    return { waiting: isWaiting, session, lastLines };
+    if (!isWaiting) {
+      // No prompt detected — reset stability counter
+      session._stabilityCount = 0;
+      session._lastScrollbackHash = null;
+      return { waiting: false, session, lastLines };
+    }
+
+    // Permission/continuation prompts fire immediately (no stability wait)
+    if (detectedType === 'permission' || detectedType === 'continuation') {
+      if (session.status === 'running') {
+        session.status = 'waiting';
+        session.promptType = detectedType;
+        session.lastActivity = new Date().toISOString();
+        session.promptSentAt = null;
+        session._stabilityCount = 0;
+        session._lastScrollbackHash = null;
+        events.emit('session:waiting', { ...session, promptType: detectedType });
+        console.log(`[session] ${sessionId} — ${detectedType} prompt detected (immediate)`);
+      }
+      return { waiting: true, promptType: detectedType, session, lastLines };
+    }
+
+    // For idle (❯) prompts: check for "still working" indicators
+    const stillWorking = STILL_WORKING_PATTERNS.some(p => p.test(lastLines));
+    if (stillWorking) {
+      session._stabilityCount = 0;
+      session._lastScrollbackHash = null;
+      return { waiting: false, session, lastLines };
+    }
+
+    // Check broader scrollback for compaction (it may not be in last 15 lines)
+    const recentText = lines.slice(-40).join('\n');
+    const compactionDetected = COMPACTION_PATTERNS.some(p => p.test(recentText));
+
+    if (compactionDetected) {
+      // First time detecting compaction for this session cycle?
+      if (!session._compactionAt) {
+        session._compactionAt = Date.now();
+        session._stabilityCount = 0;
+        session._lastScrollbackHash = null;
+        events.emit('session:compacted', session);
+        console.log(`[session] ${sessionId} — compaction detected, suppressing completion for ${COMPACTION_COOLDOWN_MS / 1000}s`);
+        return { waiting: false, compacted: true, session, lastLines };
+      }
+
+      // Still within compaction cooldown?
+      if (Date.now() - session._compactionAt < COMPACTION_COOLDOWN_MS) {
+        session._stabilityCount = 0;
+        session._lastScrollbackHash = null;
+        return { waiting: false, compacted: true, session, lastLines };
+      }
+
+      // Cooldown expired — compaction is old, allow normal stability check
+    }
+
+    // Stability check: scrollback must be unchanged for STABILITY_COUNT consecutive polls
+    if (!session._stabilityCount) session._stabilityCount = 0;
+    if (!session._lastScrollbackHash) session._lastScrollbackHash = null;
+
+    if (session._lastScrollbackHash === scrollbackHash) {
+      session._stabilityCount++;
+    } else {
+      // Output changed — reset counter
+      session._stabilityCount = 1;
+      session._lastScrollbackHash = scrollbackHash;
+    }
+
+    if (session._stabilityCount >= STABILITY_COUNT && session.status === 'running') {
+      session.status = 'waiting';
+      session.promptType = detectedType;
+      session.lastActivity = new Date().toISOString();
+      session.promptSentAt = null;
+      session._stabilityCount = 0;
+      session._lastScrollbackHash = null;
+      session._compactionAt = null; // Reset compaction state
+      events.emit('session:waiting', { ...session, promptType: detectedType });
+      console.log(`[session] ${sessionId} completed — stable ❯ after ${STABILITY_COUNT} polls`);
+      return { waiting: true, promptType: detectedType, session, lastLines };
+    }
+
+    // Not yet stable — ❯ detected but waiting for confirmation
+    if (session._stabilityCount > 0) {
+      console.log(`[session] ${sessionId} — ❯ detected, stability ${session._stabilityCount}/${STABILITY_COUNT}`);
+    }
+
+    return { waiting: false, session, lastLines };
   } catch (err) {
     session.status = 'error';
     session.error = err.message;
@@ -149,14 +307,36 @@ function checkCompletion(sessionId) {
   }
 }
 
+/**
+ * Simple hash of a string for stability comparison.
+ */
+function simpleHash(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + ch;
+    hash |= 0;
+  }
+  return hash;
+}
+
+/**
+ * Get all sessions.
+ */
 function listSessions() {
   return Array.from(sessions.values());
 }
 
+/**
+ * Get a specific session.
+ */
 function getSession(sessionId) {
   return sessions.get(sessionId) || null;
 }
 
+/**
+ * Kill a session and its pane.
+ */
 function killSession(sessionId) {
   const session = sessions.get(sessionId);
   if (!session) return false;
@@ -169,8 +349,7 @@ function killSession(sessionId) {
 }
 
 /**
- * Poll all active sessions for completion.
- * Returns sessions that just became "waiting".
+ * Poll all sessions for completion. Returns sessions that just became "waiting".
  */
 function pollAll() {
   const newlyWaiting = [];
@@ -186,9 +365,41 @@ function pollAll() {
 }
 
 /**
- * Register an externally-created session (for seeding existing panes).
+ * Add an entry to a session's completion history.
+ * @param {string} sessionId
+ * @param {object} entry - { prompt, response, diffStat, timestamp }
+ */
+function addCompletionHistory(sessionId, entry) {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+  if (!session.completionHistory) session.completionHistory = [];
+  session.completionHistory.push({
+    prompt: entry.prompt || '',
+    response: entry.response || '',
+    diffStat: entry.diffStat || null,
+    timestamp: entry.timestamp || new Date().toISOString(),
+  });
+  // Cap at MAX_HISTORY
+  if (session.completionHistory.length > MAX_HISTORY) {
+    session.completionHistory = session.completionHistory.slice(-MAX_HISTORY);
+  }
+}
+
+/**
+ * Get completion history for a session.
+ */
+function getCompletionHistory(sessionId) {
+  const session = sessions.get(sessionId);
+  if (!session) return [];
+  return session.completionHistory || [];
+}
+
+/**
+ * Register an externally-created session (e.g., for seeding existing panes).
  */
 function _registerSession(session) {
+  if (!session.completionHistory) session.completionHistory = [];
+  if (!session.promptType) session.promptType = null;
   sessions.set(session.id, session);
   events.emit('session:spawned', session);
 }
@@ -202,6 +413,8 @@ module.exports = {
   getSession,
   killSession,
   pollAll,
+  addCompletionHistory,
+  getCompletionHistory,
   events,
   _registerSession,
 };
