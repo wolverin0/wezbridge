@@ -460,7 +460,9 @@ async function handleStatus(msg) {
 
 // --- Phase 2: Project Discovery ---
 
-async function handleProjects(msg) {
+const PROJECTS_PAGE_SIZE = 10;
+
+async function handleProjects(msg, page = 0) {
   const chatId = msg.chat.id;
 
   const projects = projectScanner.scanProjects();
@@ -470,18 +472,32 @@ async function handleProjects(msg) {
     });
   }
 
-  const lines = projects.slice(0, 15).map(p => {
+  const start = page * PROJECTS_PAGE_SIZE;
+  const pageProjects = projects.slice(start, start + PROJECTS_PAGE_SIZE);
+  const totalPages = Math.ceil(projects.length / PROJECTS_PAGE_SIZE);
+
+  const lines = pageProjects.map(p => {
     const sessions = p.sessionCount;
     const age = projectScanner.relativeTime(p.lastActive);
     const healthIcon = p.health === 'clean' ? '\u2705' : p.health === 'interrupted' ? '\u26a0' : '\u2796';
     return `${healthIcon} <b>${outputParser.escapeHtml(p.name)}</b> | ${sessions} sessions | ${age}`;
   });
 
-  // Inline buttons for top projects
-  const buttons = projects.slice(0, 8).map(p => [{
+  if (totalPages > 1) {
+    lines.push(`\n<i>Page ${page + 1}/${totalPages} (${projects.length} projects)</i>`);
+  }
+
+  // Inline buttons — one per project on this page
+  const buttons = pageProjects.map(p => [{
     text: p.name,
     callback_data: `spawn:${p.name.slice(0, 40)}`,
   }]);
+
+  // Navigation buttons
+  const navRow = [];
+  if (page > 0) navRow.push({ text: '\u25c0 Prev', callback_data: `projects:${page - 1}` });
+  if (start + PROJECTS_PAGE_SIZE < projects.length) navRow.push({ text: 'Next \u25b6', callback_data: `projects:${page + 1}` });
+  if (navRow.length > 0) buttons.push(navRow);
 
   return sendMsg(chatId, lines.join('\n'), {
     message_thread_id: msg.message_thread_id,
@@ -1309,6 +1325,15 @@ bot.on('callback_query', async (query) => {
     const projectName = data.slice(6);
     await bot.answerCallbackQuery(query.id, { text: `Spawning ${projectName} (yolo)...` });
     return handleSpawn(query.message, `${projectName} --continue --yolo`);
+  }
+
+  // Handle /projects pagination
+  if (data.startsWith('projects:')) {
+    const page = parseInt(data.slice(9), 10) || 0;
+    await bot.answerCallbackQuery(query.id);
+    // Delete old message to avoid clutter
+    try { await bot.deleteMessage(query.message.chat.id, query.message.message_id); } catch {}
+    return handleProjects(query.message, page);
   }
 
   // Check plugin handlers first
