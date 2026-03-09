@@ -184,6 +184,35 @@ WezBridge sends `\r` via `--no-paste` mode. If your shell doesn't respond, check
 wezterm connect unix
 ```
 
+## OpenClaw Integration
+
+WezBridge was built as part of the [OpenClaw](https://github.com/wolverin0/openclaw2claude) ecosystem — a framework for orchestrating multiple Claude Code sessions from a central control plane.
+
+If you're running OpenClaw with ClawTrol, WezBridge acts as the mobile interface layer:
+
+```
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│  Telegram     │────▶│  WezBridge   │────▶│  WezTerm     │
+│  (mobile)     │◀────│              │◀────│  (panes)     │
+└──────────────┘     └──────┬───────┘     └──────────────┘
+                            │
+                     ┌──────▼───────┐
+                     │  ClawTrol    │
+                     │  (task mgmt) │
+                     └──────────────┘
+```
+
+### Using with OpenClaw
+
+1. Install OpenClaw: `npm install -g openclaw2claude`
+2. Start ClawTrol on your VM/server (manages tasks, sessions, hooks)
+3. Run WezBridge on your local machine (connects Telegram to your WezTerm panes)
+4. Use Telegram to monitor and control all your Claude Code agents
+
+WezBridge can link sessions to ClawTrol tasks via the `taskId` field in `session-manager.cjs`, enabling full task lifecycle tracking from Telegram.
+
+See the [OpenClaw docs](https://github.com/wolverin0/openclaw2claude) for the full orchestration setup.
+
 ## License
 
 MIT
