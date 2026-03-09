@@ -1,0 +1,32 @@
+{
+  "name": "wezbridge",
+  "version": "1.0.0",
+  "description": "Control Claude Code sessions from Telegram. Maps Forum Topics to WezTerm panes — send prompts, receive responses, manage sessions from your phone.",
+  "main": "src/telegram-bot.cjs",
+  "bin": {
+    "wezbridge": "src/bot-watchdog.cjs"
+  },
+  "scripts": {
+    "start": "node src/bot-watchdog.cjs",
+    "bot": "node src/telegram-bot.cjs",
+    "test": "node src/test-connection.cjs"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "telegram",
+    "wezterm",
+    "ai",
+    "terminal",
+    "remote-control",
+    "mission-control"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "node-telegram-bot-api": "^0.66.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
