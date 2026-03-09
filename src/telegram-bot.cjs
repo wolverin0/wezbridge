@@ -841,6 +841,21 @@ async function handleDump(msg) {
     const stripped = outputParser.stripClaudeChrome(clean);
 
     if (!stripped.trim()) {
+      // Terminal blank (likely after compaction) — try pre-compaction snapshot
+      if (session._preCompactionSnapshot) {
+        const snapClean = outputParser.stripAnsi(session._preCompactionSnapshot);
+        const snapStripped = outputParser.stripClaudeChrome(snapClean);
+        if (snapStripped.trim()) {
+          const snapBuf = Buffer.from(snapStripped, 'utf-8');
+          return sendDocument(chatId, snapBuf, {
+            message_thread_id: topicId,
+            caption: `Pre-compaction snapshot (${snapStripped.length} chars, ~${snapStripped.split('\n').length} lines)`,
+          }, {
+            filename: `${session.name}-precompact-${Date.now()}.md`,
+            contentType: 'text/markdown',
+          });
+        }
+      }
       return sendMsg(chatId, '<i>Terminal is empty.</i>', { message_thread_id: topicId });
     }
 
@@ -983,6 +998,19 @@ async function processLiveStream(sessionId) {
       }
     }
     const visible = lines.slice(-LIVE_LINES).join('\n');
+
+    // If terminal is blank (post-compaction), show a brief notice instead of empty screen
+    if (!visible.trim()) {
+      const blankHash = 'blank';
+      if (stream.lastHash === blankHash) return;
+      stream.lastHash = blankHash;
+      stream.lastSentAt = now;
+      const blankMsg = `<b>\u{1F534} LIVE: ${outputParser.escapeHtml(session.name)}</b>\n\n<i>Terminal cleared (compaction). Waiting for new output...</i>`;
+      if (stream.messageId) {
+        try { await sendOrEdit(info.chatId, blankMsg, info.topicId, stream.messageId); } catch {}
+      }
+      return;
+    }
 
     const hash = simpleHash(visible);
     if (hash === stream.lastHash) return; // No change

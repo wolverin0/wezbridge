@@ -251,6 +251,12 @@ function checkCompletion(sessionId) {
     if (compactionDetected) {
       // First time detecting compaction for this session cycle?
       if (!session._compactionAt) {
+        // Save full scrollback before compaction wipes it
+        try {
+          const fullText = wez.getFullText(session.paneId, 2000);
+          session._preCompactionSnapshot = fullText;
+          console.log(`[session] ${sessionId} — saved ${fullText.length} chars pre-compaction snapshot`);
+        } catch { /* ignore */ }
         session._compactionAt = Date.now();
         session._stabilityCount = 0;
         session._lastScrollbackHash = null;
