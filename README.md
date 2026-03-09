@@ -1,21 +1,32 @@
 # WezBridge
 
-Control Claude Code sessions from Telegram. Each session gets its own Forum Topic — send prompts from your phone, receive formatted responses with action buttons.
+Control Claude Code sessions from Telegram. Live terminal streaming, project discovery, code diffs, permission handling — your phone becomes Mission Control.
 
 ```
-Telegram Group "Mission Control"
+Telegram "Mission Control"
   ├── Topic: "my-backend"   ←→ WezTerm pane 3 (Claude Code)
   ├── Topic: "my-frontend"  ←→ WezTerm pane 5 (Claude Code)
   └── Topic: "my-api"       ←→ WezTerm pane 7 (Claude Code)
 ```
 
+## What's New in V2
+
+- **`/live`** — Real-time terminal streaming. Watch Claude work from your phone.
+- **`/projects`** — Browse all your Claude projects. Tap to spawn.
+- **Code diffs** — See what changed after every Claude response.
+- **Permission buttons** — Approve/reject Claude's tool use from Telegram.
+- **Session persistence** — Sessions survive bot restarts.
+- **Photo support** — Send screenshots directly to Claude.
+- **Plugin system** — Extend WezBridge with custom plugins.
+
 ## How it works
 
 1. WezBridge runs alongside your WezTerm terminal
 2. Each Claude Code session lives in a WezTerm pane
-3. The bot watches each pane for the `❯` prompt (meaning Claude finished)
+3. The bot polls each pane for the `❯` prompt (meaning Claude finished)
 4. When Claude finishes, the response is parsed and sent to Telegram
 5. Messages you type in a topic are injected into Claude as prompts
+6. `/live` mode streams the terminal in real-time (5s updates)
 
 ## Prerequisites
 
@@ -23,7 +34,18 @@ Telegram Group "Mission Control"
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude` CLI) installed
 - [Node.js](https://nodejs.org/) 18+
 - A Telegram bot token (from [@BotFather](https://t.me/BotFather))
-- A Telegram group with **Topics enabled** (Settings → Topics → On)
+- A Telegram group with **Topics enabled**
+
+## Quick Start
+
+```bash
+git clone https://github.com/wolverin0/wezbridge.git
+cd wezbridge
+npm install
+cp .env.example .env
+# Edit .env with your bot token and group ID
+npm start
+```
 
 ## Setup
 
@@ -35,134 +57,194 @@ Telegram Group "Mission Control"
 
 ### 2. Create a forum group
 
-1. Open Telegram and tap **New Group**
-2. Add your bot (search by the username BotFather gave you) and at least one other member (you can remove them later — Telegram requires 2+ members to create a group)
-3. Name the group (e.g. "Mission Control") and create it
-4. Open group **Settings** (tap the group name at the top):
-   - Scroll down to **Topics** → toggle **On**
-   - Go to **Administrators** → tap your bot → enable **Manage Topics**
-   - Make sure the bot also has **Send Messages** and **Delete Messages** permissions
-5. Get the group chat ID:
-   - Start WezBridge with just the token (it will fail but log chat IDs): `TELEGRAM_BOT_TOKEN=your_token node src/telegram-bot.cjs`
-   - Send any message in the group
-   - The bot logs: `[wezbridge] Message from chat -100xxxxxxxxxx`
-   - That negative number is your `TELEGRAM_GROUP_ID`
+1. Open Telegram → **New Group**
+2. Add your bot + one other member (removable after)
+3. Name it (e.g. "Mission Control") and create
+4. Open group **Settings**:
+   - **Topics** → toggle **On**
+   - **Administrators** → tap bot → enable **Manage Topics**, **Send Messages**, **Delete Messages**
+5. Get the chat ID:
+   ```bash
+   TELEGRAM_BOT_TOKEN=your_token node src/telegram-bot.cjs
+   # Send any message in the group
+   # Bot logs: [wezbridge] Message from chat -100xxxxxxxxxx
+   ```
 
-> **Tip:** The group MUST be a **supergroup** with Topics enabled. Regular groups don't support forum topics. Telegram automatically converts groups to supergroups when you enable Topics.
-
-### 3. Start WezTerm mux server
+### 3. Start WezTerm mux
 
 ```bash
-# Start the multiplexer (keeps panes alive even when GUI closes)
+# Start the multiplexer
 wezterm start --front-end MuxServer &
 
-# Connect a visible GUI to the mux
+# Connect visible GUI
 wezterm connect unix
 ```
 
-### 4. Install and configure WezBridge
+### 4. Configure and start
 
 ```bash
-git clone https://github.com/youruser/wezbridge.git
-cd wezbridge
-npm install
-
-# Copy and edit the config
-cp .env.example .env
-```
-
-Edit `.env`:
-```env
-TELEGRAM_BOT_TOKEN=your_bot_token_here
-TELEGRAM_GROUP_ID=-100xxxxxxxxxx
-
-# Optional: map short names to project paths
-WEZBRIDGE_PROJECTS={"backend":"/home/user/projects/backend","frontend":"/home/user/projects/frontend"}
-```
-
-### 5. Test the connection
-
-```bash
-npm test
-```
-
-### 6. Start the bot
-
-```bash
+# Edit .env with your token and group ID
 npm start
 ```
 
-## Usage
+## Commands
 
-### Telegram commands
+### Session Management
 
 | Command | Description |
 |---------|-------------|
-| `/spawn <project> [--continue]` | Start a new Claude Code session |
-| `/kill` | Kill the session (use in a topic) |
+| `/spawn <project> [--continue] [--yolo]` | Start Claude Code session |
+| `/kill` | Kill session in current topic |
+| `/reconnect` | Re-sync after working on PC |
 | `/status` | List all active sessions |
-| `/help` | Show available commands |
 
-### Action buttons
+### Live Monitoring
 
-After Claude responds, you'll see inline buttons:
+| Command | Description |
+|---------|-------------|
+| `/live` | Toggle real-time terminal streaming |
+| `/peek` | Snapshot of last 60 terminal lines |
+| `/dump` | Full 500-line scrollback as document |
 
-- **Continue** — Send Enter (accept suggestions, continue generation)
-- **Run Tests** — Sends "run the tests" to Claude
-- **Commit** — Sends "commit the changes" to Claude
-- **Status** — Show Claude's current output
+### Project Discovery
 
-### Seeding existing sessions
+| Command | Description |
+|---------|-------------|
+| `/projects` | Browse all Claude projects (tap to spawn) |
+| `/sessions <name>` | List sessions with cost, health, preview |
+| `/costs` | Token/cost summary across all sessions |
 
-If Claude Code is already running in a WezTerm pane, you can link it to a topic:
+### History
 
-```bash
-# --seed topicId:paneId:projectName
-npm start -- --seed 12345:1:my-project
+| Command | Description |
+|---------|-------------|
+| `/history` | Last 5 prompt/response pairs |
+| `/replay` | Re-send last response |
+| `/export` | Full session history as markdown |
+
+### Utility
+
+| Command | Description |
+|---------|-------------|
+| `/compact` | Send `/compact` to Claude |
+| `/help` | Show all commands |
+
+## Action Buttons
+
+After Claude responds, context-aware buttons appear:
+
+**Normal (idle):**
+```
+[Continue] [Run Tests] [Commit]
 ```
 
-To find the topic ID: right-click a topic in Telegram → Copy Topic Link → the number after the last `/` is the topic ID.
+**Permission prompt (y/n):**
+```
+[Yes] [Always (!)] [No] [View Details]
+```
 
-To find the pane ID: `wezterm cli list`
+**Numbered selector (❯ 1. Yes / 2. No):**
+```
+[1. Yes] [2. No]
+```
+
+Buttons auto-clear after clicking to prevent stacking.
+
+## Live Terminal Streaming
+
+`/live` streams your terminal to Telegram in real-time:
+
+- Updates every 5 seconds
+- Only sends updates when content changes (hash-based)
+- Edits a single message (no spam)
+- Shows last 50 lines in `<pre>` block
+- Auto-suppresses "thinking" timer and ack messages
+
+Toggle on with `/live`, toggle off with `/live` again.
+
+## Project Discovery
+
+V2 auto-discovers all your Claude projects from `~/.claude/projects/`:
+
+```
+/projects
+
+elbraserito        | 12 sessions | 2m ago
+openclaw2claude    | 34 sessions | 15m ago
+solmiasoc          |  8 sessions | 1h ago
+[tap name to spawn]
+```
+
+No more hardcoded project maps. The `WEZBRIDGE_PROJECTS` env var is still supported as an override.
+
+## Session Persistence
+
+Sessions survive bot restarts:
+
+- State saved to `.wezbridge-state.json` every 30s
+- On startup, validates panes still exist
+- Re-creates session objects and topic mappings
+- Graceful save on SIGINT/SIGTERM
+
+## Plugin System
+
+Drop `.cjs` files in `plugins/` to extend WezBridge:
+
+```javascript
+module.exports = {
+  name: 'my-plugin',
+  register(ctx) {
+    ctx.registerCommand('/hello', (msg) => {
+      ctx.sendMsg(msg.chat.id, 'Hello from plugin!', msg.message_thread_id);
+    });
+
+    ctx.on('session:completion', ({ session, response }) => {
+      // React to completions
+    });
+  }
+};
+```
 
 ## Architecture
 
 ```
 ┌─────────────┐     ┌──────────────┐     ┌──────────────┐
 │  Telegram    │────▶│  WezBridge   │────▶│  WezTerm     │
-│  (your phone)│◀────│  (Node.js)   │◀────│  (terminal)  │
+│  (phone)     │◀────│  (Node.js)   │◀────│  (terminal)  │
 └─────────────┘     └──────────────┘     └──────────────┘
-                          │                     │
-                    polls every 3s        Claude Code
-                    for ❯ prompt          running here
+                          │
+                    polls every 3s
+                    for ❯ prompt
 ```
 
 **Files:**
 
-| File | Purpose |
-|------|---------|
-| `src/telegram-bot.cjs` | Main bot: commands, message routing, completion loop |
-| `src/session-manager.cjs` | Session lifecycle, prompt injection, completion detection |
-| `src/wezterm.cjs` | WezTerm CLI wrapper (pane management, text I/O) |
-| `src/output-parser.cjs` | Terminal output → Telegram HTML conversion |
-| `src/telegram-rate-limiter.cjs` | Per-chat rate limiting for Telegram API |
-| `src/bot-watchdog.cjs` | Auto-restarts the bot on crash |
-| `src/test-connection.cjs` | Connection verification script |
+| File | Lines | Purpose |
+|------|-------|---------|
+| `telegram-bot.cjs` | ~1600 | Main bot: commands, live streaming, buttons, state |
+| `session-manager.cjs` | ~400 | Session lifecycle, completion detection, permissions |
+| `wezterm.cjs` | ~160 | WezTerm CLI wrapper (pane management, text I/O) |
+| `output-parser.cjs` | ~350 | Terminal output → Telegram HTML conversion |
+| `diff-extractor.cjs` | ~170 | Git diff operations (stat, unified, commits) |
+| `project-scanner.cjs` | ~380 | Claude project discovery from ~/.claude/projects/ |
+| `notification-manager.cjs` | ~120 | Notification batching and priority |
+| `plugin-loader.cjs` | ~110 | Plugin auto-discovery and lifecycle |
+| `telegram-rate-limiter.cjs` | ~70 | Per-chat rate limiting for Telegram API |
+| `bot-watchdog.cjs` | ~50 | Auto-restarts the bot on crash |
+| `test-connection.cjs` | ~70 | Connection verification script |
 
 ## Troubleshooting
 
 ### Bot doesn't detect when Claude finishes
 
-Claude Code has a status bar (~7 lines) below the `❯` prompt. The bot checks the last 15 lines of terminal output. If your status bar is taller, increase `DETECTION_WINDOW` in `session-manager.cjs`.
+The bot checks the last 15 lines of terminal output for the `❯` prompt. If your status bar is taller, increase `DETECTION_WINDOW` in `session-manager.cjs`.
 
 ### 409 Conflict errors
 
-Only one bot instance can poll at a time. Kill all existing instances before restarting:
+Only one bot instance can poll at a time:
 
 ```bash
-# Find and kill existing bot processes
 pkill -f "telegram-bot.cjs"
-# Wait 30 seconds for Telegram to release the polling lock
 sleep 30
 npm start
 ```
@@ -176,42 +258,38 @@ wezterm start --front-end MuxServer
 wezterm cli list  # should show panes
 ```
 
-### Text appears but Enter doesn't work
+### Sessions lost on restart
 
-WezBridge sends `\r` via `--no-paste` mode. If your shell doesn't respond, check that WezTerm's mux is properly connected:
+Check that `.wezbridge-state.json` exists in the project root. The bot saves state every 30s and on graceful shutdown. If WezTerm panes were killed, those sessions can't be restored.
 
-```bash
-wezterm connect unix
+### Live mode not updating
+
+`/live` requires the session to be linked to a topic. If you see "no session", use `/reconnect` or spawn a new session first.
+
+## Recommended WezTerm Config
+
+Add to `~/.wezterm.lua` for best experience:
+
+```lua
+config.enable_scroll_bar = true
+config.scrollback_lines = 10000
+config.unix_domains = { { name = 'unix' } }
+
+config.keys = {
+  { key = 'v', mods = 'CTRL', action = wezterm.action.PasteFrom 'Clipboard' },
+  { key = 'PageUp', mods = 'NONE', action = wezterm.action.ScrollByPage(-1) },
+  { key = 'PageDown', mods = 'NONE', action = wezterm.action.ScrollByPage(1) },
+}
+
+config.mouse_bindings = {
+  { event = { Down = { streak = 1, button = 'Right' } }, mods = 'NONE',
+    action = wezterm.action.PasteFrom 'Clipboard' },
+}
 ```
 
 ## OpenClaw Integration
 
 WezBridge was built as part of the [OpenClaw](https://github.com/wolverin0/openclaw2claude) ecosystem — a framework for orchestrating multiple Claude Code sessions from a central control plane.
-
-If you're running OpenClaw with ClawTrol, WezBridge acts as the mobile interface layer:
-
-```
-┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│  Telegram     │────▶│  WezBridge   │────▶│  WezTerm     │
-│  (mobile)     │◀────│              │◀────│  (panes)     │
-└──────────────┘     └──────┬───────┘     └──────────────┘
-                            │
-                     ┌──────▼───────┐
-                     │  ClawTrol    │
-                     │  (task mgmt) │
-                     └──────────────┘
-```
-
-### Using with OpenClaw
-
-1. Install OpenClaw: `npm install -g openclaw2claude`
-2. Start ClawTrol on your VM/server (manages tasks, sessions, hooks)
-3. Run WezBridge on your local machine (connects Telegram to your WezTerm panes)
-4. Use Telegram to monitor and control all your Claude Code agents
-
-WezBridge can link sessions to ClawTrol tasks via the `taskId` field in `session-manager.cjs`, enabling full task lifecycle tracking from Telegram.
-
-See the [OpenClaw docs](https://github.com/wolverin0/openclaw2claude) for the full orchestration setup.
 
 ## License
 
