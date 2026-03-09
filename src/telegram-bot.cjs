@@ -142,8 +142,10 @@ function restoreState(state) {
 }
 
 // --- Config ---
-const TOKEN = process.env.TELEGRAM_BOT_TOKEN || 'REDACTED';
-const GROUP_ID = process.env.TELEGRAM_GROUP_ID ? Number(process.env.TELEGRAM_GROUP_ID) : REDACTED_GROUP_ID;
+const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+if (!TOKEN) { console.error('[wezbridge] TELEGRAM_BOT_TOKEN not set'); process.exit(1); }
+const GROUP_ID = process.env.TELEGRAM_GROUP_ID ? Number(process.env.TELEGRAM_GROUP_ID) : null;
+if (!GROUP_ID) { console.error('[wezbridge] TELEGRAM_GROUP_ID not set'); process.exit(1); }
 const POLL_MS = parseInt(process.env.TELEGRAM_POLL_MS || '3000', 10);
 const THINKING_TIMEOUT_MS = 30000;
 const THINKING_UPDATE_MS = 30000;
