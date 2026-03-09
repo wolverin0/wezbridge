@@ -35,10 +35,20 @@ Telegram Group "Mission Control"
 
 ### 2. Create a forum group
 
-1. Create a new Telegram group (or use an existing one)
-2. Go to group Settings → Topics → Enable
-3. Add your bot to the group as **admin** with "Manage Topics" permission
-4. Note the group chat ID (the bot logs it when it receives a message)
+1. Open Telegram and tap **New Group**
+2. Add your bot (search by the username BotFather gave you) and at least one other member (you can remove them later — Telegram requires 2+ members to create a group)
+3. Name the group (e.g. "Mission Control") and create it
+4. Open group **Settings** (tap the group name at the top):
+   - Scroll down to **Topics** → toggle **On**
+   - Go to **Administrators** → tap your bot → enable **Manage Topics**
+   - Make sure the bot also has **Send Messages** and **Delete Messages** permissions
+5. Get the group chat ID:
+   - Start WezBridge with just the token (it will fail but log chat IDs): `TELEGRAM_BOT_TOKEN=your_token node src/telegram-bot.cjs`
+   - Send any message in the group
+   - The bot logs: `[wezbridge] Message from chat -100xxxxxxxxxx`
+   - That negative number is your `TELEGRAM_GROUP_ID`
+
+> **Tip:** The group MUST be a **supergroup** with Topics enabled. Regular groups don't support forum topics. Telegram automatically converts groups to supergroups when you enable Topics.
 
 ### 3. Start WezTerm mux server
 
