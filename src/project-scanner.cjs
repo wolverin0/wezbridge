@@ -63,15 +63,41 @@ function readLastBytes(filePath, bytes) {
 }
 
 /**
- * Extract a human-readable project name from the decoded path.
+ * Encode a filesystem path the same way Claude Code does for ~/.claude/projects/ dir names.
+ * Each special char (: \ / space _ -) maps to a single dash.
  */
-function extractProjectName(decodedPath) {
-  if (decodedPath === decodedPath) {
-    // Get last meaningful directory component
-    const parts = decodedPath.replace(/\\/g, '/').split('/').filter(Boolean);
-    return parts[parts.length - 1] || decodedPath;
+function encodePathLikeClaude(p) {
+  return p.replace(/[:\\/\s_-]/g, '-');
+}
+
+/**
+ * Extract a human-readable project name by matching the encoded dir name
+ * against the real decoded path. Walks up from the cwd to find which
+ * directory level corresponds to the encoded project root.
+ *
+ * Example: encoded = "G---OneDrive-OneDrive-Desktop-Py-Apps-whatsappbot-prod---Copy---Copy-whatsappbot-final"
+ *          cwd = "G:\_OneDrive\...\whatsappbot-final\dashboard\react-app"
+ *          → matches at "whatsappbot-final", returns "whatsappbot-final"
+ */
+function extractProjectName(encodedName, decodedPath) {
+  if (decodedPath && decodedPath !== encodedName) {
+    const normalized = decodedPath.replace(/\\/g, '/');
+    const parts = normalized.split('/').filter(Boolean);
+
+    // Walk from full path down to 1 segment, check if encoding matches
+    for (let i = parts.length; i >= 1; i--) {
+      const candidate = parts.slice(0, i).join('/');
+      if (encodePathLikeClaude(candidate) === encodedName) {
+        return parts[i - 1]; // Last segment of the matched project root
+      }
+    }
+
+    // Fallback: last segment of decoded path
+    return parts[parts.length - 1] || encodedName;
   }
-  return decodedPath;
+
+  // No decoded path available — return encoded name as-is
+  return encodedName;
 }
 
 /**
@@ -325,7 +351,7 @@ function scanProjects() {
 
       const decodedPath = getRealPath(dirPath, d);
       const sessions = scanSessions(dirPath);
-      const name = extractProjectName(decodedPath);
+      const name = extractProjectName(d, decodedPath);
 
       projects.push({
         name,
