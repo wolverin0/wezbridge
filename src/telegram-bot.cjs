@@ -266,7 +266,7 @@ function buildCompletionCard(session, response, diffStatSummary, promptType) {
     `<b>\u2501\u2501 ${name} \u2501\u2501</b>`,
     `${statusIcon} ${statusText} | ${elapsedStr} ago`,
     '',
-    `<pre>${outputParser.escapeHtml(preview)}</pre>`,
+    `<pre><code class="language-text">${outputParser.escapeHtml(preview)}</code></pre>`,
   ];
 
   if (diffStatSummary) {
@@ -278,7 +278,7 @@ function buildCompletionCard(session, response, diffStatSummary, promptType) {
   let html = lines.join('\n');
   if (html.length > 4000) {
     preview = stripped.slice(0, 300) + '...';
-    lines[3] = `<pre>${outputParser.escapeHtml(preview)}</pre>`;
+    lines[3] = `<pre><code class="language-text">${outputParser.escapeHtml(preview)}</code></pre>`;
     html = lines.join('\n');
   }
 
@@ -904,12 +904,12 @@ async function handlePeek(msg) {
     const header = `<b>Peek: ${outputParser.escapeHtml(session.name)}</b> \u2014 ${statusIcon} (${elapsedStr})`;
     const body = outputParser.escapeHtml(visible.slice(-2500));
 
-    const html = `${header}\n\n<pre>${body}</pre>`;
+    const html = `${header}\n\n<pre><code class="language-text">${body}</code></pre>`;
 
     if (html.length > 4000) {
       // Too long — send as document + short summary
       const lastFewLines = lines.slice(-8).join('\n');
-      await sendMsg(chatId, `${header}\n\n<pre>${outputParser.escapeHtml(lastFewLines.slice(-800))}</pre>`, {
+      await sendMsg(chatId, `${header}\n\n<pre><code class="language-text">${outputParser.escapeHtml(lastFewLines.slice(-800))}</code></pre>`, {
         message_thread_id: topicId,
       });
       const buf = Buffer.from(visible, 'utf-8');
@@ -1131,18 +1131,18 @@ async function processLiveStream(sessionId) {
     const elapsedStr = elapsed < 60 ? `${elapsed}s` : `${Math.round(elapsed / 60)}m`;
     const header = `<b>\u{1F534} LIVE: ${outputParser.escapeHtml(session.name)}</b> (${elapsedStr})\n\n`;
 
-    // Build formatted HTML, trim lines until fits 4096
+    // Build HTML: header outside <pre>, body inside <pre> for spacing
     let showLines = lines.slice(-LIVE_LINES);
     let html = '';
     for (let attempt = 0; attempt < 5; attempt++) {
-      const body = formatLiveLines(showLines);
-      html = `${header}${body}`;
+      const body = outputParser.escapeHtml(showLines.join('\n'));
+      html = `${header}<pre><code class="language-text">${body}</code></pre>`;
       if (html.length <= 4050) break;
       showLines = showLines.slice(Math.ceil(showLines.length * 0.2));
     }
     if (html.length > 4050) {
       const body = outputParser.escapeHtml(showLines.slice(-15).join('\n'));
-      html = `${header}<pre>${body}</pre>`;
+      html = `${header}<pre><code class="language-text">${body}</code></pre>`;
     }
 
     // Try edit, then send, with plain-text fallback on HTML parse failure
@@ -1535,7 +1535,7 @@ bot.on('callback_query', async (query) => {
               caption: `Full response (${stripped.length} chars)`,
             }, { filename: 'response.md', contentType: 'text/markdown' });
           } else {
-            await sendMsg(query.message.chat.id, `<pre>${outputParser.escapeHtml(stripped)}</pre>`, {
+            await sendMsg(query.message.chat.id, `<pre><code class="language-text">${outputParser.escapeHtml(stripped)}</code></pre>`, {
               message_thread_id: topicId,
             });
           }
@@ -1568,7 +1568,7 @@ bot.on('callback_query', async (query) => {
           }, { filename: 'changes.diff', contentType: 'text/plain' });
         } else {
           const formatted = diffExtractor.formatDiffForTelegram(diff);
-          await sendMsg(query.message.chat.id, formatted || `<pre>${outputParser.escapeHtml(diff)}</pre>`, {
+          await sendMsg(query.message.chat.id, formatted || `<pre><code class="language-text">${outputParser.escapeHtml(diff)}</code></pre>`, {
             message_thread_id: topicId,
           });
         }
@@ -1954,6 +1954,12 @@ function startBot() {
     if (info) {
       sendMsg(info.chatId, '<i>\ud83d\udce6 Context compacted \u2014 Claude is continuing...</i>', {
         message_thread_id: info.topicId,
+      }).then(sent => {
+        if (sent) {
+          setTimeout(() => {
+            bot.deleteMessage(info.chatId, sent.message_id).catch(() => {});
+          }, 20000);
+        }
       }).catch(() => {});
     }
   });
