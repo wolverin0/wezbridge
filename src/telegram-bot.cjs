@@ -78,7 +78,13 @@ function saveState() {
       savedAt: new Date().toISOString(),
       sessions: {},
       topicMappings: {},
+      liveStreams: {},
     };
+
+    // Save active live streams
+    for (const [sessionId, stream] of liveStreams) {
+      state.liveStreams[sessionId] = { messageId: stream.messageId };
+    }
 
     // Save topic mappings
     for (const [sessionId, info] of sessionToTopic) {
@@ -168,6 +174,15 @@ function restoreState(state) {
       sessionToTopic.set(sessionId, info);
       topicToSession.set(info.topicId, sessionId);
       console.log(`${T.state} Restored: topic ${c.cyan}${info.topicId}${c.reset} <-> ${c.green}${sessionId}${c.reset} (${info.projectName})`);
+    }
+  }
+
+  // Restore live streams
+  for (const [sessionId, stream] of Object.entries(state.liveStreams || {})) {
+    const session = sm.getSession(sessionId);
+    if (session) {
+      liveStreams.set(sessionId, { lastHash: 0, lastSentAt: 0, messageId: stream.messageId || null });
+      console.log(`${T.live} Restored live stream for ${c.green}${session.name || sessionId}${c.reset}`);
     }
   }
 
@@ -1116,12 +1131,12 @@ async function processLiveStream(sessionId) {
     const elapsedStr = elapsed < 60 ? `${elapsed}s` : `${Math.round(elapsed / 60)}m`;
     const header = `<b>\u{1F534} LIVE: ${outputParser.escapeHtml(session.name)}</b> (${elapsedStr})\n\n`;
 
-    // Build <pre> HTML, trim lines until fits 4096
+    // Build formatted HTML, trim lines until fits 4096
     let showLines = lines.slice(-LIVE_LINES);
     let html = '';
     for (let attempt = 0; attempt < 5; attempt++) {
-      const body = outputParser.escapeHtml(showLines.join('\n'));
-      html = `${header}<pre>${body}</pre>`;
+      const body = formatLiveLines(showLines);
+      html = `${header}${body}`;
       if (html.length <= 4050) break;
       showLines = showLines.slice(Math.ceil(showLines.length * 0.2));
     }

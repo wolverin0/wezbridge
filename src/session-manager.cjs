@@ -117,8 +117,8 @@ function findBestSession(projectPath) {
 
     if (candidates.length === 0) return null;
 
-    // Sort by size descending, pick the largest recent one
-    candidates.sort((a, b) => b.size - a.size);
+    // Sort by modification time (most recent first), then by size as tiebreaker
+    candidates.sort((a, b) => b.mtime - a.mtime || b.size - a.size);
     return candidates[0].id;
   } catch {
     return null;
