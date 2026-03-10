@@ -198,6 +198,15 @@ function activatePane(paneId) {
   }
 }
 
+/** Set the tab title for a pane. */
+function setTabTitle(paneId, title) {
+  try {
+    wezCmd(['set-tab-title', '--pane-id', String(paneId), title]);
+  } catch {
+    // ignore
+  }
+}
+
 module.exports = {
   listPanes,
   spawnPane,
@@ -207,6 +216,7 @@ module.exports = {
   getFullText,
   killPane,
   activatePane,
+  setTabTitle,
   ensureGui,
   WEZTERM,
 };

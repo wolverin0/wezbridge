@@ -453,21 +453,51 @@ async function handleSpawn(msg, match) {
   const taskId = taskIdx >= 0 && args[taskIdx + 1] ? args[taskIdx + 1] : null;
 
   try {
+    // Check if there's already a session with a live pane for this project
+    const existingSession = sm.findSessionByProject(projectPath);
+    if (existingSession) {
+      // Find the topic this session is mapped to
+      const existingTopic = sessionToTopic.get(existingSession.id);
+      if (existingTopic) {
+        await sendMsg(GROUP_ID, [
+          `<b>Reusing existing session</b>`,
+          `Project: <code>${outputParser.escapeHtml(projectName)}</code>`,
+          `Session: <code>${existingSession.id}</code>`,
+          `Pane: ${existingSession.paneId}`,
+        ].filter(Boolean).join('\n'), {
+          message_thread_id: existingTopic.topicId,
+        });
+        return;
+      }
+      // Session exists but no topic — create topic and link it
+    }
+
     const topic = await bot.createForumTopic(GROUP_ID, projectName, {
       icon_color: 7322096,
     });
     const topicId = topic.message_thread_id;
 
-    const session = sm.spawnSession({
-      project: projectPath,
-      name: projectName,
-      continueSession,
-      dangerouslySkipPermissions: skipPermissions,
-      taskId,
-    });
+    let session;
+    if (existingSession) {
+      // Link existing session to the new topic
+      session = existingSession;
+      sessionToTopic.set(session.id, { topicId, chatId: GROUP_ID, projectName });
+      topicToSession.set(topicId, session.id);
+    } else {
+      session = sm.spawnSession({
+        project: projectPath,
+        name: projectName,
+        continueSession,
+        dangerouslySkipPermissions: skipPermissions,
+        taskId,
+      });
 
-    sessionToTopic.set(session.id, { topicId, chatId: GROUP_ID, projectName });
-    topicToSession.set(topicId, session.id);
+      sessionToTopic.set(session.id, { topicId, chatId: GROUP_ID, projectName });
+      topicToSession.set(topicId, session.id);
+
+      // Set tab title in WezTerm for easy identification
+      wez.setTabTitle(session.paneId, projectName);
+    }
 
     await sendMsg(GROUP_ID, [
       `<b>Session started</b>`,

@@ -125,6 +125,30 @@ function findBestSession(projectPath) {
   }
 }
 
+/**
+ * Find an existing session for a project with a live pane.
+ * Returns the session if found, null otherwise.
+ */
+function findSessionByProject(projectPath) {
+  if (!projectPath) return null;
+  const normalizedProject = projectPath.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  for (const existing of sessions.values()) {
+    if (!existing.project) continue;
+    const existingNorm = existing.project.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    if (existingNorm === normalizedProject && existing.paneId != null) {
+      try {
+        const panes = wez.listPanes();
+        const pid = existing.paneId;
+        const paneExists = panes.some(p => (p.pane_id === pid || p.pane_id === String(pid) || p.paneid === String(pid)));
+        if (paneExists) return existing;
+      } catch {
+        // Pane check failed
+      }
+    }
+  }
+  return null;
+}
+
 function spawnSession(opts) {
   const {
     project,
@@ -479,6 +503,7 @@ module.exports = {
   checkCompletion,
   listSessions,
   getSession,
+  findSessionByProject,
   killSession,
   pollAll,
   addCompletionHistory,
