@@ -409,6 +409,14 @@ function _registerSession(session) {
   if (!session.completionHistory) session.completionHistory = [];
   if (!session.promptType) session.promptType = null;
   sessions.set(session.id, session);
+
+  // Bump nextId past any restored session IDs to prevent collisions
+  const match = session.id.match(/^wez-(\d+)$/);
+  if (match) {
+    const num = parseInt(match[1], 10);
+    if (num >= nextId) nextId = num + 1;
+  }
+
   events.emit('session:spawned', session);
 }
 
