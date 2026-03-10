@@ -1,6 +1,6 @@
 {
   "name": "wezbridge",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Control Claude Code sessions from Telegram — live terminal streaming, project discovery, code diffs, permission handling, session persistence. Your phone becomes Mission Control.",
   "main": "src/telegram-bot.cjs",
   "bin": {

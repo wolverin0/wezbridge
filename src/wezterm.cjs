@@ -4,7 +4,43 @@
  */
 const { execFileSync, execFile, spawn } = require('child_process');
 
-const WEZTERM = process.env.WEZTERM_PATH || 'C:\\Program Files\\WezTerm\\wezterm.exe';
+// Node.js on Windows needs Windows-style paths (C:/...) not MSYS2 paths (/c/...)
+// Convert /c/... to C:/... for Node's execFileSync
+function msysToWin(p) {
+  return p.replace(/^\/([a-zA-Z])\//, (_, drive) => `${drive.toUpperCase()}:/`);
+}
+
+function findWezterm() {
+  if (process.env.WEZTERM_PATH) return process.env.WEZTERM_PATH;
+  const fs = require('fs');
+  // Check all known locations: Windows native, Git Bash (/c/), WSL (/mnt/c/)
+  const candidates = [
+    'C:/Program Files/WezTerm/wezterm.exe',
+    '/mnt/c/Program Files/WezTerm/wezterm.exe',
+    '/c/Program Files/WezTerm/wezterm.exe',
+  ];
+  for (const c of candidates) {
+    try { if (fs.existsSync(c)) return c; } catch {}
+  }
+  // Try which (Git Bash / Linux / macOS) and convert MSYS2 path
+  const { execSync } = require('child_process');
+  try {
+    const p = execSync('which wezterm', { encoding: 'utf-8', timeout: 3000, windowsHide: true }).trim();
+    if (p) return msysToWin(p);
+  } catch {}
+  // Try where (native Windows cmd)
+  try {
+    const p = execSync('where wezterm.exe', { encoding: 'utf-8', timeout: 3000, windowsHide: true }).trim().split('\n')[0];
+    if (p) return p;
+  } catch {}
+  // Try wezterm.exe via Windows interop (WSL)
+  try {
+    const p = execSync('which wezterm.exe', { encoding: 'utf-8', timeout: 3000, windowsHide: true }).trim();
+    if (p) return p;
+  } catch {}
+  return 'wezterm'; // hope it's in PATH
+}
+const WEZTERM = findWezterm();
 let guiLaunched = false;
 
 function wezCmd(args, opts = {}) {
@@ -43,6 +79,17 @@ function listPanes() {
 /** Ensure a visible WezTerm GUI is connected to the mux. */
 function ensureGui() {
   if (guiLaunched) return;
+  // Check if mux is already reachable by listing panes
+  try {
+    const result = execFileSync(WEZTERM, ['cli', '--prefer-mux', 'list'], {
+      encoding: 'utf-8', timeout: 5000, windowsHide: true,
+    });
+    if (result && result.includes('PANEID')) {
+      guiLaunched = true;
+      return;
+    }
+  } catch { /* mux not reachable */ }
+  // Also check tasklist for the GUI process
   try {
     const { execSync } = require('child_process');
     const tasks = execSync('tasklist', { encoding: 'utf-8', windowsHide: true });
@@ -52,15 +99,23 @@ function ensureGui() {
     }
   } catch { /* ignore */ }
   // Launch GUI connected to the unix mux domain (makes panes visible)
-  const child = spawn(WEZTERM, ['connect', 'unix'], {
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: false,
-  });
-  child.unref();
-  guiLaunched = true;
-  // Give the GUI a moment to connect
-  execFileSync('timeout', ['/t', '3', '/nobreak'], { windowsHide: true, stdio: 'ignore' });
+  try {
+    const child = spawn(WEZTERM, ['connect', 'unix'], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: false,
+    });
+    child.on('error', () => {}); // Prevent unhandled error crash
+    child.unref();
+    guiLaunched = true;
+    // Give the GUI a moment to connect
+    // Wait for GUI to connect — use sleep (bash) or timeout (Windows)
+    try { execFileSync('sleep', ['3'], { windowsHide: true, stdio: 'ignore' }); }
+    catch { try { execFileSync('timeout', ['/t', '3', '/nobreak'], { windowsHide: true, stdio: 'ignore' }); } catch {} }
+  } catch {
+    // GUI launch failed but mux may still work — mark as launched to avoid retrying
+    guiLaunched = true;
+  }
 }
 
 /** Spawn a new pane. Returns the pane ID (number). */

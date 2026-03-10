@@ -101,6 +101,28 @@ function extractProjectName(encodedName, decodedPath) {
 }
 
 /**
+ * Extract the full project root path by matching encoded name against decoded cwd.
+ * Returns the path UP TO the project root (not deeper subfolders).
+ */
+function extractProjectRoot(encodedName, decodedPath) {
+  if (decodedPath && decodedPath !== encodedName) {
+    const normalized = decodedPath.replace(/\\/g, '/');
+    const parts = normalized.split('/').filter(Boolean);
+
+    for (let i = parts.length; i >= 1; i--) {
+      const candidate = parts.slice(0, i).join('/');
+      if (encodePathLikeClaude(candidate) === encodedName) {
+        // Reconstruct the path with proper separators
+        // On Windows, re-add the drive letter format
+        const root = parts.slice(0, i).join('/');
+        return root.match(/^[A-Z]:/) ? root : '/' + root;
+      }
+    }
+  }
+  return decodedPath || encodedName;
+}
+
+/**
  * Get session preview — last 6 conversation turns (90 chars each).
  * @param {string} sessionFile - Full path to JSONL file
  * @returns {Array<{role: string, text: string}>}
@@ -352,10 +374,12 @@ function scanProjects() {
       const decodedPath = getRealPath(dirPath, d);
       const sessions = scanSessions(dirPath);
       const name = extractProjectName(d, decodedPath);
+      const projectRoot = extractProjectRoot(d, decodedPath);
 
       projects.push({
         name,
         path: decodedPath,
+        projectRoot,
         encodedName: d,
         dir: dirPath,
         sessionCount: sessions.length,

@@ -1,5 +1,38 @@
 # Changelog
 
+## [2.1.0] - 2025-03-09
+
+### Added
+
+**Completion Cards**
+- Single self-updating message per session — replaces 4-message completion spam
+- Card shows session name, status icon, response preview (600 chars), diff stat summary
+- Edits in-place on each new completion (no chat bloat)
+- Utility buttons: `Full Response` (sends .md doc or inline) and `View Diff` (sends .diff doc or inline)
+
+**Auto-Delete Prompts**
+- User prompts and ack messages auto-delete after 3 seconds
+- Keeps chat clean — prompts still visible in chat history
+
+### Fixed
+
+**WezTerm Path Detection**
+- Multi-environment path resolution: Windows native, Git Bash (`/c/`), WSL (`/mnt/c/`)
+- `findWezterm()` with `WEZTERM_PATH` env override and candidate list
+- Hardened `ensureGui()` — checks mux reachability before launching, handles spawn errors
+
+**Project Name Resolution**
+- `encodePathLikeClaude()` reverse-engineers Claude's encoded directory naming
+- `extractProjectRoot()` returns full project root path (not subfolder cwd)
+- `resolveProjectPath()` now uses `projectRoot` for correct spawn directory
+
+**Stability**
+- Global `unhandledRejection` handler prevents bot crashes
+- Early `answerCallbackQuery` at top of callback handler prevents stale query errors
+- `.claude-flow/` added to .gitignore
+
+---
+
 ## [2.0.0] - 2025-03-09
 
 ### Added

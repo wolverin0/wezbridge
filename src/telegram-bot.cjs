@@ -143,9 +143,7 @@ function restoreState(state) {
 
 // --- Config ---
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-if (!TOKEN) { console.error('[wezbridge] TELEGRAM_BOT_TOKEN not set'); process.exit(1); }
 const GROUP_ID = process.env.TELEGRAM_GROUP_ID ? Number(process.env.TELEGRAM_GROUP_ID) : null;
-if (!GROUP_ID) { console.error('[wezbridge] TELEGRAM_GROUP_ID not set'); process.exit(1); }
 const POLL_MS = parseInt(process.env.TELEGRAM_POLL_MS || '3000', 10);
 const THINKING_TIMEOUT_MS = 30000;
 const THINKING_UPDATE_MS = 30000;
@@ -178,13 +176,15 @@ function resolveProjectPath(name) {
   if (PROJECT_MAP_OVERRIDES[name]) return PROJECT_MAP_OVERRIDES[name];
   const projects = projectScanner.scanProjects();
   const match = projects.find(p => p.name.toLowerCase() === name.toLowerCase());
-  return match ? match.path : null;
+  // Use projectRoot (actual project directory) not path (which may be a deep subfolder cwd)
+  return match ? (match.projectRoot || match.path) : null;
 }
 
 // --- State ---
 const sessionToTopic = new Map();
 const topicToSession = new Map();
 const thinkingMessages = new Map();
+const completionCards = new Map(); // sessionId → { messageId, chatId, topicId }
 
 // --- Dashboard state ---
 let dashboardMsg = null; // { chatId, messageId, topicId }
@@ -193,6 +193,49 @@ let dashboardTimer = null;
 // --- Live stream state ---
 // Map<sessionId, { lastHash, lastSentAt, messageId }>
 const liveStreams = new Map();
+
+/**
+ * Build a completion card — a compact, single-message summary of Claude's response.
+ * Designed to be edited in-place on each new completion.
+ */
+function buildCompletionCard(session, response, diffStatSummary, promptType) {
+  const name = outputParser.escapeHtml(session.name || session.id);
+  const elapsed = session.lastActivity
+    ? Math.round((Date.now() - new Date(session.lastActivity).getTime()) / 1000)
+    : 0;
+  const elapsedStr = elapsed < 60 ? `${elapsed}s` : elapsed < 3600 ? `${Math.round(elapsed / 60)}m` : `${Math.round(elapsed / 3600)}h`;
+
+  const statusIcon = promptType === 'permission' ? '\u{1F513}' : promptType === 'continuation' ? '\u23ef' : '\u2705';
+  const statusText = promptType === 'permission' ? 'Needs approval' : promptType === 'continuation' ? 'Continue?' : 'Idle';
+
+  // Response preview: first ~600 chars, cleaned up
+  const clean = outputParser.stripAnsi(response);
+  const stripped = outputParser.stripClaudeChrome(clean).trim();
+  let preview = stripped.slice(0, 600);
+  if (stripped.length > 600) preview += '...';
+
+  const lines = [
+    `<b>\u2501\u2501 ${name} \u2501\u2501</b>`,
+    `${statusIcon} ${statusText} | ${elapsedStr} ago`,
+    '',
+    `<pre>${outputParser.escapeHtml(preview)}</pre>`,
+  ];
+
+  if (diffStatSummary) {
+    lines.push('');
+    lines.push(`\ud83d\udcca <i>${outputParser.escapeHtml(diffStatSummary)}</i>`);
+  }
+
+  // Trim to fit 4096
+  let html = lines.join('\n');
+  if (html.length > 4000) {
+    preview = stripped.slice(0, 300) + '...';
+    lines[3] = `<pre>${outputParser.escapeHtml(preview)}</pre>`;
+    html = lines.join('\n');
+  }
+
+  return html;
+}
 
 // --- Rate limiter ---
 const rateLimiter = new TelegramRateLimiter();
@@ -1299,16 +1342,16 @@ bot.on('message', async (msg) => {
     if (!liveStreams.has(sessionId)) {
       startThinkingTimer(sessionId);
     }
-    // Auto-delete "Sent" ack after 5 seconds
+    // Auto-delete user's prompt + ack after 3 seconds (keeps chat clean)
     const ack = msg.photo ? 'Photo sent' : msg.document ? 'File sent' : '\u2705';
     bot.sendMessage(msg.chat.id, `<i>${ack}</i>`, {
       parse_mode: 'HTML',
       message_thread_id: topicId,
-      reply_to_message_id: msg.message_id,
     }).then(sent => {
       setTimeout(() => {
         bot.deleteMessage(msg.chat.id, sent.message_id).catch(() => {});
-      }, 5000);
+        bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
+      }, 3000);
     }).catch(() => {});
   } catch (err) {
     sendMsg(msg.chat.id, `Failed to send: ${outputParser.escapeHtml(err.message)}`, {
@@ -1319,6 +1362,7 @@ bot.on('message', async (msg) => {
 
 // --- Callback (button) handler ---
 bot.on('callback_query', async (query) => {
+  try { await bot.answerCallbackQuery(query.id).catch(() => {}); } catch {}
   const topicId = query.message?.message_thread_id;
   const data = query.data || '';
 
@@ -1336,6 +1380,73 @@ bot.on('callback_query', async (query) => {
     // Delete old message to avoid clutter
     try { await bot.deleteMessage(query.message.chat.id, query.message.message_id); } catch {}
     return handleProjects(query.message, page);
+  }
+
+  // Handle completion card buttons (card:fullresponse, card:viewdiff)
+  if (data === 'card:fullresponse' || data === 'card:viewdiff') {
+    if (!topicId) return;
+    const cardSessionId = topicToSession.get(topicId);
+    if (!cardSessionId) return;
+    const cardSession = sm.getSession(cardSessionId);
+    if (!cardSession) return;
+
+    if (data === 'card:fullresponse') {
+      try {
+        const raw = wez.getFullText(cardSession.paneId, 500);
+        const response = outputParser.extractLastResponse(raw);
+        if (response) {
+          const clean = outputParser.stripAnsi(response);
+          const stripped = outputParser.stripClaudeChrome(clean).trim();
+          // Send as .md document if long, inline if short
+          if (stripped.length > 3000) {
+            const buf = Buffer.from(stripped, 'utf-8');
+            await bot.sendDocument(query.message.chat.id, buf, {
+              message_thread_id: topicId,
+              caption: `Full response (${stripped.length} chars)`,
+            }, { filename: 'response.md', contentType: 'text/markdown' });
+          } else {
+            await sendMsg(query.message.chat.id, `<pre>${outputParser.escapeHtml(stripped)}</pre>`, {
+              message_thread_id: topicId,
+            });
+          }
+        } else {
+          await sendMsg(query.message.chat.id, '<i>No response captured.</i>', { message_thread_id: topicId });
+        }
+      } catch (err) {
+        await sendMsg(query.message.chat.id, `<i>Error: ${outputParser.escapeHtml(err.message)}</i>`, { message_thread_id: topicId });
+      }
+      return;
+    }
+
+    if (data === 'card:viewdiff') {
+      try {
+        const proj = cardSession.project;
+        if (!proj) {
+          await sendMsg(query.message.chat.id, '<i>No project path for diff.</i>', { message_thread_id: topicId });
+          return;
+        }
+        const diff = diffExtractor.getGitDiff(proj, 50000);
+        if (!diff || diff.trim().length === 0) {
+          await sendMsg(query.message.chat.id, '<i>No uncommitted changes.</i>', { message_thread_id: topicId });
+          return;
+        }
+        if (diff.length > 3000) {
+          const buf = Buffer.from(diff, 'utf-8');
+          await bot.sendDocument(query.message.chat.id, buf, {
+            message_thread_id: topicId,
+            caption: `Git diff (${diff.split('\n').length} lines)`,
+          }, { filename: 'changes.diff', contentType: 'text/plain' });
+        } else {
+          const formatted = diffExtractor.formatDiffForTelegram(diff);
+          await sendMsg(query.message.chat.id, formatted || `<pre>${outputParser.escapeHtml(diff)}</pre>`, {
+            message_thread_id: topicId,
+          });
+        }
+      } catch (err) {
+        await sendMsg(query.message.chat.id, `<i>Diff error: ${outputParser.escapeHtml(err.message)}</i>`, { message_thread_id: topicId });
+      }
+      return;
+    }
   }
 
   // Check plugin handlers first
@@ -1529,106 +1640,73 @@ function startCompletionLoop() {
           continue;
         }
 
-        // Detect output type for smart formatting
-        const outputType = outputParser.detectOutputType(response);
-
-        // Format with expandable blockquotes for long content
-        let html;
-        if (outputType === 'test-results') {
-          const testSummary = outputParser.formatTestResults(response);
-          html = testSummary + '\n\n' + outputParser.formatForTelegram(response);
-        } else if (outputType === 'error') {
-          html = outputParser.formatStackTrace(response);
-        } else {
-          html = outputParser.formatForTelegram(response);
-        }
-
-        // Send response (Message 1) — single message, blockquote handles truncation
-        await sendMsg(info.chatId, html, {
-          message_thread_id: info.topicId,
-          ...actionKeyboard(session.promptType),
-        });
-
-        // If response was truncated, send full text as document
-        if (outputParser.wasResponseTruncated(response)) {
-          const fullBuf = Buffer.from(response, 'utf-8');
+        // Get diff stat (one-liner)
+        const liveSession = sm.getSession(session.id);
+        let diffStatSummary = '';
+        if (liveSession?.project) {
           try {
-            await sendDocument(info.chatId, fullBuf, {
-              message_thread_id: info.topicId,
-              caption: `Full response (${response.length} chars)`,
-            }, {
-              filename: `${info.projectName}-response.md`,
-              contentType: 'text/markdown',
-            });
+            const diffStat = diffExtractor.getGitDiffStat(liveSession.project);
+            if (diffStat && diffStat.files.length > 0) {
+              diffStatSummary = diffStat.summary;
+            }
           } catch { /* ignore */ }
         }
 
-        // Phase 1: Check git diff and send as Message 2
-        const liveSession = sm.getSession(session.id);
-        if (liveSession?.project) {
-          const diffStat = diffExtractor.getGitDiffStat(liveSession.project);
-          if (diffStat && diffStat.files.length > 0) {
-            const diffFormatted = diffExtractor.formatDiffForTelegram(diffStat);
+        // Build completion card
+        const cardHtml = buildCompletionCard(session, response, diffStatSummary, session.promptType);
 
-            // Check if diff is too large — send as document
-            const fullDiff = diffExtractor.getGitDiff(liveSession.project, 8000);
-            if (fullDiff && fullDiff.length > 4096) {
-              // Send stat summary as message
-              await sendMsg(info.chatId, diffFormatted, { message_thread_id: info.topicId });
-              // Send full diff as document
-              const diffBuf = Buffer.from(fullDiff, 'utf-8');
-              try {
-                await sendDocument(info.chatId, diffBuf, {
-                  message_thread_id: info.topicId,
-                  caption: diffStat.summary,
-                }, {
-                  filename: `${info.projectName}-diff.diff`,
-                  contentType: 'text/plain',
-                });
-              } catch { /* ignore document send failures */ }
-            } else {
-              await sendMsg(info.chatId, diffFormatted, { message_thread_id: info.topicId });
-            }
+        // Card buttons: action row + utility row
+        const kb = actionKeyboard(session.promptType);
+        const utilRow = [
+          { text: '\ud83d\udcc4 Full Response', callback_data: 'card:fullresponse' },
+        ];
+        if (diffStatSummary) {
+          utilRow.push({ text: '\ud83d\udcca View Diff', callback_data: 'card:viewdiff' });
+        }
+        // Merge utility row into keyboard
+        const cardKeyboard = kb.reply_markup
+          ? { reply_markup: { inline_keyboard: [...kb.reply_markup.inline_keyboard, utilRow] } }
+          : { reply_markup: { inline_keyboard: [utilRow] } };
 
-            // Store diff stat in history
-            sm.addCompletionHistory(session.id, {
-              prompt: session.promptHistory?.[session.promptHistory.length - 1]?.prompt || '',
-              response: response.slice(0, 500),
-              diffStat: diffStat.summary,
+        // Edit existing card or send new one
+        const existingCard = completionCards.get(session.id);
+        if (existingCard) {
+          try {
+            await bot.editMessageText(cardHtml, {
+              chat_id: existingCard.chatId,
+              message_id: existingCard.messageId,
+              parse_mode: 'HTML',
+              ...cardKeyboard,
             });
-          } else {
-            // No diff — still store history
-            sm.addCompletionHistory(session.id, {
-              prompt: session.promptHistory?.[session.promptHistory.length - 1]?.prompt || '',
-              response: response.slice(0, 500),
+          } catch {
+            // Edit failed (message too old, deleted, etc) — send new
+            const sent = await sendMsg(info.chatId, cardHtml, {
+              message_thread_id: info.topicId,
+              ...cardKeyboard,
             });
+            if (sent) completionCards.set(session.id, { messageId: sent.message_id, chatId: info.chatId, topicId: info.topicId });
           }
         } else {
-          sm.addCompletionHistory(session.id, {
-            prompt: session.promptHistory?.[session.promptHistory.length - 1]?.prompt || '',
-            response: response.slice(0, 500),
+          const sent = await sendMsg(info.chatId, cardHtml, {
+            message_thread_id: info.topicId,
+            ...cardKeyboard,
           });
+          if (sent) completionCards.set(session.id, { messageId: sent.message_id, chatId: info.chatId, topicId: info.topicId });
         }
 
-        // Persist state after recording history
+        // Store history
+        sm.addCompletionHistory(session.id, {
+          prompt: session.promptHistory?.[session.promptHistory.length - 1]?.prompt || '',
+          response: response.slice(0, 500),
+          diffStat: diffStatSummary || undefined,
+        });
+
+        // Persist state
         saveState();
 
-        // Phase 7: ClawTrol notification
+        // ClawTrol notification (silent)
         if (liveSession?.taskId) {
           clawtrol.notifyWaiting(liveSession, response.slice(-300)).catch(() => {});
-          clawtrol.postTaskLog(liveSession.taskId, `Response received (${response.length} chars)`).catch(() => {});
-        }
-
-        // Recent commits (optional, for context)
-        if (liveSession?.project) {
-          const commits = diffExtractor.getRecentCommits(liveSession.project, 1);
-          if (commits.length > 0 && commits[0].date?.includes('second') || commits[0]?.date?.includes('minute')) {
-            // A very recent commit was made — notify
-            const c = commits[0];
-            await sendMsg(info.chatId, `\ud83d\udcdd Recent commit: <code>${outputParser.escapeHtml(c.hash)}</code> ${outputParser.escapeHtml(c.message)}`, {
-              message_thread_id: info.topicId,
-            });
-          }
         }
       } catch (err) {
         console.error(`[telegram] Error sending response for ${session.id}:`, err.message || err);
@@ -1763,6 +1841,14 @@ function startBot() {
 
   console.log('[telegram] Bot is running. Send /help in the group.');
 }
+
+// --- Global error handlers (prevent crash on Telegram API errors) ---
+process.on('unhandledRejection', (err) => {
+  console.error('[telegram] Unhandled rejection:', err?.message || err);
+});
+bot.on('polling_error', (err) => {
+  console.error('[telegram] Polling error:', err?.message || err);
+});
 
 // --- Graceful shutdown ---
 process.on('SIGINT', () => {
