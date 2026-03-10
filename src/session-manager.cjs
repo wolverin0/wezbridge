@@ -4,6 +4,8 @@
  */
 const { EventEmitter } = require('events');
 const wez = require('./wezterm.cjs');
+const fs = require('fs');
+const path = require('path');
 
 // Event emitter for session lifecycle events
 const events = new EventEmitter();
@@ -83,6 +85,46 @@ const COMPACTION_COOLDOWN_MS = 20000;
  * @param {string} [opts.taskId] - ClawTrol task ID to link
  * @returns {object} Session info
  */
+/**
+ * Find the best Claude session to resume for a project.
+ * Picks the largest .jsonl from the last 7 days (real working session, not tiny throwaway).
+ */
+function findBestSession(projectPath) {
+  try {
+    if (!projectPath) return null;
+
+    // Encode project path like Claude does
+    const normalized = projectPath.replace(/\\/g, '/');
+    const encoded = normalized.replace(/[:\\/\s_-]/g, '-');
+    const homeDir = process.env.USERPROFILE || process.env.HOME;
+    const sessionsDir = path.join(homeDir, '.claude', 'projects', encoded);
+
+    if (!fs.existsSync(sessionsDir)) return null;
+
+    const files = fs.readdirSync(sessionsDir).filter(f => f.endsWith('.jsonl'));
+    if (files.length === 0) return null;
+
+    const sevenDaysAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
+    const candidates = [];
+
+    for (const file of files) {
+      const fullPath = path.join(sessionsDir, file);
+      const stat = fs.statSync(fullPath);
+      if (stat.mtimeMs > sevenDaysAgo && stat.size > 50000) { // >50KB = real session
+        candidates.push({ id: file.replace('.jsonl', ''), size: stat.size, mtime: stat.mtimeMs });
+      }
+    }
+
+    if (candidates.length === 0) return null;
+
+    // Sort by size descending, pick the largest recent one
+    candidates.sort((a, b) => b.size - a.size);
+    return candidates[0].id;
+  } catch {
+    return null;
+  }
+}
+
 function spawnSession(opts) {
   const {
     project,
@@ -117,7 +159,17 @@ function spawnSession(opts) {
   // Build the claude command
   const claudeArgs = ['claude'];
   if (dangerouslySkipPermissions) claudeArgs.push('--dangerously-skip-permissions');
-  if (continueSession) claudeArgs.push('--continue');
+  if (continueSession) {
+    // Find the best session to resume: largest .jsonl from last 7 days
+    const bestSession = findBestSession(project);
+    if (bestSession) {
+      claudeArgs.push('--resume', bestSession);
+      console.log(`\x1b[32m[session]\x1b[0m Resuming session ${bestSession} (largest recent)`);
+    } else {
+      claudeArgs.push('--continue');
+      console.log(`\x1b[33m[session]\x1b[0m No large session found, using --continue`);
+    }
+  }
 
   // Wait for bash to init, then launch claude
   setTimeout(() => {
