@@ -296,13 +296,15 @@ function checkCompletion(sessionId) {
       session._lastScrollbackHash = null;
       session._compactionAt = null; // Reset compaction state
       events.emit('session:waiting', { ...session, promptType: detectedType });
-      console.log(`[session] ${sessionId} completed — stable ❯ after ${STABILITY_COUNT} polls`);
+      console.log(`\x1b[32m[session]\x1b[0m ${sessionId} \x1b[32mcompleted\x1b[0m — stable ❯ after ${STABILITY_COUNT} polls`);
       return { waiting: true, promptType: detectedType, session, lastLines };
     }
 
     // Not yet stable — ❯ detected but waiting for confirmation
-    if (session._stabilityCount > 0) {
-      console.log(`[session] ${sessionId} — ❯ detected, stability ${session._stabilityCount}/${STABILITY_COUNT}`);
+    // Only log when stability count actually changes (avoid spam)
+    if (session._stabilityCount > 0 && session._stabilityCount !== session._lastLoggedStability) {
+      console.log(`\x1b[33m[session]\x1b[0m ${sessionId} — ❯ detected, stability ${session._stabilityCount}/${STABILITY_COUNT}`);
+      session._lastLoggedStability = session._stabilityCount;
     }
 
     return { waiting: false, session, lastLines };

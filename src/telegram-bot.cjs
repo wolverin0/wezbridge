@@ -36,6 +36,39 @@ const clawtrol = require('./clawtrol-sync.cjs');
 const fs = require('fs');
 const path = require('path');
 
+// --- ANSI colors for terminal output ---
+const c = {
+  reset: '\x1b[0m',
+  dim: '\x1b[2m',
+  bold: '\x1b[1m',
+  red: '\x1b[31m',
+  green: '\x1b[32m',
+  yellow: '\x1b[33m',
+  blue: '\x1b[34m',
+  magenta: '\x1b[35m',
+  cyan: '\x1b[36m',
+  white: '\x1b[37m',
+  bgGreen: '\x1b[42m',
+  bgRed: '\x1b[41m',
+  bgYellow: '\x1b[43m',
+  bgBlue: '\x1b[44m',
+};
+
+function tag(color, label) { return `${color}[${label}]${c.reset}`; }
+const T = {
+  bot: tag(c.cyan, 'bot'),
+  state: tag(c.dim, 'state'),
+  poll: tag(c.blue, 'poll'),
+  send: tag(c.green, '>>>'),
+  recv: tag(c.magenta, '<<<'),
+  live: tag(c.yellow, 'live'),
+  err: tag(c.red, 'ERR'),
+  plugin: tag(c.dim, 'plugin'),
+  seed: tag(c.dim, 'seed'),
+  photo: tag(c.blue, 'photo'),
+  doc: tag(c.blue, 'doc'),
+};
+
 // --- State persistence ---
 const STATE_FILE = path.join(__dirname, '..', '..', '.wezbridge-state.json');
 
@@ -69,7 +102,7 @@ function saveState() {
 
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), 'utf-8');
   } catch (err) {
-    console.error('[state] Save failed:', err.message);
+    console.error(`${T.err} State save failed:`, err.message);
   }
 }
 
@@ -79,7 +112,7 @@ function loadState() {
     const raw = fs.readFileSync(STATE_FILE, 'utf-8');
     return JSON.parse(raw);
   } catch (err) {
-    console.error('[state] Load failed:', err.message);
+    console.error(`${T.err} State load failed:`, err.message);
     return null;
   }
 }
@@ -96,7 +129,7 @@ function restoreState(state) {
     try {
       wez.getText(data.paneId);
     } catch {
-      console.log(`[state] Pane ${data.paneId} no longer exists, skipping ${sessionId}`);
+      console.log(`${T.state} Pane ${data.paneId} no longer exists, skipping ${c.dim}${sessionId}${c.reset}`);
       continue;
     }
 
@@ -134,7 +167,7 @@ function restoreState(state) {
     if (session && info.topicId) {
       sessionToTopic.set(sessionId, info);
       topicToSession.set(info.topicId, sessionId);
-      console.log(`[state] Restored mapping: topic ${info.topicId} <-> ${sessionId} (${info.projectName})`);
+      console.log(`${T.state} Restored: topic ${c.cyan}${info.topicId}${c.reset} <-> ${c.green}${sessionId}${c.reset} (${info.projectName})`);
     }
   }
 
@@ -445,7 +478,7 @@ async function handleSpawn(msg, match) {
       });
     }
   } catch (err) {
-    console.error('[telegram] Spawn error:', err);
+    console.error(`${T.err} Spawn failed:`, err.message || err);
     await sendMsg(chatId, `Spawn failed: ${outputParser.escapeHtml(err.message)}`, {
       message_thread_id: msg.message_thread_id,
     });
@@ -1124,7 +1157,7 @@ async function processLiveStream(sessionId) {
     const msgId = await sendOrEdit(html, { message_thread_id: info.topicId });
     if (msgId) stream.messageId = msgId;
   } catch (err) {
-    console.log(`[live] Error streaming ${sessionId}: ${err.message}`);
+    console.log(`${T.live} Error streaming ${sessionId}: ${err.message}`);
   }
 }
 
@@ -1136,11 +1169,38 @@ async function handleReconnect(msg) {
 
   if (!topicId) return sendMsg(chatId, 'Use /reconnect inside a session topic.');
 
-  const sessionId = topicToSession.get(topicId);
-  if (!sessionId) return sendMsg(chatId, 'No session linked to this topic.', { message_thread_id: topicId });
+  let sessionId = topicToSession.get(topicId);
+  let session = sessionId ? sm.getSession(sessionId) : null;
 
-  const session = sm.getSession(sessionId);
-  if (!session) return sendMsg(chatId, 'Session not found.', { message_thread_id: topicId });
+  // No existing mapping — scan WezTerm for Claude panes and offer to link
+  if (!session) {
+    try {
+      const panes = wez.listPanes();
+      const claudePanes = panes.filter(p =>
+        (p.title && /claude/i.test(p.title)) || p.is_zoomed === false
+      );
+
+      if (claudePanes.length === 0) {
+        return sendMsg(chatId, '<i>No running Claude panes found in WezTerm.</i>', { message_thread_id: topicId });
+      }
+
+      // Try to find a pane that matches this topic's name
+      const topicName = msg.message?.reply_to_message?.forum_topic_created?.name || '';
+
+      // Show panes as buttons to pick from
+      const buttons = claudePanes.map(p => {
+        const label = `Pane ${p.pane_id}: ${p.title || 'unknown'}`;
+        return [{ text: label, callback_data: `reconnect:${p.pane_id}` }];
+      });
+
+      return sendMsg(chatId, '<b>Select a pane to reconnect:</b>', {
+        message_thread_id: topicId,
+        reply_markup: { inline_keyboard: buttons },
+      });
+    } catch (err) {
+      return sendMsg(chatId, `<i>Error scanning panes: ${outputParser.escapeHtml(err.message)}</i>`, { message_thread_id: topicId });
+    }
+  }
 
   try {
     // Force re-read the terminal
@@ -1308,7 +1368,7 @@ bot.on('message', async (msg) => {
 
       // Add image path to prompt
       promptText = `${promptText}\n\n[Image attached: ${localPath}]`.trim();
-      console.log(`[telegram] Photo saved: ${localPath}`);
+      console.log(`${T.photo} Saved: ${c.dim}${localPath}${c.reset}`);
     }
 
     // Handle document attachments
@@ -1332,7 +1392,7 @@ bot.on('message', async (msg) => {
       });
 
       promptText = `${promptText}\n\n[File attached: ${localPath}]`.trim();
-      console.log(`[telegram] Document saved: ${localPath}`);
+      console.log(`${T.doc} Saved: ${c.dim}${localPath}${c.reset}`);
     }
 
     if (!promptText) return;
@@ -1380,6 +1440,61 @@ bot.on('callback_query', async (query) => {
     // Delete old message to avoid clutter
     try { await bot.deleteMessage(query.message.chat.id, query.message.message_id); } catch {}
     return handleProjects(query.message, page);
+  }
+
+  // Handle reconnect pane selection
+  if (data.startsWith('reconnect:')) {
+    const paneId = parseInt(data.slice(10), 10);
+    if (!topicId || isNaN(paneId)) return;
+
+    try {
+      // Read pane to get project info
+      const raw = wez.getFullText(paneId, 100);
+      const clean = outputParser.stripAnsi(raw);
+
+      // Extract project name from the topic title or pane title
+      const panes = wez.listPanes();
+      const pane = panes.find(p => p.pane_id === paneId);
+      const paneTitle = pane?.title || `pane-${paneId}`;
+      const projectName = paneTitle.replace(/[^a-zA-Z0-9-_]/g, '').slice(0, 30) || `pane-${paneId}`;
+
+      // Register a session linked to this pane
+      const sessionId = `wez-reconn-${Date.now()}`;
+      const newSession = {
+        id: sessionId,
+        paneId,
+        project: null,
+        name: projectName,
+        status: 'running',
+        createdAt: new Date().toISOString(),
+        lastActivity: new Date().toISOString(),
+        taskId: null,
+        _stabilityCount: 0,
+        _lastScrollbackHash: null,
+      };
+      sm._registerSession(newSession);
+      sessionToTopic.set(sessionId, { topicId, chatId: GROUP_ID, projectName });
+      topicToSession.set(topicId, sessionId);
+      saveState();
+
+      console.log(`${T.bot} Reconnected: topic ${c.cyan}${topicId}${c.reset} <-> pane ${c.green}${paneId}${c.reset} (${projectName})`);
+
+      // Delete the selection message
+      try { await bot.deleteMessage(query.message.chat.id, query.message.message_id); } catch {}
+
+      const quickCheck = sm.checkCompletion(sessionId);
+      const isIdle = quickCheck.waiting;
+      const statusIcon = isIdle ? '\u2705 Idle' : '\u23f3 Working';
+      const session = sm.getSession(sessionId);
+
+      await sendMsg(query.message.chat.id, `<b>Reconnected to pane ${paneId}</b> (${outputParser.escapeHtml(projectName)}) — ${statusIcon}`, {
+        message_thread_id: topicId,
+        ...(isIdle ? actionKeyboard(session.promptType) : {}),
+      });
+    } catch (err) {
+      await sendMsg(query.message.chat.id, `<i>Reconnect failed: ${outputParser.escapeHtml(err.message)}</i>`, { message_thread_id: topicId });
+    }
+    return;
   }
 
   // Handle completion card buttons (card:fullresponse, card:viewdiff)
@@ -1615,13 +1730,13 @@ function startCompletionLoop() {
 
     const newlyWaiting = sm.pollAll();
     if (newlyWaiting.length > 0) {
-      console.log(`[telegram] Poll: ${newlyWaiting.length} session(s) completed`);
+      console.log(`${T.poll} ${c.green}${newlyWaiting.length} session(s) completed${c.reset}`);
     }
 
     for (const session of newlyWaiting) {
       const info = sessionToTopic.get(session.id);
       if (!info) {
-        console.log(`[telegram] No topic mapping for session ${session.id}`);
+        console.log(`${T.poll} ${c.yellow}No topic mapping for ${session.id}${c.reset}`);
         continue;
       }
 
@@ -1709,9 +1824,9 @@ function startCompletionLoop() {
           clawtrol.notifyWaiting(liveSession, response.slice(-300)).catch(() => {});
         }
       } catch (err) {
-        console.error(`[telegram] Error sending response for ${session.id}:`, err.message || err);
+        console.error(`${T.err} Response failed for ${session.id}:`, err.message || err);
       }
-      console.log(`[telegram] Response sent for ${session.id} to topic ${info.topicId}`);
+      console.log(`${T.send} ${c.green}${session.name || session.id}${c.reset} → topic ${c.cyan}${info.topicId}${c.reset}`);
     }
   }, POLL_MS);
 }
@@ -1773,7 +1888,7 @@ function seedFromArgs() {
 
         sessionToTopic.set(sessionId, { topicId, chatId: GROUP_ID, projectName });
         topicToSession.set(topicId, sessionId);
-        console.log(`[telegram] Seeded: topic ${topicId} <-> pane ${paneId} (${projectName})`);
+        console.log(`${T.seed} topic ${c.cyan}${topicId}${c.reset} <-> pane ${c.green}${paneId}${c.reset} (${projectName})`);
       }
       i++;
     }
@@ -1782,10 +1897,10 @@ function seedFromArgs() {
 
 // --- Startup ---
 function startBot() {
-  console.log('[telegram] WezBridge V2 starting...');
-  console.log(`[telegram] Group ID: ${GROUP_ID}`);
-  console.log(`[telegram] Poll interval: ${POLL_MS}ms`);
-  console.log(`[telegram] Notification level: ${NOTIFY_LEVEL}`);
+  console.log(`\n${c.bold}${c.cyan}━━━ WezBridge V2.1 ━━━${c.reset}\n`);
+  console.log(`${T.bot} Group: ${c.dim}${GROUP_ID}${c.reset}`);
+  console.log(`${T.bot} Poll: ${c.dim}${POLL_MS}ms${c.reset}`);
+  console.log(`${T.bot} Notify: ${c.dim}${NOTIFY_LEVEL}${c.reset}`);
 
   // Load plugins
   const loadedPlugins = pluginLoader.loadAll({
@@ -1795,12 +1910,12 @@ function startBot() {
     bot,
   });
   if (loadedPlugins.length > 0) {
-    console.log(`[telegram] Plugins: ${loadedPlugins.join(', ')}`);
+    console.log(`${T.plugin} Loaded: ${c.dim}${loadedPlugins.join(', ')}${c.reset}`);
   }
 
   // Discover projects
   const projects = projectScanner.scanProjects();
-  console.log(`[telegram] Discovered ${projects.length} projects from ~/.claude/projects/`);
+  console.log(`${T.bot} Projects: ${c.green}${projects.length}${c.reset} discovered`);
 
   seedFromArgs();
 
@@ -1809,7 +1924,7 @@ function startBot() {
   if (savedState) {
     const restored = restoreState(savedState);
     if (restored > 0) {
-      console.log(`[telegram] Restored ${restored} history entries from previous session`);
+      console.log(`${T.state} Restored ${c.green}${restored}${c.reset} history entries`);
     }
   }
 
@@ -1830,7 +1945,7 @@ function startBot() {
 
   bot.on('message', (msg) => {
     if (msg.chat.id !== GROUP_ID) {
-      console.log(`[telegram] Message from chat ${msg.chat.id} (${msg.chat.title || msg.chat.username || 'unknown'})`);
+      console.log(`${T.recv} ${c.dim}Chat ${msg.chat.id} (${msg.chat.title || msg.chat.username || 'unknown'})${c.reset}`);
     }
   });
 
@@ -1839,20 +1954,20 @@ function startBot() {
     start();
   }
 
-  console.log('[telegram] Bot is running. Send /help in the group.');
+  console.log(`${c.bold}${c.green}✓ Bot is running${c.reset} — send /help in the group\n`);
 }
 
 // --- Global error handlers (prevent crash on Telegram API errors) ---
 process.on('unhandledRejection', (err) => {
-  console.error('[telegram] Unhandled rejection:', err?.message || err);
+  console.error(`${T.err} Unhandled rejection:`, err?.message || err);
 });
 bot.on('polling_error', (err) => {
-  console.error('[telegram] Polling error:', err?.message || err);
+  console.error(`${T.err} Polling error:`, err?.message || err);
 });
 
 // --- Graceful shutdown ---
 process.on('SIGINT', () => {
-  console.log('[telegram] Shutting down — saving state...');
+  console.log(`\n${T.bot} ${c.yellow}Shutting down — saving state...${c.reset}`);
   saveState();
   if (completionTimer) clearInterval(completionTimer);
   if (dashboardTimer) clearInterval(dashboardTimer);
@@ -1861,7 +1976,7 @@ process.on('SIGINT', () => {
 });
 
 process.on('SIGTERM', () => {
-  console.log('[telegram] Shutting down — saving state...');
+  console.log(`\n${T.bot} ${c.yellow}Shutting down — saving state...${c.reset}`);
   saveState();
   if (completionTimer) clearInterval(completionTimer);
   if (dashboardTimer) clearInterval(dashboardTimer);

@@ -1,34 +1,48 @@
 # Changelog
 
-## [2.1.0] - 2025-03-09
+## [2.1.0] - 2025-03-10
 
 ### Added
 
-**Completion Cards**
-- Single self-updating message per session — replaces 4-message completion spam
-- Card shows session name, status icon, response preview (600 chars), diff stat summary
-- Edits in-place on each new completion (no chat bloat)
-- Utility buttons: `Full Response` (sends .md doc or inline) and `View Diff` (sends .diff doc or inline)
+**Completion Cards** — Zero-bloat response display
+- Single self-updating message per session replaces the old 4-message spam (response + diff stat + diff file + notification)
+- Card shows: session name header, status icon (idle/permission/continue), time since last activity, 600-char response preview, and diff stat summary
+- **Edits in-place** on each new completion — the same Telegram message updates instead of posting new ones
+- Utility buttons row: `Full Response` sends the complete output as a `.md` document (or inline `<pre>` if under 3KB), `View Diff` sends the git diff as a `.diff` file (or inline if small)
+- Falls back to sending a new card if the old message is too stale to edit
 
-**Auto-Delete Prompts**
-- User prompts and ack messages auto-delete after 3 seconds
-- Keeps chat clean — prompts still visible in chat history
+**Auto-Delete Prompts** — Clean chat UX
+- When you send a message to Claude, the acknowledgment ("Sent to Claude...") and your original message both auto-delete after 3 seconds
+- Keeps the topic clean — only completion cards and command outputs remain visible
+- Messages are still accessible in Telegram's chat history if you need to review them
+
+**Smart Reconnect** — Link topics to running panes
+- `/reconnect` now works even when there's no existing session mapping (e.g. after a bot restart)
+- If no mapping exists, scans all WezTerm panes and shows them as inline buttons to pick from
+- Select a pane to link it to the current topic — creates a session and starts polling immediately
+- If mapping exists, does the original behavior: re-reads terminal, resets stability, shows current status with action buttons
+
+**Colored Terminal Logs** — Readable bot output
+- All console output uses ANSI colors with semantic tags: `[bot]` cyan, `[poll]` blue, `[>>>]` green (outgoing), `[<<<]` magenta (incoming), `[ERR]` red, `[state]` dim, `[live]` yellow
+- Startup banner: `━━━ WezBridge V2.1 ━━━` with config summary
+- Green checkmark on successful boot: `✓ Bot is running`
+- Stability detection spam eliminated — only logs when count actually changes (was flooding 1 line per 3s poll)
 
 ### Fixed
 
 **WezTerm Path Detection**
-- Multi-environment path resolution: Windows native, Git Bash (`/c/`), WSL (`/mnt/c/`)
-- `findWezterm()` with `WEZTERM_PATH` env override and candidate list
-- Hardened `ensureGui()` — checks mux reachability before launching, handles spawn errors
+- Multi-environment path resolution: Windows native (`C:/Program Files/WezTerm/wezterm.exe`), Git Bash (`/c/Program Files/...`), WSL (`/mnt/c/Program Files/...`)
+- New `findWezterm()` function with `WEZTERM_PATH` env override, candidate list, and `which`/`where` fallback
+- Hardened `ensureGui()` — checks mux reachability via `wezterm cli list` before launching, `.on('error')` handler prevents Node crashes, `sleep` fallback for bash environments
 
 **Project Name Resolution**
-- `encodePathLikeClaude()` reverse-engineers Claude's encoded directory naming
-- `extractProjectRoot()` returns full project root path (not subfolder cwd)
-- `resolveProjectPath()` now uses `projectRoot` for correct spawn directory
+- `encodePathLikeClaude()` reverse-engineers Claude Code's encoded directory naming scheme (all `:\\/\s_-` characters become `-`)
+- `extractProjectRoot()` walks up the decoded path to find the actual project root, not a subfolder cwd
+- `resolveProjectPath()` now uses `projectRoot` for correct spawn directory — fixes spawning in `dashboard/react-app` instead of the project root
 
-**Stability**
-- Global `unhandledRejection` handler prevents bot crashes
-- Early `answerCallbackQuery` at top of callback handler prevents stale query errors
+**Stability & Crash Prevention**
+- Global `unhandledRejection` handler prevents bot crashes from stale Telegram callback queries
+- Early `answerCallbackQuery` at top of callback handler prevents "query is too old" errors
 - `.claude-flow/` added to .gitignore
 
 ---
