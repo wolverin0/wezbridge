@@ -207,6 +207,96 @@ function setTabTitle(paneId, title) {
   }
 }
 
+/** Split an existing pane horizontally (side by side). Returns new pane ID. */
+function splitHorizontal(paneId, { cwd, program, args: spawnArgs } = {}) {
+  const cmdArgs = ['split-pane', '--pane-id', String(paneId), '--horizontal'];
+  if (cwd) cmdArgs.push('--cwd', cwd);
+  if (program) {
+    cmdArgs.push('--');
+    cmdArgs.push(program);
+    if (spawnArgs) cmdArgs.push(...spawnArgs);
+  }
+  const newId = wezCmd(cmdArgs);
+  return parseInt(newId, 10);
+}
+
+/** Split an existing pane vertically (top/bottom). Returns new pane ID. */
+function splitVertical(paneId, { cwd, program, args: spawnArgs } = {}) {
+  const cmdArgs = ['split-pane', '--pane-id', String(paneId)];
+  // No --horizontal flag = vertical split (default)
+  if (cwd) cmdArgs.push('--cwd', cwd);
+  if (program) {
+    cmdArgs.push('--');
+    cmdArgs.push(program);
+    if (spawnArgs) cmdArgs.push(...spawnArgs);
+  }
+  const newId = wezCmd(cmdArgs);
+  return parseInt(newId, 10);
+}
+
+/** Move focus to a specific direction from current pane. */
+function activatePaneDirection(paneId, direction) {
+  // direction: 'Up', 'Down', 'Left', 'Right'
+  try {
+    wezCmd(['activate-pane-direction', '--pane-id', String(paneId), direction]);
+  } catch { /* ignore */ }
+}
+
+/** List all workspaces. */
+function listWorkspaces() {
+  try {
+    const raw = wezCmd(['list', '--format', 'json']);
+    if (!raw) return [];
+    const panes = JSON.parse(raw);
+    const workspaces = new Set();
+    for (const p of panes) {
+      if (p.workspace) workspaces.add(p.workspace);
+    }
+    return [...workspaces];
+  } catch {
+    return [];
+  }
+}
+
+/** Switch to a workspace (creates it if it doesn't exist). */
+function switchWorkspace(name) {
+  try {
+    // WezTerm doesn't have a direct "switch workspace" CLI command,
+    // but we can set the workspace when spawning a new pane
+    wezCmd(['switch-to-workspace', '--name', name]);
+  } catch {
+    // Older versions may not support this — ignore
+  }
+}
+
+/** Spawn a pane in a specific workspace. */
+function spawnInWorkspace(workspace, { cwd, program, args: spawnArgs } = {}) {
+  ensureGui();
+  const cmdArgs = ['spawn', '--workspace', workspace];
+  if (cwd) cmdArgs.push('--cwd', cwd);
+  if (program) {
+    cmdArgs.push('--');
+    cmdArgs.push(program);
+    if (spawnArgs) cmdArgs.push(...spawnArgs);
+  }
+  const paneId = wezCmd(cmdArgs);
+  return parseInt(paneId, 10);
+}
+
+/** Spawn a pane via an SSH domain. Returns pane ID. */
+function spawnSshDomain(domainName, { cwd, program, args: spawnArgs } = {}) {
+  ensureGui();
+  const cmdArgs = ['spawn', '--domain-name', domainName];
+  if (cwd) cmdArgs.push('--cwd', cwd);
+  if (program) {
+    cmdArgs.push('--');
+    cmdArgs.push(program);
+    if (spawnArgs) cmdArgs.push(...spawnArgs);
+  }
+  const paneId = wezCmd(cmdArgs);
+  return parseInt(paneId, 10);
+}
+
 module.exports = {
   listPanes,
   spawnPane,
@@ -218,5 +308,12 @@ module.exports = {
   activatePane,
   setTabTitle,
   ensureGui,
+  splitHorizontal,
+  splitVertical,
+  activatePaneDirection,
+  listWorkspaces,
+  switchWorkspace,
+  spawnInWorkspace,
+  spawnSshDomain,
   WEZTERM,
 };

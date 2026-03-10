@@ -1,14 +1,18 @@
 {
   "name": "wezbridge",
-  "version": "2.1.0",
-  "description": "Control Claude Code sessions from Telegram — live terminal streaming, project discovery, code diffs, permission handling, session persistence. Your phone becomes Mission Control.",
+  "version": "3.0.0",
+  "description": "Control Claude Code sessions from Telegram — live terminal streaming, voice prompts, native streaming, split panes, inline status. Your phone becomes Mission Control.",
   "main": "src/telegram-bot.cjs",
   "bin": {
     "wezbridge": "src/bot-watchdog.cjs"
   },
   "scripts": {
-    "start": "node src/bot-watchdog.cjs",
+    "start": "pm2 start ecosystem.config.cjs",
+    "start:watchdog": "node src/bot-watchdog.cjs",
     "bot": "node src/telegram-bot.cjs",
+    "stop": "pm2 stop wezbridge-bot",
+    "logs": "pm2 logs wezbridge-bot",
+    "restart": "pm2 restart wezbridge-bot",
     "test": "node src/test-connection.cjs"
   },
   "keywords": [
@@ -21,13 +25,19 @@
     "remote-control",
     "mission-control",
     "live-streaming",
+    "voice-to-text",
+    "whisper",
     "code-diff",
-    "session-management"
+    "session-management",
+    "mini-app"
   ],
   "author": "",
   "license": "MIT",
   "dependencies": {
     "node-telegram-bot-api": "^0.66.0"
+  },
+  "optionalDependencies": {
+    "form-data": "^4.0.0"
   },
   "engines": {
     "node": ">=18.0.0"

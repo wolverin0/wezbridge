@@ -307,7 +307,7 @@ function checkCompletion(sessionId) {
         session._stabilityCount = 0;
         session._lastScrollbackHash = null;
         events.emit('session:waiting', { ...session, promptType: detectedType });
-        console.log(`[session] ${sessionId} — ${detectedType} prompt detected (immediate)`);
+        console.log(`\x1b[33m[session]\x1b[0m ${sessionId} — \x1b[33m${detectedType}\x1b[0m prompt detected (immediate)`);
       }
       return { waiting: true, promptType: detectedType, session, lastLines };
     }
@@ -331,13 +331,13 @@ function checkCompletion(sessionId) {
         try {
           const fullText = wez.getFullText(session.paneId, 2000);
           session._preCompactionSnapshot = fullText;
-          console.log(`[session] ${sessionId} — saved ${fullText.length} chars pre-compaction snapshot`);
+          console.log(`\x1b[2m[session]\x1b[0m ${sessionId} — saved ${fullText.length} chars pre-compaction snapshot`);
         } catch { /* ignore */ }
         session._compactionAt = Date.now();
         session._stabilityCount = 0;
         session._lastScrollbackHash = null;
         events.emit('session:compacted', session);
-        console.log(`[session] ${sessionId} — compaction detected, suppressing completion for ${COMPACTION_COOLDOWN_MS / 1000}s`);
+        console.log(`\x1b[33m[session]\x1b[0m ${sessionId} — \x1b[33mcompaction detected\x1b[0m, suppressing completion for ${COMPACTION_COOLDOWN_MS / 1000}s`);
         return { waiting: false, compacted: true, session, lastLines };
       }
 

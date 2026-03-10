@@ -1,5 +1,104 @@
 # Changelog
 
+## [3.0.0] - 2026-03-10
+
+### Added
+
+**Message Reactions** — Lightweight status on messages
+- Hourglass (⏳) on your prompt while Claude works
+- Checkmark (✅) on completion cards when done
+- Question mark (❓) on permission prompts
+- Uses Bot API `setMessageReaction` via raw API call
+
+**Voice-to-Text** — Send voice notes as prompts
+- Send a voice message in any session topic → Whisper transcribes → sends as prompt
+- New file: `voice-handler.cjs` — OpenAI Whisper API integration
+- Shows "Transcribing..." status, then the transcript before sending
+- Language defaults to Spanish (configurable)
+- Requires `OPENAI_API_KEY` env var
+- Optional `form-data` package for upload (falls back to native fetch)
+
+**Native Message Streaming** — Bot API 9.5 `sendMessageDraft`
+- Live terminal output uses native draft streaming for smoother display
+- Graceful fallback to `editMessageText` if `sendMessageDraft` is unavailable
+- Draft cleared on stream end to remove typing indicator
+- Per-stream `draftFailed` flag prevents retry loops
+
+**GitHub Webhooks** — Push/PR/CI notifications in session topics
+- New file: `github-webhook.cjs` — Express middleware for GitHub webhooks
+- Formats push events (commits), PRs (open/close/merge), issues, workflow runs
+- HMAC-SHA256 signature verification via `GITHUB_WEBHOOK_SECRET`
+- Colored status icons per event type
+
+**PM2 Process Management** — Production-grade process manager
+- New file: `ecosystem.config.cjs` — replaces custom watchdog for production
+- Exponential backoff restart (1s base), 500MB memory limit
+- Log rotation (10MB per file, 5 retained)
+- `npm start` now uses PM2 (`npm run start:watchdog` for legacy)
+
+**Split-Pane Layouts** — Side-by-side sessions from Telegram
+- `/split` — split current session's pane horizontally
+- `/split v` — split vertically
+- New functions: `splitHorizontal()`, `splitVertical()`, `activatePaneDirection()`
+
+**WezTerm Workspaces** — Group sessions by project
+- `/workspace` — list all WezTerm workspaces
+- `/workspace <name>` — switch to a workspace
+- New functions: `listWorkspaces()`, `switchWorkspace()`, `spawnInWorkspace()`
+
+**Inline Mode** — Quick status from any chat
+- Type `@wezbridge_bot` in any Telegram chat for session status
+- Returns status cards with session name, project, pane ID, age
+- Summary card with total/working/idle counts
+- 10-second cache for snappy responses
+
+**ntfy.sh Backup Notifications** — Redundant notification channel
+- New file: `ntfy-notifier.cjs` — push notifications via ntfy.sh
+- Pre-built: `notifyCompletion()`, `notifyError()`, `notifyPermission()`, `notifyStatus()`
+- Configurable server, topic, and auth token
+- Requires `NTFY_TOPIC` + `NTFY_ENABLED=true`
+
+**WezTerm SSH Domains** — Remote terminal sessions
+- `/remote [domain]` — spawn a pane on a remote SSH domain
+- Defaults to `openclaw` domain (configurable in `~/.wezterm.lua`)
+- New function: `spawnSshDomain()` in wezterm.cjs
+
+**Smart Reconnect** — Auto-spawn on reboot
+- `/reconnect` after PC reboot detects topic name → resolves project → auto-spawns
+- No more "No running panes found" dead end
+- `/projects` from inside a topic reuses that topic (no duplicate topics)
+
+### Changed
+
+- **Keyboard buttons** reorganized to 2 rows of 3 with emoji prefixes (▶️🧪💾📊🗜🔍)
+- **Permission buttons** renamed: Yes→Approve, No→Reject with 🚫 icon
+- **Project spawn buttons** prefixed with 🚀
+- **Pane filter** improved — bare bash shells no longer shown in `/reconnect`
+- `telegram-bot.cjs` — ~2400 lines (up from ~1900 in V2.1)
+- `wezterm.cjs` — now exports 10 functions (up from 6)
+
+### New Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `OPENAI_API_KEY` | For voice | Whisper API transcription |
+| `GITHUB_WEBHOOK_SECRET` | No | GitHub webhook HMAC verification |
+| `NTFY_TOPIC` | For ntfy | ntfy.sh topic name |
+| `NTFY_SERVER` | No | ntfy.sh server URL (default: https://ntfy.sh) |
+| `NTFY_TOKEN` | No | ntfy.sh auth token |
+| `NTFY_ENABLED` | For ntfy | Set to 'true' to enable |
+
+### New Files
+
+| File | Purpose |
+|------|---------|
+| `voice-handler.cjs` | Whisper voice transcription |
+| `github-webhook.cjs` | GitHub webhook event formatter |
+| `ntfy-notifier.cjs` | ntfy.sh backup notifications |
+| `ecosystem.config.cjs` | PM2 process management config |
+
+---
+
 ## [2.1.0] - 2025-03-10
 
 ### Added

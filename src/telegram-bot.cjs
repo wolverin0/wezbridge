@@ -33,6 +33,7 @@ const projectScanner = require('./project-scanner.cjs');
 const NotificationManager = require('./notification-manager.cjs');
 const PluginLoader = require('./plugin-loader.cjs');
 const clawtrol = require('./clawtrol-sync.cjs');
+const voiceHandler = require('./voice-handler.cjs');
 const fs = require('fs');
 const path = require('path');
 
@@ -181,7 +182,7 @@ function restoreState(state) {
   for (const [sessionId, stream] of Object.entries(state.liveStreams || {})) {
     const session = sm.getSession(sessionId);
     if (session) {
-      liveStreams.set(sessionId, { lastHash: 0, lastSentAt: 0, messageId: stream.messageId || null });
+      liveStreams.set(sessionId, { lastHash: 0, lastSentAt: 0, messageId: stream.messageId || null, draftFailed: false });
       console.log(`${T.live} Restored live stream for ${c.green}${session.name || sessionId}${c.reset}`);
     }
   }
@@ -191,7 +192,7 @@ function restoreState(state) {
 
 // --- Config ---
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const GROUP_ID = process.env.TELEGRAM_GROUP_ID ? Number(process.env.TELEGRAM_GROUP_ID) : null;
+const GROUP_ID = process.env.TELEGRAM_GROUP_ID ? Number(process.env.TELEGRAM_GROUP_ID) : -1003748927245;
 const POLL_MS = parseInt(process.env.TELEGRAM_POLL_MS || '3000', 10);
 const THINKING_TIMEOUT_MS = 30000;
 const THINKING_UPDATE_MS = 30000;
@@ -309,6 +310,40 @@ function sendDocument(chatId, doc, opts = {}, fileOpts = {}) {
   );
 }
 
+// --- Message Reactions (V3 Phase 1A) ---
+async function setReaction(chatId, messageId, emoji) {
+  try {
+    await bot._request('setMessageReaction', {
+      form: {
+        chat_id: chatId,
+        message_id: messageId,
+        reaction: JSON.stringify([{ type: 'emoji', emoji }]),
+      },
+    });
+  } catch { /* silent — reactions are enhancement, not critical */ }
+}
+
+// --- Native Message Streaming (V3 Phase 2A) ---
+// Uses Bot API 9.5 sendMessageDraft for smoother streaming
+async function sendDraft(chatId, messageThreadId, text, draftId) {
+  try {
+    const result = await bot._request('sendMessageDraft', {
+      form: {
+        chat_id: chatId,
+        message_thread_id: messageThreadId,
+        text: text,
+        draft_id: draftId,
+        parse_mode: 'HTML',
+      },
+    });
+    return result;
+  } catch (err) {
+    // Fallback: sendMessageDraft may not be supported by the library version
+    // Return null to signal caller should use editMessageText instead
+    return null;
+  }
+}
+
 // --- Notification Manager (Phase 6) ---
 const notifier = new NotificationManager({
   sendMsg,
@@ -327,12 +362,12 @@ function actionKeyboard(promptType) {
       reply_markup: {
         inline_keyboard: [
           [
-            { text: '\u2705 Yes', callback_data: 'action:approve' },
+            { text: '\u2705 Approve', callback_data: 'action:approve' },
             { text: '\u2705 Always', callback_data: 'action:approve-always' },
-            { text: '\u274c No', callback_data: 'action:reject' },
+            { text: '\ud83d\udeab Reject', callback_data: 'action:reject' },
           ],
           [
-            { text: 'View Details', callback_data: 'action:status' },
+            { text: '\ud83d\udd0d View Details', callback_data: 'action:status' },
           ],
         ],
       },
@@ -344,8 +379,8 @@ function actionKeyboard(promptType) {
       reply_markup: {
         inline_keyboard: [
           [
-            { text: 'Continue', callback_data: 'action:continue' },
-            { text: 'Status', callback_data: 'action:status' },
+            { text: '\u25b6\ufe0f Continue', callback_data: 'action:continue' },
+            { text: '\ud83d\udcca Status', callback_data: 'action:status' },
           ],
         ],
       },
@@ -357,16 +392,14 @@ function actionKeyboard(promptType) {
     reply_markup: {
       inline_keyboard: [
         [
-          { text: 'Continue', callback_data: 'action:continue' },
-          { text: 'Run Tests', callback_data: 'action:tests' },
+          { text: '\u25b6\ufe0f Continue', callback_data: 'action:continue' },
+          { text: '\ud83e\uddea Tests', callback_data: 'action:tests' },
+          { text: '\ud83d\udcbe Commit', callback_data: 'action:commit' },
         ],
         [
-          { text: 'Commit', callback_data: 'action:commit' },
-          { text: 'View Diff', callback_data: 'action:diff' },
-        ],
-        [
-          { text: 'Compact', callback_data: 'action:compact' },
-          { text: 'Review', callback_data: 'action:review' },
+          { text: '\ud83d\udcca Diff', callback_data: 'action:diff' },
+          { text: '\ud83d\udddc Compact', callback_data: 'action:compact' },
+          { text: '\ud83d\udd0d Review', callback_data: 'action:review' },
         ],
       ],
     },
@@ -472,10 +505,28 @@ async function handleSpawn(msg, match) {
       // Session exists but no topic — create topic and link it
     }
 
-    const topic = await bot.createForumTopic(GROUP_ID, projectName, {
-      icon_color: 7322096,
-    });
-    const topicId = topic.message_thread_id;
+    // Check if a topic already exists for this project (e.g. after reboot)
+    // Scan sessionToTopic for matching projectName to reuse the topic
+    let topicId = null;
+    if (msg.message_thread_id) {
+      // User invoked from inside a topic — reuse that topic
+      topicId = msg.message_thread_id;
+    } else {
+      // Check if we had a topic for this project before
+      for (const [, info] of sessionToTopic) {
+        if (info.projectName && info.projectName.toLowerCase() === projectName.toLowerCase()) {
+          topicId = info.topicId;
+          break;
+        }
+      }
+    }
+
+    if (!topicId) {
+      const topic = await bot.createForumTopic(GROUP_ID, projectName, {
+        icon_color: 7322096,
+      });
+      topicId = topic.message_thread_id;
+    }
 
     let session;
     if (existingSession) {
@@ -612,7 +663,7 @@ async function handleProjects(msg, page = 0) {
 
   // Inline buttons — one per project on this page
   const buttons = pageProjects.map(p => [{
-    text: p.name,
+    text: `\ud83d\ude80 ${p.name}`,
     callback_data: `spawn:${p.name.slice(0, 40)}`,
   }]);
 
@@ -776,8 +827,8 @@ async function handleExport(msg) {
       message_thread_id: topicId,
       caption: `Session export: ${history.length} exchanges`,
     }, {
-      filename: `${projectName}-${sessionId}.md`,
-      contentType: 'text/markdown',
+      filename: `${projectName}-${sessionId}.txt`,
+      contentType: 'text/plain',
     });
   } catch (err) {
     await sendMsg(chatId, `Export failed: ${outputParser.escapeHtml(err.message)}`, {
@@ -990,8 +1041,8 @@ async function handleDump(msg) {
             message_thread_id: topicId,
             caption: `Pre-compaction snapshot (${snapStripped.length} chars, ~${snapStripped.split('\n').length} lines)`,
           }, {
-            filename: `${session.name}-precompact-${Date.now()}.md`,
-            contentType: 'text/markdown',
+            filename: `${session.name}-precompact-${Date.now()}.txt`,
+            contentType: 'text/plain',
           });
         }
       }
@@ -1003,8 +1054,8 @@ async function handleDump(msg) {
       message_thread_id: topicId,
       caption: `Full terminal dump (${stripped.length} chars, ~${stripped.split('\n').length} lines)`,
     }, {
-      filename: `${session.name}-dump-${Date.now()}.md`,
-      contentType: 'text/markdown',
+      filename: `${session.name}-dump-${Date.now()}.txt`,
+      contentType: 'text/plain',
     });
   } catch (err) {
     await sendMsg(chatId, `Dump failed: ${outputParser.escapeHtml(err.message)}`, {
@@ -1041,13 +1092,18 @@ async function handleLive(msg) {
 
   // Toggle
   if (liveStreams.has(sessionId)) {
+    const stream = liveStreams.get(sessionId);
+    // Clear draft on toggle-off (V3 Phase 2A)
+    if (stream && !stream.draftFailed) {
+      sendDraft(chatId, topicId, '', `wezbridge-${sessionId}`).catch(() => {});
+    }
     liveStreams.delete(sessionId);
     return sendMsg(chatId, '<b>Live stream OFF</b> for ' + outputParser.escapeHtml(session.name), {
       message_thread_id: topicId,
     });
   }
 
-  liveStreams.set(sessionId, { lastHash: 0, lastSentAt: 0, messageId: null });
+  liveStreams.set(sessionId, { lastHash: 0, lastSentAt: 0, messageId: null, draftFailed: false });
   return sendMsg(chatId, '<b>Live stream ON</b> \u2014 terminal updates will appear here in near real-time.\nUse /live again to stop.', {
     message_thread_id: topicId,
   });
@@ -1166,16 +1222,34 @@ async function processLiveStream(sessionId) {
     let html = '';
     for (let attempt = 0; attempt < 5; attempt++) {
       const body = outputParser.escapeHtml(showLines.join('\n'));
-      html = `${header}<pre><code class="language-text">${body}</code></pre>`;
+      html = `${header}<pre><code class="language-bash">${body}</code></pre>`;
       if (html.length <= 4050) break;
       showLines = showLines.slice(Math.ceil(showLines.length * 0.2));
     }
     if (html.length > 4050) {
       const body = outputParser.escapeHtml(showLines.slice(-15).join('\n'));
-      html = `${header}<pre><code class="language-text">${body}</code></pre>`;
+      html = `${header}<pre><code class="language-bash">${body}</code></pre>`;
     }
 
-    // Try edit, then send, with plain-text fallback on HTML parse failure
+    // Try native draft streaming first (Bot API 9.5)
+    if (!stream.draftFailed) {
+      const draftResult = await sendDraft(
+        info.chatId,
+        info.topicId,
+        html,
+        `wezbridge-${sessionId}` // stable draft ID per session
+      );
+      if (draftResult) {
+        stream.lastSentAt = now;
+        stream.lastHash = hash;
+        return; // Draft streaming worked
+      }
+      // Mark as failed so we don't retry every update
+      stream.draftFailed = true;
+      console.log(`${T.live} Draft streaming unavailable, falling back to editMessageText`);
+    }
+
+    // Fallback: edit message (legacy approach) with plain-text fallback on HTML parse failure
     const sendOrEdit = async (text, opts) => {
       try {
         if (stream.messageId) {
@@ -1221,18 +1295,54 @@ async function handleReconnect(msg) {
   if (!session) {
     try {
       const panes = wez.listPanes();
-      const claudePanes = panes.filter(p =>
-        (p.title && /claude/i.test(p.title)) || p.is_zoomed === false
-      );
+      // Filter for panes that look like Claude sessions (not bare shells)
+      const claudePanes = panes.filter(p => {
+        const title = (p.title || '').toLowerCase();
+        const cwd = (p.cwd || '').toLowerCase();
+        // Match panes with "claude" in title, or panes in project directories
+        return /claude/i.test(title) || /py apps/i.test(cwd) || /\.claude/i.test(cwd);
+      });
 
       if (claudePanes.length === 0) {
-        return sendMsg(chatId, '<i>No running Claude panes found in WezTerm.</i>', { message_thread_id: topicId });
+        // No panes at all (e.g. after reboot) — offer to spawn a new session
+        // and link it to THIS existing topic instead of creating a new one
+        const topicName = msg.reply_to_message?.forum_topic_created?.name || '';
+        const projectPath = topicName ? resolveProjectPath(topicName) : null;
+
+        if (projectPath) {
+          // Auto-spawn: we know which project this topic belongs to
+          const newSession = sm.spawnSession({
+            project: projectPath,
+            name: topicName,
+            continueSession: true,
+            dangerouslySkipPermissions: true,
+          });
+          sessionToTopic.set(newSession.id, { topicId, chatId: GROUP_ID, projectName: topicName });
+          topicToSession.set(topicId, newSession.id);
+          wez.setTabTitle(newSession.paneId, topicName);
+          saveState();
+
+          return sendMsg(chatId, [
+            `<b>Reconnected: ${outputParser.escapeHtml(topicName)}</b>`,
+            `New session spawned (--continue --yolo)`,
+            `Pane: <code>${newSession.paneId}</code>`,
+          ].join('\n'), {
+            message_thread_id: topicId,
+          });
+        }
+
+        // Can't auto-detect project — show spawn button
+        return sendMsg(chatId, [
+          '<i>No running panes found (WezTerm may have restarted).</i>',
+          '',
+          topicName
+            ? `Could not resolve project "<b>${outputParser.escapeHtml(topicName)}</b>".`
+            : 'Could not detect project name from topic.',
+          'Use <code>/spawn &lt;project&gt; --continue --yolo</code> in this topic to respawn.',
+        ].filter(Boolean).join('\n'), { message_thread_id: topicId });
       }
 
-      // Try to find a pane that matches this topic's name
-      const topicName = msg.message?.reply_to_message?.forum_topic_created?.name || '';
-
-      // Show panes as buttons to pick from
+      // Panes exist — show them as buttons to pick from
       const buttons = claudePanes.map(p => {
         const label = `Pane ${p.pane_id}: ${p.title || 'unknown'}`;
         return [{ text: label, callback_data: `reconnect:${p.pane_id}` }];
@@ -1288,8 +1398,8 @@ async function handleReconnect(msg) {
           message_thread_id: topicId,
           caption: `Full response (${response.length} chars)`,
         }, {
-          filename: `${session.name}-reconnect.md`,
-          contentType: 'text/markdown',
+          filename: `${session.name}-reconnect.txt`,
+          contentType: 'text/plain',
         }).catch(() => {});
       }
 
@@ -1369,13 +1479,102 @@ bot.onText(/\/task\s*(.*)/, (msg, match) => handleTask(msg, match[1]));
 bot.onText(/\/help$/, (msg) => handleHelp(msg));
 bot.onText(/\/start$/, (msg) => handleHelp(msg));
 
+// /split — split current session's pane
+bot.onText(/\/split(?:\s+(.+))?/, async (msg, match) => {
+  const topicId = msg.message_thread_id;
+  if (!topicId) return sendMsg(msg.chat.id, 'Use /split inside a session topic.');
+
+  const sessionId = topicToSession.get(topicId);
+  if (!sessionId) return sendMsg(msg.chat.id, 'No session in this topic.', { message_thread_id: topicId });
+
+  const session = sm.getSession(sessionId);
+  if (!session) return sendMsg(msg.chat.id, 'Session not found.', { message_thread_id: topicId });
+
+  const arg = (match[1] || '').trim().toLowerCase();
+  const direction = arg === 'v' || arg === 'vertical' ? 'vertical' : 'horizontal';
+
+  try {
+    const newPaneId = direction === 'horizontal'
+      ? wez.splitHorizontal(session.paneId, { cwd: session.project })
+      : wez.splitVertical(session.paneId, { cwd: session.project });
+
+    await sendMsg(msg.chat.id, [
+      `<b>Split ${direction}</b>`,
+      `Original pane: <code>${session.paneId}</code>`,
+      `New pane: <code>${newPaneId}</code>`,
+    ].join('\n'), { message_thread_id: topicId });
+  } catch (err) {
+    await sendMsg(msg.chat.id, `Split failed: ${outputParser.escapeHtml(err.message)}`, { message_thread_id: topicId });
+  }
+});
+
+// /workspace — list or switch WezTerm workspaces
+bot.onText(/\/workspace(?:\s+(.+))?/, async (msg, match) => {
+  const arg = (match[1] || '').trim();
+
+  if (!arg) {
+    // List workspaces
+    const workspaces = wez.listWorkspaces();
+    if (workspaces.length === 0) {
+      return sendMsg(msg.chat.id, '<i>No workspaces found</i>', {
+        message_thread_id: msg.message_thread_id,
+      });
+    }
+    const list = workspaces.map(w => `  \u2022 <code>${outputParser.escapeHtml(w)}</code>`).join('\n');
+    return sendMsg(msg.chat.id, `<b>WezTerm Workspaces:</b>\n${list}`, {
+      message_thread_id: msg.message_thread_id,
+    });
+  }
+
+  // Switch to workspace
+  try {
+    wez.switchWorkspace(arg);
+    await sendMsg(msg.chat.id, `Switched to workspace: <code>${outputParser.escapeHtml(arg)}</code>`, {
+      message_thread_id: msg.message_thread_id,
+    });
+  } catch (err) {
+    await sendMsg(msg.chat.id, `Workspace switch failed: ${outputParser.escapeHtml(err.message)}`, {
+      message_thread_id: msg.message_thread_id,
+    });
+  }
+});
+
+// /remote — spawn a session on a remote SSH domain
+bot.onText(/\/remote(?:\s+(.+))?/, async (msg, match) => {
+  const arg = (match[1] || '').trim();
+  const domain = arg || 'openclaw'; // default SSH domain name
+
+  try {
+    const paneId = wez.spawnSshDomain(domain);
+    wez.setTabTitle(paneId, `remote:${domain}`);
+
+    await sendMsg(msg.chat.id, [
+      `<b>\ud83c\udf10 Remote session spawned</b>`,
+      `Domain: <code>${outputParser.escapeHtml(domain)}</code>`,
+      `Pane: <code>${paneId}</code>`,
+      `<i>Note: Configure SSH domain in ~/.wezterm.lua</i>`,
+    ].join('\n'), {
+      message_thread_id: msg.message_thread_id,
+    });
+  } catch (err) {
+    await sendMsg(msg.chat.id, [
+      `<b>Remote spawn failed</b>`,
+      `Domain: <code>${outputParser.escapeHtml(domain)}</code>`,
+      `Error: ${outputParser.escapeHtml(err.message)}`,
+      `<i>Ensure SSH domain "${outputParser.escapeHtml(domain)}" is configured in ~/.wezterm.lua</i>`,
+    ].join('\n'), {
+      message_thread_id: msg.message_thread_id,
+    });
+  }
+});
+
 // --- Message handler: text/photo/document in topic → inject as prompt ---
 bot.on('message', async (msg) => {
   if (msg.text && msg.text.startsWith('/')) return;
   // Ignore bot's own messages
   if (msg.from && msg.from.is_bot) return;
   // Must have text, photo, or document
-  if (!msg.text && !msg.caption && !msg.photo && !msg.document) return;
+  if (!msg.text && !msg.caption && !msg.photo && !msg.document && !msg.voice) return;
 
   const topicId = msg.message_thread_id;
   if (!topicId) return;
@@ -1440,15 +1639,66 @@ bot.on('message', async (msg) => {
       console.log(`${T.doc} Saved: ${c.dim}${localPath}${c.reset}`);
     }
 
+    // Handle voice messages — transcribe via Whisper
+    if (msg.voice) {
+      if (!voiceHandler.isAvailable()) {
+        await sendMsg(msg.chat.id, '<i>Voice transcription unavailable (OPENAI_API_KEY not set)</i>', {
+          parse_mode: 'HTML',
+          message_thread_id: topicId,
+        });
+        return;
+      }
+      try {
+        const fileInfo = await bot.getFile(msg.voice.file_id);
+        const url = `https://api.telegram.org/file/bot${TOKEN}/${fileInfo.file_path}`;
+        const ext = path.extname(fileInfo.file_path) || '.ogg';
+        const localPath = await voiceHandler.downloadFile(url, `voice-${Date.now()}${ext}`);
+
+        // Show transcribing status
+        const statusMsg = await sendMsg(msg.chat.id, '<i>Transcribing voice...</i>', {
+          message_thread_id: topicId,
+        });
+
+        const transcript = await voiceHandler.transcribe(localPath);
+
+        // Clean up status message
+        if (statusMsg) {
+          bot.deleteMessage(msg.chat.id, statusMsg.message_id).catch(() => {});
+        }
+
+        if (!transcript || !transcript.trim()) {
+          await sendMsg(msg.chat.id, '<i>Could not transcribe voice message</i>', {
+            message_thread_id: topicId,
+          });
+          return;
+        }
+
+        // Show what was transcribed
+        await sendMsg(msg.chat.id, `<i>"${outputParser.escapeHtml(transcript)}"</i>`, {
+          message_thread_id: topicId,
+        });
+
+        promptText = transcript;
+        // Clean up temp file
+        try { fs.unlinkSync(localPath); } catch { /* ignore */ }
+      } catch (err) {
+        await sendMsg(msg.chat.id, `<i>Voice transcription failed: ${outputParser.escapeHtml(err.message)}</i>`, {
+          message_thread_id: topicId,
+        });
+        return;
+      }
+    }
+
     if (!promptText) return;
 
     sm.sendPrompt(sessionId, promptText);
+    setReaction(msg.chat.id, msg.message_id, '\u23f3'); // hourglass while working
     // Only show thinking timer if live mode is off
     if (!liveStreams.has(sessionId)) {
       startThinkingTimer(sessionId);
     }
     // Auto-delete user's prompt + ack after 3 seconds (keeps chat clean)
-    const ack = msg.photo ? 'Photo sent' : msg.document ? 'File sent' : '\u2705';
+    const ack = msg.photo ? 'Photo sent' : msg.document ? 'File sent' : msg.voice ? 'Voice sent' : '\u2705';
     bot.sendMessage(msg.chat.id, `<i>${ack}</i>`, {
       parse_mode: 'HTML',
       message_thread_id: topicId,
@@ -1563,7 +1813,7 @@ bot.on('callback_query', async (query) => {
             await bot.sendDocument(query.message.chat.id, buf, {
               message_thread_id: topicId,
               caption: `Full response (${stripped.length} chars)`,
-            }, { filename: 'response.md', contentType: 'text/markdown' });
+            }, { filename: 'response.txt', contentType: 'text/plain' });
           } else {
             await sendMsg(query.message.chat.id, `<pre><code class="language-text">${outputParser.escapeHtml(stripped)}</code></pre>`, {
               message_thread_id: topicId,
@@ -1753,6 +2003,75 @@ bot.on('callback_query', async (query) => {
   }
 });
 
+// --- Inline Mode (V3 Phase 3C) ---
+// @wezbridge_bot status — quick session status from any chat
+bot.on('inline_query', async (query) => {
+  try {
+    const sessions = sm.listSessions();
+    if (sessions.length === 0) {
+      return bot.answerInlineQuery(query.id, [{
+        type: 'article',
+        id: 'no-sessions',
+        title: 'No active sessions',
+        input_message_content: { message_text: 'No active WezBridge sessions.' },
+      }]);
+    }
+
+    const results = sessions.slice(0, 10).map((s, i) => {
+      const icon = s.status === 'running' ? '\u23f3' : s.status === 'waiting' ? '\u2705' : s.status === 'error' ? '\u274c' : '\u23f8';
+      const name = s.name || s.id;
+      const project = s.project ? s.project.split(/[/\\]/).pop() : 'unknown';
+      const age = s.lastActivity
+        ? Math.round((Date.now() - new Date(s.lastActivity).getTime()) / 60000) + 'm ago'
+        : 'unknown';
+
+      return {
+        type: 'article',
+        id: `session-${i}-${s.id}`,
+        title: `${icon} ${name}`,
+        description: `${project} \u2014 ${s.status} \u2014 ${age}`,
+        input_message_content: {
+          message_text: [
+            `${icon} <b>${outputParser.escapeHtml(name)}</b>`,
+            `Project: <code>${outputParser.escapeHtml(project)}</code>`,
+            `Status: ${s.status}`,
+            `Pane: ${s.paneId || 'N/A'}`,
+            `Last activity: ${age}`,
+          ].join('\n'),
+          parse_mode: 'HTML',
+        },
+      };
+    });
+
+    // Add summary as first result
+    const running = sessions.filter(s => s.status === 'running').length;
+    const waiting = sessions.filter(s => s.status === 'waiting').length;
+    results.unshift({
+      type: 'article',
+      id: 'summary',
+      title: `\ud83d\udcca ${sessions.length} sessions`,
+      description: `${running} working, ${waiting} idle`,
+      input_message_content: {
+        message_text: [
+          `<b>\ud83d\udcca WezBridge Status</b>`,
+          `Sessions: ${sessions.length}`,
+          `Working: ${running}`,
+          `Idle: ${waiting}`,
+          `Updated: ${new Date().toLocaleTimeString()}`,
+        ].join('\n'),
+        parse_mode: 'HTML',
+      },
+    });
+
+    await bot.answerInlineQuery(query.id, results, { cache_time: 10 });
+  } catch (err) {
+    console.error('[inline] Query error:', err.message);
+    try {
+      await bot.answerInlineQuery(query.id, [], { cache_time: 5 });
+    } catch { /* ignore */ }
+  }
+});
+
 // ============================================================
 // Completion poll loop (Phase 1: diffs, Phase 3: dynamic buttons)
 // ============================================================
@@ -1787,6 +2106,12 @@ function startCompletionLoop() {
 
       try {
         await deleteThinkingMessage(session.id);
+
+        // Clear draft on completion (V3 Phase 2A)
+        const stream = liveStreams.get(session.id);
+        if (stream && !stream.draftFailed) {
+          sendDraft(info.chatId, info.topicId, '', `wezbridge-${session.id}`).catch(() => {});
+        }
 
         // Get Claude's response
         const raw = wez.getFullText(session.paneId, 500);
@@ -1852,6 +2177,13 @@ function startCompletionLoop() {
             ...cardKeyboard,
           });
           if (sent) completionCards.set(session.id, { messageId: sent.message_id, chatId: info.chatId, topicId: info.topicId });
+        }
+
+        // React on the completion card
+        const card = completionCards.get(session.id);
+        if (card) {
+          const reactionEmoji = session.promptType === 'permission' ? '\u2753' : '\u2705';
+          setReaction(card.chatId, card.messageId, reactionEmoji);
         }
 
         // Store history
