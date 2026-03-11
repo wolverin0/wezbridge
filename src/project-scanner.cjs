@@ -208,22 +208,32 @@ function friendlyTool(name) {
  */
 function getSessionCost(sessionFile) {
   const result = { costUsd: 0, inputTokens: 0, outputTokens: 0 };
-  const content = readLastBytes(sessionFile, 30000);
+  // Read last 100KB to get recent assistant messages with usage data
+  const content = readLastBytes(sessionFile, 100000);
 
   for (const line of content.split('\n')) {
     if (!line.trim()) continue;
     try {
       const d = JSON.parse(line);
+      // Check for legacy summary type
       if (d.type === 'summary') {
         result.costUsd = d.costUSD || d.cost_usd || 0;
         result.inputTokens = d.inputTokens || d.input_tokens || 0;
         result.outputTokens = d.outputTokens || d.output_tokens || 0;
-      } else if (d.costUSD || d.cost_usd) {
-        result.costUsd = d.costUSD || d.cost_usd || 0;
+        return result;
+      }
+      // Parse actual Claude JSONL usage from assistant messages
+      const u = d.message?.usage;
+      if (u && d.type === 'assistant') {
+        const inp = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0);
+        const out = u.output_tokens || 0;
+        result.inputTokens += inp;
+        result.outputTokens += out;
       }
     } catch { continue; }
   }
-
+  // Estimate cost: blended rate ~$6/M input, ~$30/M output
+  result.costUsd = (result.inputTokens * 6 / 1e6) + (result.outputTokens * 30 / 1e6);
   return result;
 }
 

@@ -127,8 +127,8 @@ function markdownToHtml(text) {
   // Bold **text**
   processed = processed.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
 
-  // Italic *text*
-  processed = processed.replace(/\*(.+?)\*/g, '<i>$1</i>');
+  // Italic *text* — require whitespace/boundary around asterisks to avoid matching globs like *.js
+  processed = processed.replace(/(?<=\s|^)\*([^*\n]+?)\*(?=\s|[.,;:!?]|$)/gm, '<i>$1</i>');
 
   return processed.trim();
 }

@@ -1,5 +1,47 @@
 # Changelog
 
+## [3.1.0] - 2026-03-11
+
+### Added
+
+**Telegram Mini App Dashboard** — Full mission control inside Telegram
+- 4-tab dashboard: Sessions, Projects, Costs, Files
+- Session cards with live SSE streaming terminal output viewer
+- Action buttons: Continue, Tests, Commit, Compact, Kill
+- Projects tab with search/filter, tap to spawn sessions directly
+- Costs tab with real token usage and USD estimates (today/week/all time)
+- Files tab with git diff browser — see changed files and expand diffs
+- Telegram WebApp SDK integration (dark theme, haptic feedback)
+- WebApp auth via initData HMAC-SHA256 validation (dev mode passthrough)
+- Dashboard accessible via inline button from `/dashboard` in group
+- Registered as BotFather Mini App
+
+**Dashboard Spawn Integration** — Spawns from dashboard create Telegram topics
+- `session:spawned-api` event bridges server → bot for topic creation
+- Sessions spawned from dashboard get their own forum topic automatically
+
+**Improved /reconnect** — Filters panes by project name
+- Shows only panes matching the current topic's project
+- Falls back to all Claude panes if no match
+
+**New API Endpoints**
+- `GET /api/projects` — list all Claude projects with friendly names
+- `GET /api/costs` — cost summary (today/week/all time)
+- `GET /api/session/:id/output` — one-shot terminal output
+- `GET /api/session/:id/stream` — SSE live streaming output
+- `GET /api/files?project=` — git status (changed files with +/- counts)
+- `GET /api/files/diff?project=&file=` — file diff viewer
+- `POST /api/spawn` — spawn session from dashboard
+
+### Fixed
+
+- Kill button now properly removes sessions (uses `sm.killSession()`)
+- Continue action sends Enter key to actually resume Claude
+- Spawn from `/projects` no longer crashes on deleted topics
+- Session reuse sends to correct topic (catches stale topic errors)
+- Cost parser now reads Claude JSONL usage format (was always $0)
+- Project names show friendly names instead of encoded paths
+
 ## [3.0.0] - 2026-03-10
 
 ### Added

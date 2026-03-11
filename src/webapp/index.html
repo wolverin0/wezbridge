@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>WezBridge Dashboard</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root {
+  --bg: var(--tg-theme-bg-color, #1a1a2e);
+  --card-bg: var(--tg-theme-secondary-bg-color, #16213e);
+  --text: var(--tg-theme-text-color, #e2e8f0);
+  --hint: var(--tg-theme-hint-color, #94a3b8);
+  --accent: var(--tg-theme-button-color, #6366f1);
+  --accent-text: var(--tg-theme-button-text-color, #ffffff);
+  --green: #22c55e; --orange: #f59e0b; --red: #ef4444;
+  --blue: #3b82f6; --purple: #a855f7; --indigo: #6366f1;
+  --border: rgba(255,255,255,0.08);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg); color: var(--text);
+  min-height: 100vh; padding-bottom: 64px;
+  -webkit-font-smoothing: antialiased;
+}
+.header {
+  position: sticky; top: 0; z-index: 10;
+  background: var(--bg); padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.header-row { display: flex; align-items: center; justify-content: space-between; }
+.title { font-size: 20px; font-weight: 700; letter-spacing: -0.3px; }
+.badge {
+  font-size: 11px; font-weight: 600; padding: 2px 8px;
+  border-radius: 10px; margin-left: 8px;
+  background: var(--accent); color: var(--accent-text);
+}
+.conn-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--green); transition: background 0.3s;
+}
+.conn-dot.offline { background: var(--red); }
+.stats { display: flex; gap: 16px; margin-top: 8px; font-size: 13px; color: var(--hint); }
+.stats .n { color: var(--text); font-weight: 600; }
+.search-bar { display:flex; margin:10px 16px 6px; padding:8px 12px; background:var(--card-bg); border:1px solid var(--border); border-radius:10px; font-size:14px; color:var(--text); width:calc(100% - 32px); outline:none; }
+.search-bar::placeholder { color:var(--hint); }
+.sort-row { display:flex; gap:6px; padding:4px 16px 8px; font-size:12px; overflow-x:auto; }
+.sort-btn { padding:4px 10px; border-radius:12px; border:1px solid var(--border); background:transparent; color:var(--hint); font-size:12px; cursor:pointer; white-space:nowrap; }
+.sort-btn.active { background:var(--accent); color:var(--accent-text); border-color:var(--accent); }
+
+.tab-content { display: none; padding: 10px 16px; }
+.tab-content.active { display: flex; flex-direction: column; gap: 10px; }
+
+.card {
+  background: var(--card-bg); border: 1px solid var(--border);
+  border-radius: 12px; padding: 14px; transition: opacity 0.3s;
+  animation: fadeIn 0.25s ease-out;
+}
+.card-head { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.dot {
+  width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+}
+.dot.idle { background: var(--green); }
+.dot.working { background: var(--orange); animation: pulse 1.4s infinite; }
+.dot.error { background: var(--red); }
+.dot.stopped { background: #64748b; }
+@keyframes pulse {
+  0%,100% { opacity:1; transform:scale(1); }
+  50% { opacity:0.5; transform:scale(1.3); }
+}
+.s-name { font-weight: 600; font-size: 15px; flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.s-time { font-size: 12px; color: var(--hint); white-space: nowrap; }
+.s-meta {
+  margin: 6px 0 0 20px; font-size: 12px; color: var(--hint);
+  font-family: 'SF Mono','Fira Code',Consolas,monospace;
+  display: flex; gap: 12px;
+}
+.s-meta .proj { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.s-actions { display: flex; gap: 6px; margin: 10px 0 0 20px; flex-wrap: wrap; }
+
+.btn {
+  font-size: 12px; font-weight: 600; padding: 5px 12px; border-radius: 14px;
+  border: none; cursor: pointer; transition: opacity 0.15s, transform 0.1s;
+  -webkit-tap-highlight-color: transparent;
+}
+.btn:active { transform: scale(0.95); opacity: 0.8; }
+.btn:disabled { opacity: 0.4; pointer-events: none; }
+.btn-green { background: var(--green); color: #fff; }
+.btn-blue { background: var(--blue); color: #fff; }
+.btn-purple { background: var(--purple); color: #fff; }
+.btn-indigo { background: var(--indigo); color: #fff; }
+.btn-kill { background: transparent; color: var(--red); border: 1.5px solid var(--red); }
+.btn-refresh { background: var(--accent); color: var(--accent-text); font-size: 11px; padding: 3px 10px; }
+
+.output-viewer { display:none; margin-top:10px; border-top:1px solid var(--border); padding-top:10px; }
+.output-viewer.open { display:block; }
+.output-viewer pre { background:rgba(0,0,0,0.3); border-radius:8px; padding:10px; font-size:11px; line-height:1.4; color:var(--hint); font-family:'SF Mono','Fira Code',Consolas,monospace; max-height:300px; overflow:auto; white-space:pre-wrap; word-break:break-all; }
+.output-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+.output-label { font-size:12px; color:var(--hint); }
+
+.proj-card { cursor: pointer; }
+.proj-name { font-weight: 600; font-size: 15px; }
+.proj-path {
+  font-size: 12px; color: var(--hint); margin-top: 4px;
+  font-family: 'SF Mono','Fira Code',Consolas,monospace;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.proj-info { display: flex; gap: 14px; margin-top: 6px; font-size: 12px; color: var(--hint); }
+
+.cost-card { padding: 16px; }
+.cost-title { font-size: 13px; color: var(--hint); margin-bottom: 6px; font-weight: 600; }
+.cost-usd { font-size: 24px; font-weight: 700; margin-bottom: 8px; }
+.cost-row { display: flex; gap: 16px; font-size: 12px; color: var(--hint); }
+.cost-bar-wrap { height: 6px; background: rgba(255,255,255,0.06); border-radius: 3px; margin-top: 10px; }
+.cost-bar { height: 100%; border-radius: 3px; background: var(--accent); transition: width 0.5s; }
+
+.empty { text-align: center; padding: 50px 20px; color: var(--hint); font-size: 15px; }
+.empty-icon { font-size: 36px; margin-bottom: 10px; opacity: 0.35; }
+
+.confirm-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:100; display:flex; align-items:center; justify-content:center; }
+.confirm-box { background:var(--card-bg); border:1px solid var(--border); border-radius:16px; padding:24px; width:280px; text-align:center; }
+.confirm-box h3 { font-size:16px; margin-bottom:8px; }
+.confirm-box p { font-size:13px; color:var(--hint); margin-bottom:18px; }
+.confirm-btns { display:flex; gap:10px; justify-content:center; }
+.confirm-btns .btn { padding:8px 20px; font-size:14px; }
+
+.tab-bar {
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 20;
+  display: flex; background: var(--bg); border-top: 1px solid var(--border);
+  padding: 6px 0 env(safe-area-inset-bottom, 6px);
+}
+.tab {
+  flex: 1; background: none; border: none; color: var(--hint);
+  font-size: 13px; font-weight: 600; padding: 8px 0; cursor: pointer;
+  transition: color 0.2s;
+}
+.tab.active { color: var(--accent); }
+
+@keyframes fadeIn { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }
+@media (min-width: 430px) {
+  .tab-content, .header { padding-left: 24px; padding-right: 24px; }
+  .search-bar { width: calc(100% - 48px); margin-left: 24px; }
+  .sort-row { padding-left: 24px; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-row">
+    <div style="display:flex;align-items:center">
+      <span class="title">WezBridge</span><span class="badge">V3</span>
+    </div>
+    <div class="conn-dot" id="connDot" title="Connected"></div>
+  </div>
+  <div class="stats" id="statsRow">
+    <span>Total <b class="n" id="sTotal">0</b></span>
+    <span>Working <b class="n" id="sWork">0</b></span>
+    <span>Idle <b class="n" id="sIdle">0</b></span>
+  </div>
+</div>
+
+<div class="tab-content active" id="paneSessions"></div>
+
+<input class="search-bar" id="projSearch" placeholder="Filter projects..." style="display:none">
+<div class="sort-row" id="sortRow" style="display:none">
+  <button class="sort-btn active" data-sort="lastActive">Last Active</button>
+  <button class="sort-btn" data-sort="name">Name</button>
+  <button class="sort-btn" data-sort="sessions">Sessions</button>
+</div>
+<div class="tab-content" id="paneProjects"></div>
+<div class="tab-content" id="paneCosts"></div>
+<div class="tab-content" id="paneFiles"></div>
+
+<nav class="tab-bar">
+  <button class="tab active" data-tab="sessions">&#9889; Sessions</button>
+  <button class="tab" data-tab="projects">&#128193; Projects</button>
+  <button class="tab" data-tab="costs">&#128176; Costs</button>
+  <button class="tab" data-tab="files">&#128196; Files</button>
+</nav>
+
+<script>
+const tg = window.Telegram?.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+const initData = tg?.initData || '';
+function authHeaders() {
+  return initData ? { 'X-Telegram-Init-Data': initData } : {};
+}
+function authFetch(url, opts = {}) {
+  opts.headers = { ...opts.headers, ...authHeaders() };
+  return fetch(url, opts);
+}
+function haptic() { try { tg?.HapticFeedback?.impactOccurred('light'); } catch(_){} }
+
+const $ = id => document.getElementById(id);
+const esc = s => { const d = document.createElement('div'); d.textContent = s; return d.innerHTML.replace(/'/g, '&#39;'); };
+const stripAnsi = s => s.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+
+function timeAgo(ts) {
+  if (!ts) return '--';
+  const d = Math.max(0, (Date.now() - new Date(ts).getTime()) / 1000 | 0);
+  if (d < 60) return d + 's ago';
+  if (d < 3600) return (d / 60 | 0) + 'm ago';
+  if (d < 86400) return (d / 3600 | 0) + 'h ago';
+  return (d / 86400 | 0) + 'd ago';
+}
+
+function stClass(s) {
+  if (s === 'working' || s === 'busy') return 'working';
+  if (s === 'error' || s === 'crashed') return 'error';
+  if (s === 'stopped' || s === 'dead') return 'stopped';
+  return 'idle';
+}
+
+function lastSeg(p) {
+  if (!p) return '--';
+  return p.replace(/\\/g, '/').split('/').filter(Boolean).pop() || p;
+}
+
+function fmtTokens(n) {
+  if (!n && n !== 0) return '0';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return String(n);
+}
+
+let online = false, activeTab = 'sessions', openOutputs = new Set();
+let projectSort = 'lastActive', projectFilter = '';
+let sessionsCache = [], projectsCache = [], costsCache = null;
+
+function setOnline(v) {
+  if (v === online) return;
+  online = v;
+  $('connDot').classList.toggle('offline', !v);
+  $('connDot').title = v ? 'Connected' : 'Offline';
+}
+
+// --- Tab switching ---
+document.querySelectorAll('.tab').forEach(t => {
+  t.addEventListener('click', () => {
+    haptic();
+    activeTab = t.dataset.tab;
+    document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b === t));
+    $('paneSessions').classList.toggle('active', activeTab === 'sessions');
+    $('paneProjects').classList.toggle('active', activeTab === 'projects');
+    $('paneCosts').classList.toggle('active', activeTab === 'costs');
+    $('paneFiles').classList.toggle('active', activeTab === 'files');
+    $('statsRow').style.display = activeTab === 'sessions' ? 'flex' : 'none';
+    $('projSearch').style.display = activeTab === 'projects' ? 'flex' : 'none';
+    $('sortRow').style.display = activeTab === 'projects' ? 'flex' : 'none';
+    if (activeTab === 'projects') fetchProjects();
+    if (activeTab === 'costs') fetchCosts();
+    if (activeTab === 'files') fetchFiles();
+  });
+});
+
+// --- Sort buttons ---
+$('sortRow').addEventListener('click', e => {
+  const btn = e.target.closest('.sort-btn');
+  if (!btn) return;
+  haptic();
+  projectSort = btn.dataset.sort;
+  $('sortRow').querySelectorAll('.sort-btn').forEach(b => b.classList.toggle('active', b === btn));
+  renderProjects();
+});
+
+$('projSearch').addEventListener('input', e => {
+  projectFilter = e.target.value.toLowerCase();
+  renderProjects();
+});
+
+// --- Session actions ---
+async function doAction(id, action, btn) {
+  haptic(); btn.disabled = true;
+  try {
+    const method = action === 'kill' ? 'POST' : 'POST';
+    await authFetch('/api/session/' + encodeURIComponent(id) + '/action/' + encodeURIComponent(action), { method: 'POST' });
+  } catch(_) {}
+  setTimeout(() => { btn.disabled = false; }, 1500);
+  setTimeout(fetchSessions, 500);
+}
+
+async function toggleOutput(id, el) {
+  haptic();
+  const card = el.closest('.card');
+  const viewer = card.querySelector('.output-viewer');
+  if (viewer.classList.contains('open')) {
+    viewer.classList.remove('open');
+    openOutputs.delete(id);
+    // Close SSE connection
+    if (viewer._sse) { viewer._sse.close(); viewer._sse = null; }
+    return;
+  }
+  openOutputs.add(id);
+  viewer.classList.add('open');
+  const pre = viewer.querySelector('pre');
+  pre.textContent = 'Connecting...';
+
+  // Start SSE stream
+  const sse = new EventSource('/api/session/' + encodeURIComponent(id) + '/stream?initData=' + encodeURIComponent(initData));
+  viewer._sse = sse;
+  let buffer = '';
+  sse.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      buffer += data.delta;
+      // Keep only last 5000 chars to prevent memory issues
+      if (buffer.length > 5000) buffer = buffer.slice(-5000);
+      pre.textContent = stripAnsi(buffer);
+      pre.scrollTop = pre.scrollHeight;
+    } catch(_) {}
+  };
+  sse.onerror = () => {
+    pre.textContent += '\n(connection lost)';
+  };
+}
+
+async function refreshOutput(id, viewer) {
+  const pre = viewer.querySelector('pre');
+  // Close existing SSE and restart
+  if (viewer._sse) { viewer._sse.close(); viewer._sse = null; }
+  pre.textContent = 'Reloading...';
+  try {
+    const r = await authFetch('/api/session/' + encodeURIComponent(id) + '/output');
+    if (!r.ok) throw new Error(r.status);
+    const data = await r.json();
+    pre.textContent = stripAnsi(data.output || '(no output)');
+    pre.scrollTop = pre.scrollHeight;
+  } catch(_) {
+    pre.textContent = '(failed to load output)';
+  }
+}
+
+// --- Render sessions ---
+function renderSessions() {
+  // Close existing SSE connections before re-render
+  document.querySelectorAll('.output-viewer').forEach(v => {
+    if (v._sse) { v._sse.close(); v._sse = null; }
+  });
+  const list = sessionsCache;
+  const el = $('paneSessions');
+  if (!list.length) {
+    el.innerHTML = '<div class="empty"><div class="empty-icon">&#9711;</div>No active sessions</div>';
+    return;
+  }
+  el.innerHTML = list.map(s => {
+    const sc = stClass(s.status);
+    const isOpen = openOutputs.has(s.id);
+    return '<div class="card" data-sid="' + esc(s.id) + '">' +
+      '<div class="card-head" onclick="toggleOutput(\'' + esc(s.id) + '\',this)">' +
+        '<div class="dot ' + sc + '"></div>' +
+        '<span class="s-name">' + esc(s.name || s.id) + '</span>' +
+        '<span class="s-time">' + timeAgo(s.lastActivity) + '</span>' +
+      '</div>' +
+      '<div class="s-meta">' +
+        '<span class="proj">' + esc(lastSeg(s.project)) + '</span>' +
+        '<span>pane ' + esc(String(s.paneId ?? '--')) + '</span>' +
+      '</div>' +
+      '<div class="s-actions">' +
+        '<button class="btn btn-green" onclick="doAction(\'' + esc(s.id) + '\',\'continue\',this)">Continue</button>' +
+        '<button class="btn btn-blue" onclick="doAction(\'' + esc(s.id) + '\',\'tests\',this)">Tests</button>' +
+        '<button class="btn btn-purple" onclick="doAction(\'' + esc(s.id) + '\',\'commit\',this)">Commit</button>' +
+        '<button class="btn btn-indigo" onclick="doAction(\'' + esc(s.id) + '\',\'compact\',this)">Compact</button>' +
+        '<button class="btn btn-kill" onclick="doAction(\'' + esc(s.id) + '\',\'kill\',this)">Kill</button>' +
+      '</div>' +
+      '<div class="output-viewer' + (isOpen ? ' open' : '') + '">' +
+        '<div class="output-header">' +
+          '<span class="output-label">Terminal Output</span>' +
+          '<button class="btn btn-refresh" onclick="refreshOutput(\'' + esc(s.id) + '\',this.closest(\'.output-viewer\'))">Refresh</button>' +
+        '</div>' +
+        '<pre>(tap to load)</pre>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+  openOutputs.forEach(id => {
+    const card = el.querySelector('[data-sid="' + id + '"]');
+    if (card) {
+      const v = card.querySelector('.output-viewer');
+      if (v && v.classList.contains('open')) refreshOutput(id, v);
+    }
+  });
+}
+
+// --- Render projects ---
+function renderProjects() {
+  let list = projectsCache.slice();
+  if (projectFilter) {
+    list = list.filter(p =>
+      (p.friendlyName || p.name || '').toLowerCase().includes(projectFilter) ||
+      (p.projectRoot || p.path || '').toLowerCase().includes(projectFilter)
+    );
+  }
+  list.sort((a, b) => {
+    if (projectSort === 'name') return (a.name || '').localeCompare(b.name || '');
+    if (projectSort === 'sessions') return (b.sessionCount || 0) - (a.sessionCount || 0);
+    return new Date(b.lastActive || 0) - new Date(a.lastActive || 0);
+  });
+  const el = $('paneProjects');
+  if (!list.length) {
+    el.innerHTML = '<div class="empty"><div class="empty-icon">&#128193;</div>No projects found</div>';
+    return;
+  }
+  el.innerHTML = list.map(p => {
+    const display = p.friendlyName || p.name;
+    return '<div class="card proj-card" onclick="confirmSpawn(\'' + esc(p.encodedName || p.name) + '\',\'' + esc(display) + '\')">' +
+      '<div class="proj-name">' + esc(display) + '</div>' +
+      '<div class="proj-path">' + esc(p.projectRoot || p.path || p.dir || '') + '</div>' +
+      '<div class="proj-info">' +
+        '<span>' + (p.sessionCount || 0) + ' session' + ((p.sessionCount || 0) !== 1 ? 's' : '') + '</span>' +
+        '<span>' + (p.lastActive ? timeAgo(p.lastActive) : 'never') + '</span>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+// --- Spawn confirmation ---
+function confirmSpawn(encodedName, displayName) {
+  haptic();
+  const overlay = document.createElement('div');
+  overlay.className = 'confirm-overlay';
+  overlay.innerHTML =
+    '<div class="confirm-box">' +
+      '<h3>Spawn Session?</h3>' +
+      '<p>Start a new session for<br><b>' + esc(displayName) + '</b></p>' +
+      '<div class="confirm-btns">' +
+        '<button class="btn btn-kill" id="cfCancel">Cancel</button>' +
+        '<button class="btn btn-green" id="cfSpawn">Spawn</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+  overlay.querySelector('#cfCancel').onclick = () => { haptic(); overlay.remove(); };
+  overlay.querySelector('#cfSpawn').onclick = async () => {
+    haptic();
+    const btn = overlay.querySelector('#cfSpawn');
+    btn.disabled = true; btn.textContent = '...';
+    try {
+      await authFetch('/api/spawn', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: encodedName, name: displayName, continue: true })
+      });
+    } catch(_) {}
+    overlay.remove();
+    setTimeout(fetchSessions, 1000);
+  };
+  overlay.addEventListener('click', e => { if (e.target === overlay) { haptic(); overlay.remove(); } });
+}
+
+// --- Render costs ---
+function renderCosts() {
+  const el = $('paneCosts');
+  if (!costsCache) {
+    el.innerHTML = '<div class="empty"><div class="empty-icon">&#128176;</div>Loading costs...</div>';
+    return;
+  }
+  const c = costsCache;
+  const maxUsd = Math.max(c.today?.usd || 0, c.week?.usd || 0, c.all?.usd || 0, 0.01);
+  el.innerHTML = [
+    { label: 'Today', d: c.today },
+    { label: 'This Week', d: c.week },
+    { label: 'All Time', d: c.all }
+  ].map(({ label, d }) => {
+    const usd = d?.usd || 0;
+    const pct = Math.min(100, (usd / maxUsd) * 100);
+    return '<div class="card cost-card">' +
+      '<div class="cost-title">' + label + '</div>' +
+      '<div class="cost-usd">$' + usd.toFixed(4) + '</div>' +
+      '<div class="cost-row">' +
+        '<span>In: ' + fmtTokens(d?.input) + '</span>' +
+        '<span>Out: ' + fmtTokens(d?.output) + '</span>' +
+      '</div>' +
+      '<div class="cost-bar-wrap"><div class="cost-bar" style="width:' + pct + '%"></div></div>' +
+    '</div>';
+  }).join('');
+}
+
+// --- Fetch functions ---
+async function fetchSessions() {
+  try {
+    const r = await authFetch('/api/sessions');
+    if (!r.ok) throw new Error(r.status);
+    sessionsCache = await r.json();
+    setOnline(true);
+    $('sTotal').textContent = sessionsCache.length;
+    $('sWork').textContent = sessionsCache.filter(s => stClass(s.status) === 'working').length;
+    $('sIdle').textContent = sessionsCache.filter(s => stClass(s.status) === 'idle').length;
+    if (activeTab === 'sessions') renderSessions();
+  } catch(_) {
+    setOnline(false);
+  }
+}
+
+async function fetchProjects() {
+  try {
+    const r = await authFetch('/api/projects');
+    if (!r.ok) throw new Error(r.status);
+    projectsCache = await r.json();
+    setOnline(true);
+    renderProjects();
+  } catch(_) { setOnline(false); }
+}
+
+async function fetchCosts() {
+  try {
+    const r = await authFetch('/api/costs');
+    if (!r.ok) throw new Error(r.status);
+    costsCache = await r.json();
+    setOnline(true);
+    renderCosts();
+  } catch(_) { setOnline(false); }
+}
+
+// --- Files (git diff browser) ---
+let filesProject = null, filesCache = [], diffCache = {};
+
+async function fetchFiles() {
+  const el = $('paneFiles');
+  // Show project picker if none selected
+  if (!filesProject) {
+    // Use active sessions to suggest projects
+    const projects = sessionsCache.map(s => ({ name: s.name, project: s.project }));
+    if (!projects.length) {
+      el.innerHTML = '<div class="empty"><div class="empty-icon">&#128196;</div>No active sessions.<br>Start a session first.</div>';
+      return;
+    }
+    el.innerHTML = '<div style="padding:4px 0;font-size:13px;color:var(--hint);margin-bottom:8px">Select a project to browse files:</div>' +
+      projects.map(p =>
+        '<div class="card proj-card" onclick="selectFilesProject(\'' + esc(p.project) + '\',\'' + esc(p.name) + '\')">' +
+          '<div class="proj-name">' + esc(p.name) + '</div>' +
+        '</div>'
+      ).join('');
+    return;
+  }
+  el.innerHTML = '<div class="empty">Loading files...</div>';
+  try {
+    const r = await authFetch('/api/files?project=' + encodeURIComponent(filesProject.path));
+    if (!r.ok) throw new Error(r.status);
+    filesCache = await r.json();
+    setOnline(true);
+    renderFiles();
+  } catch(_) {
+    el.innerHTML = '<div class="empty"><div class="empty-icon">&#128196;</div>Could not load files</div>';
+  }
+}
+
+function selectFilesProject(path, name) {
+  haptic();
+  filesProject = { path, name };
+  fetchFiles();
+}
+
+function renderFiles() {
+  const el = $('paneFiles');
+  const header = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
+    '<span style="font-weight:600">' + esc(filesProject.name) + '</span>' +
+    '<button class="btn btn-kill" style="font-size:11px;padding:3px 10px" onclick="filesProject=null;fetchFiles()">Back</button>' +
+  '</div>';
+  if (!filesCache.length) {
+    el.innerHTML = header + '<div class="empty">No changed files (working tree clean)</div>';
+    return;
+  }
+  el.innerHTML = header + filesCache.map(f => {
+    const color = f.status === 'added' ? 'var(--green)' : f.status === 'deleted' ? 'var(--red)' : 'var(--orange)';
+    const icon = f.status === 'added' ? '+' : f.status === 'deleted' ? '-' : '~';
+    return '<div class="card" style="cursor:pointer" onclick="showDiff(\'' + esc(f.file) + '\')">' +
+      '<div style="display:flex;align-items:center;gap:8px">' +
+        '<span style="color:' + color + ';font-weight:700;font-family:monospace;font-size:16px">' + icon + '</span>' +
+        '<span class="s-name" style="font-size:13px;font-family:monospace">' + esc(f.file) + '</span>' +
+        (f.insertions || f.deletions ? '<span style="font-size:11px;color:var(--hint)">' +
+          (f.insertions ? '<span style="color:var(--green)">+' + f.insertions + '</span> ' : '') +
+          (f.deletions ? '<span style="color:var(--red)">-' + f.deletions + '</span>' : '') +
+        '</span>' : '') +
+      '</div>' +
+      '<div class="output-viewer" id="diff-' + esc(f.file.replace(/[^a-zA-Z0-9]/g, '_')) + '">' +
+        '<pre style="margin-top:8px">(tap to load diff)</pre>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+}
+
+async function showDiff(file) {
+  haptic();
+  const id = 'diff-' + file.replace(/[^a-zA-Z0-9]/g, '_');
+  const viewer = document.getElementById(id);
+  if (!viewer) return;
+  if (viewer.classList.contains('open')) {
+    viewer.classList.remove('open');
+    return;
+  }
+  viewer.classList.add('open');
+  const pre = viewer.querySelector('pre');
+  pre.textContent = 'Loading diff...';
+  try {
+    const r = await authFetch('/api/files/diff?project=' + encodeURIComponent(filesProject.path) + '&file=' + encodeURIComponent(file));
+    if (!r.ok) throw new Error(r.status);
+    const data = await r.json();
+    pre.textContent = data.diff || '(no diff available)';
+    pre.scrollTop = 0;
+  } catch(_) {
+    pre.textContent = '(failed to load diff)';
+  }
+}
+
+// --- Main loop ---
+fetchSessions();
+setInterval(() => {
+  fetchSessions();
+  if (activeTab === 'projects') fetchProjects();
+  if (activeTab === 'costs') fetchCosts();
+  if (activeTab === 'files') fetchFiles();
+}, 3000);
+</script>
+</body>
+</html>

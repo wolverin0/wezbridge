@@ -23,6 +23,9 @@
  *   CLAWTROL_API_TOKEN   — optional (ClawTrol API token)
  */
 
+// Load .env from project root
+try { require('dotenv').config({ path: require('path').resolve(__dirname, '../../.env') }); } catch {}
+
 const TelegramBot = require('node-telegram-bot-api');
 const sm = require('./session-manager.cjs');
 const wez = require('./wezterm.cjs');
@@ -192,14 +195,31 @@ function restoreState(state) {
 
 // --- Config ---
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const GROUP_ID = process.env.TELEGRAM_GROUP_ID ? Number(process.env.TELEGRAM_GROUP_ID) : -1003748927245;
+const GROUP_ID = process.env.TELEGRAM_GROUP_ID ? Number(process.env.TELEGRAM_GROUP_ID) : null;
 const POLL_MS = parseInt(process.env.TELEGRAM_POLL_MS || '3000', 10);
 const THINKING_TIMEOUT_MS = 30000;
 const THINKING_UPDATE_MS = 30000;
 const NOTIFY_LEVEL = process.env.WEZBRIDGE_NOTIFY_LEVEL || 'all';
+const ALLOWED_USERS = process.env.ALLOWED_TELEGRAM_USERS
+  ? process.env.ALLOWED_TELEGRAM_USERS.split(',').map(id => Number(id.trim())).filter(Boolean)
+  : [];
 
 if (!TOKEN) { console.error('[telegram] TELEGRAM_BOT_TOKEN is required'); process.exit(1); }
 if (!GROUP_ID) { console.error('[telegram] TELEGRAM_GROUP_ID is required'); process.exit(1); }
+
+/** Check if a user is authorized. Returns true if no allowlist or user is in it. */
+function isAuthorized(msg) {
+  if (ALLOWED_USERS.length === 0) return true;
+  return msg.from && ALLOWED_USERS.includes(msg.from.id);
+}
+
+/** Wrap a command handler with auth check. */
+function authed(handler) {
+  return (msg, match) => {
+    if (!isAuthorized(msg)) return;
+    return handler(msg, match);
+  };
+}
 
 // --- Project Map (V2: auto-discovered, with optional overrides) ---
 const PROJECT_MAP_OVERRIDES = {
@@ -415,10 +435,17 @@ function startThinkingTimer(sessionId) {
   const startTime = Date.now();
   const timer = setTimeout(async () => {
     try {
+      // Check if timer was already cleared (race condition with clearThinkingTimer)
+      if (!thinkingMessages.has(sessionId)) return;
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       const msg = await sendMsg(info.chatId, `<i>Claude is still working... (${elapsed}s)</i>`, {
         message_thread_id: info.topicId,
       });
+      // Re-check after async send — timer may have been cleared while awaiting
+      if (!thinkingMessages.has(sessionId)) {
+        try { await bot.deleteMessage(info.chatId, msg.message_id); } catch {}
+        return;
+      }
       thinkingMessages.set(sessionId, {
         messageId: msg.message_id,
         startTime,
@@ -492,34 +519,25 @@ async function handleSpawn(msg, match) {
       // Find the topic this session is mapped to
       const existingTopic = sessionToTopic.get(existingSession.id);
       if (existingTopic) {
-        await sendMsg(GROUP_ID, [
-          `<b>Reusing existing session</b>`,
-          `Project: <code>${outputParser.escapeHtml(projectName)}</code>`,
-          `Session: <code>${existingSession.id}</code>`,
-          `Pane: ${existingSession.paneId}`,
-        ].filter(Boolean).join('\n'), {
-          message_thread_id: existingTopic.topicId,
-        });
-        return;
+        try {
+          await sendMsg(GROUP_ID, [
+            `<b>Reusing existing session</b>`,
+            `Project: <code>${outputParser.escapeHtml(projectName)}</code>`,
+            `Session: <code>${existingSession.id}</code>`,
+            `Pane: ${existingSession.paneId}`,
+          ].filter(Boolean).join('\n'), {
+            message_thread_id: existingTopic.topicId,
+          });
+          return;
+        } catch {
+          // Topic may have been deleted — fall through to create new one
+        }
       }
       // Session exists but no topic — create topic and link it
     }
 
-    // Check if a topic already exists for this project (e.g. after reboot)
-    // Scan sessionToTopic for matching projectName to reuse the topic
+    // Always create a fresh topic — don't reuse topics from other projects
     let topicId = null;
-    if (msg.message_thread_id) {
-      // User invoked from inside a topic — reuse that topic
-      topicId = msg.message_thread_id;
-    } else {
-      // Check if we had a topic for this project before
-      for (const [, info] of sessionToTopic) {
-        if (info.projectName && info.projectName.toLowerCase() === projectName.toLowerCase()) {
-          topicId = info.topicId;
-          break;
-        }
-      }
-    }
 
     if (!topicId) {
       const topic = await bot.createForumTopic(GROUP_ID, projectName, {
@@ -568,10 +586,14 @@ async function handleSpawn(msg, match) {
       clawtrol.postTaskLog(taskId, `WezBridge session ${session.id} started`).catch(() => {});
     }
 
-    if (msg.message_thread_id !== topicId) {
-      await sendMsg(chatId, `Session <b>${outputParser.escapeHtml(projectName)}</b> created in its own topic.`, {
-        message_thread_id: msg.message_thread_id,
-      });
+    if (msg.message_thread_id && msg.message_thread_id !== topicId) {
+      try {
+        await sendMsg(chatId, `Session <b>${outputParser.escapeHtml(projectName)}</b> created in its own topic.`, {
+          message_thread_id: msg.message_thread_id,
+        });
+      } catch {
+        // Original topic may have been deleted — ignore
+      }
     }
   } catch (err) {
     console.error(`${T.err} Spawn failed:`, err.message || err);
@@ -594,6 +616,8 @@ async function handleKill(msg) {
     const session = sm.getSession(sessionId);
     sm.killSession(sessionId);
     await deleteThinkingMessage(sessionId);
+    completionCards.delete(sessionId);
+    liveStreams.delete(sessionId);
     sessionToTopic.delete(sessionId);
     topicToSession.delete(topicId);
 
@@ -844,7 +868,16 @@ async function handleDashboard(msg) {
   const topicId = msg.message_thread_id;
 
   const text = buildDashboardText();
-  const sent = await sendMsg(chatId, text, { message_thread_id: topicId });
+  const webAppUrl = process.env.WEBAPP_URL || null;
+  const opts = { message_thread_id: topicId };
+  if (webAppUrl) {
+    opts.reply_markup = {
+      inline_keyboard: [[
+        { text: '📊 Open Dashboard', url: 'https://t.me/wezbridge_bot/wezbridge_bot' },
+      ]],
+    };
+  }
+  const sent = await sendMsg(chatId, text, opts);
 
   // Pin the message
   try {
@@ -1202,7 +1235,12 @@ async function processLiveStream(sessionId) {
       stream.lastSentAt = now;
       const blankMsg = `<b>\u{1F534} LIVE: ${outputParser.escapeHtml(session.name)}</b>\n\n<i>Terminal cleared (compaction). Waiting for new output...</i>`;
       if (stream.messageId) {
-        try { await sendOrEdit(info.chatId, blankMsg, info.topicId, stream.messageId); } catch {}
+        try { await editMsg(info.chatId, stream.messageId, blankMsg, { message_thread_id: info.topicId }); } catch {}
+      } else {
+        try {
+          const sent = await sendMsg(info.chatId, blankMsg, { message_thread_id: info.topicId });
+          if (sent?.message_id) stream.messageId = sent.message_id;
+        } catch {}
       }
       return;
     }
@@ -1276,7 +1314,14 @@ async function processLiveStream(sessionId) {
     const msgId = await sendOrEdit(html, { message_thread_id: info.topicId });
     if (msgId) stream.messageId = msgId;
   } catch (err) {
-    console.log(`${T.live} Error streaming ${sessionId}: ${err.message}`);
+    // Track consecutive errors — stop stream after 3 failures (dead pane)
+    stream.errorCount = (stream.errorCount || 0) + 1;
+    if (stream.errorCount >= 3) {
+      console.log(`${T.live} Stopping stream for ${sessionId} — pane dead after ${stream.errorCount} errors: ${err.message}`);
+      liveStreams.delete(sessionId);
+    } else {
+      console.log(`${T.live} Error streaming ${sessionId} (${stream.errorCount}/3): ${err.message}`);
+    }
   }
 }
 
@@ -1342,8 +1387,19 @@ async function handleReconnect(msg) {
         ].filter(Boolean).join('\n'), { message_thread_id: topicId });
       }
 
-      // Panes exist — show them as buttons to pick from
-      const buttons = claudePanes.map(p => {
+      // Panes exist — try to find one matching this topic's project
+      const topicName2 = msg.reply_to_message?.forum_topic_created?.name || '';
+      const matchingPanes = topicName2
+        ? claudePanes.filter(p => {
+            const cwd = (p.cwd || '').replace(/\\/g, '/').toLowerCase();
+            const title = (p.title || '').toLowerCase();
+            const tn = topicName2.toLowerCase();
+            return cwd.includes(tn) || title.includes(tn);
+          })
+        : [];
+
+      const panesToShow = matchingPanes.length > 0 ? matchingPanes : claudePanes;
+      const buttons = panesToShow.map(p => {
         const label = `Pane ${p.pane_id}: ${p.title || 'unknown'}`;
         return [{ text: label, callback_data: `reconnect:${p.pane_id}` }];
       });
@@ -1460,27 +1516,27 @@ async function handleHelp(msg) {
   ].join('\n'), { message_thread_id: msg.message_thread_id });
 }
 
-// --- Register commands ---
-bot.onText(/\/spawn\s*(.*)/, (msg, match) => handleSpawn(msg, match[1]));
-bot.onText(/\/kill$/, (msg) => handleKill(msg));
-bot.onText(/\/status$/, (msg) => handleStatus(msg));
-bot.onText(/\/projects$/, (msg) => handleProjects(msg));
-bot.onText(/\/sessions\s+(.+)/, (msg, match) => handleSessions(msg, match[1]));
-bot.onText(/\/costs$/, (msg) => handleCosts(msg));
-bot.onText(/\/history$/, (msg) => handleHistory(msg));
-bot.onText(/\/replay$/, (msg) => handleReplay(msg));
-bot.onText(/\/export$/, (msg) => handleExport(msg));
-bot.onText(/\/dashboard$/, (msg) => handleDashboard(msg));
-bot.onText(/\/peek$/, (msg) => handlePeek(msg));
-bot.onText(/\/reconnect$/, (msg) => handleReconnect(msg));
-bot.onText(/\/live$/, (msg) => handleLive(msg));
-bot.onText(/\/dump$/, (msg) => handleDump(msg));
-bot.onText(/\/task\s*(.*)/, (msg, match) => handleTask(msg, match[1]));
-bot.onText(/\/help$/, (msg) => handleHelp(msg));
-bot.onText(/\/start$/, (msg) => handleHelp(msg));
+// --- Register commands (all gated by authed()) ---
+bot.onText(/\/spawn\s*(.*)/, authed((msg, match) => handleSpawn(msg, match[1])));
+bot.onText(/\/kill$/, authed((msg) => handleKill(msg)));
+bot.onText(/\/status$/, authed((msg) => handleStatus(msg)));
+bot.onText(/\/projects$/, authed((msg) => handleProjects(msg)));
+bot.onText(/\/sessions\s+(.+)/, authed((msg, match) => handleSessions(msg, match[1])));
+bot.onText(/\/costs$/, authed((msg) => handleCosts(msg)));
+bot.onText(/\/history$/, authed((msg) => handleHistory(msg)));
+bot.onText(/\/replay$/, authed((msg) => handleReplay(msg)));
+bot.onText(/\/export$/, authed((msg) => handleExport(msg)));
+bot.onText(/\/dashboard$/, authed((msg) => handleDashboard(msg)));
+bot.onText(/\/peek$/, authed((msg) => handlePeek(msg)));
+bot.onText(/\/reconnect$/, authed((msg) => handleReconnect(msg)));
+bot.onText(/\/live$/, authed((msg) => handleLive(msg)));
+bot.onText(/\/dump$/, authed((msg) => handleDump(msg)));
+bot.onText(/\/task\s*(.*)/, authed((msg, match) => handleTask(msg, match[1])));
+bot.onText(/\/help$/, authed((msg) => handleHelp(msg)));
+bot.onText(/\/start$/, authed((msg) => handleHelp(msg)));
 
 // /split — split current session's pane
-bot.onText(/\/split(?:\s+(.+))?/, async (msg, match) => {
+bot.onText(/\/split(?:\s+(.+))?/, authed(async (msg, match) => {
   const topicId = msg.message_thread_id;
   if (!topicId) return sendMsg(msg.chat.id, 'Use /split inside a session topic.');
 
@@ -1506,10 +1562,10 @@ bot.onText(/\/split(?:\s+(.+))?/, async (msg, match) => {
   } catch (err) {
     await sendMsg(msg.chat.id, `Split failed: ${outputParser.escapeHtml(err.message)}`, { message_thread_id: topicId });
   }
-});
+}));
 
 // /workspace — list or switch WezTerm workspaces
-bot.onText(/\/workspace(?:\s+(.+))?/, async (msg, match) => {
+bot.onText(/\/workspace(?:\s+(.+))?/, authed(async (msg, match) => {
   const arg = (match[1] || '').trim();
 
   if (!arg) {
@@ -1537,10 +1593,10 @@ bot.onText(/\/workspace(?:\s+(.+))?/, async (msg, match) => {
       message_thread_id: msg.message_thread_id,
     });
   }
-});
+}));
 
 // /remote — spawn a session on a remote SSH domain
-bot.onText(/\/remote(?:\s+(.+))?/, async (msg, match) => {
+bot.onText(/\/remote(?:\s+(.+))?/, authed(async (msg, match) => {
   const arg = (match[1] || '').trim();
   const domain = arg || 'openclaw'; // default SSH domain name
 
@@ -1566,13 +1622,15 @@ bot.onText(/\/remote(?:\s+(.+))?/, async (msg, match) => {
       message_thread_id: msg.message_thread_id,
     });
   }
-});
+}));
 
 // --- Message handler: text/photo/document in topic → inject as prompt ---
 bot.on('message', async (msg) => {
   if (msg.text && msg.text.startsWith('/')) return;
   // Ignore bot's own messages
   if (msg.from && msg.from.is_bot) return;
+  // Authorization check
+  if (ALLOWED_USERS.length > 0 && msg.from && !ALLOWED_USERS.includes(msg.from.id)) return;
   // Must have text, photo, or document
   if (!msg.text && !msg.caption && !msg.photo && !msg.document && !msg.voice) return;
 
@@ -1587,6 +1645,7 @@ bot.on('message', async (msg) => {
 
   try {
     let promptText = msg.text || msg.caption || '';
+    const _tempFiles = []; // Track temp files for cleanup
 
     // Handle photo attachments — download and pass file path to Claude
     if (msg.photo && msg.photo.length > 0) {
@@ -1612,6 +1671,7 @@ bot.on('message', async (msg) => {
 
       // Add image path to prompt
       promptText = `${promptText}\n\n[Image attached: ${localPath}]`.trim();
+      _tempFiles.push(localPath);
       console.log(`${T.photo} Saved: ${c.dim}${localPath}${c.reset}`);
     }
 
@@ -1624,7 +1684,7 @@ bot.on('message', async (msg) => {
       const https = require('https');
       const tempDir = path.join(os.tmpdir(), 'wezbridge');
       if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
-      const fileName = msg.document.file_name || `file-${Date.now()}`;
+      const fileName = path.basename(msg.document.file_name || `file-${Date.now()}`);
       const localPath = path.join(tempDir, fileName);
 
       await new Promise((resolve, reject) => {
@@ -1636,6 +1696,7 @@ bot.on('message', async (msg) => {
       });
 
       promptText = `${promptText}\n\n[File attached: ${localPath}]`.trim();
+      _tempFiles.push(localPath);
       console.log(`${T.doc} Saved: ${c.dim}${localPath}${c.reset}`);
     }
 
@@ -1692,6 +1753,16 @@ bot.on('message', async (msg) => {
     if (!promptText) return;
 
     sm.sendPrompt(sessionId, promptText);
+
+    // Clean up temp files after a delay
+    if (_tempFiles.length > 0) {
+      setTimeout(() => {
+        for (const fp of _tempFiles) {
+          try { fs.unlinkSync(fp); } catch {}
+        }
+      }, 60000);
+    }
+
     setReaction(msg.chat.id, msg.message_id, '\u23f3'); // hourglass while working
     // Only show thinking timer if live mode is off
     if (!liveStreams.has(sessionId)) {
@@ -1717,6 +1788,11 @@ bot.on('message', async (msg) => {
 
 // --- Callback (button) handler ---
 bot.on('callback_query', async (query) => {
+  // Authorization check
+  if (ALLOWED_USERS.length > 0 && query.from && !ALLOWED_USERS.includes(query.from.id)) {
+    try { await bot.answerCallbackQuery(query.id, { text: 'Unauthorized' }); } catch {}
+    return;
+  }
   try { await bot.answerCallbackQuery(query.id).catch(() => {}); } catch {}
   const topicId = query.message?.message_thread_id;
   const data = query.data || '';
@@ -2208,33 +2284,6 @@ function startCompletionLoop() {
   }, POLL_MS);
 }
 
-/**
- * Split a message into chunks, trying to break at newlines.
- */
-function splitMessage(text, maxLen) {
-  if (text.length <= maxLen) return [text];
-
-  const chunks = [];
-  let remaining = text;
-
-  while (remaining.length > 0) {
-    if (remaining.length <= maxLen) {
-      chunks.push(remaining);
-      break;
-    }
-
-    let breakAt = remaining.lastIndexOf('\n', maxLen);
-    if (breakAt < maxLen * 0.5) {
-      breakAt = maxLen;
-    }
-
-    chunks.push(remaining.substring(0, breakAt));
-    remaining = remaining.substring(breakAt).trimStart();
-  }
-
-  return chunks;
-}
-
 // --- Seed existing sessions from CLI args ---
 function seedFromArgs() {
   const args = process.argv.slice(2);
@@ -2311,6 +2360,42 @@ function startBot() {
   setInterval(() => saveState(), 30000);
 
   // Listen for compaction events — notify user but keep waiting
+  // Handle dashboard-spawned sessions — create Telegram topic and link
+  sm.events.on('session:spawned-api', async ({ session, projectName }) => {
+    try {
+      const topic = await bot.createForumTopic(GROUP_ID, projectName, { icon_color: 7322096 });
+      const topicId = topic.message_thread_id;
+      sessionToTopic.set(session.id, { topicId, chatId: GROUP_ID, projectName });
+      topicToSession.set(topicId, session.id);
+      wez.setTabTitle(session.paneId, projectName);
+      saveState();
+      await sendMsg(GROUP_ID, [
+        `<b>Session started</b> (from Dashboard)`,
+        `Project: <code>${outputParser.escapeHtml(projectName)}</code>`,
+        `Session: <code>${session.id}</code>`,
+        `Pane: ${session.paneId}`,
+      ].join('\n'), { message_thread_id: topicId });
+    } catch (err) {
+      console.error(`${T.err} Dashboard spawn topic creation failed:`, err.message);
+    }
+  });
+
+  sm.events.on('session:dead', (session) => {
+    const info = sessionToTopic.get(session.id);
+    // Stop any live stream for this session
+    liveStreams.delete(session.id);
+    // Clean up stale Maps
+    completionCards.delete(session.id);
+    deleteThinkingMessage(session.id);
+    if (info) {
+      topicToSession.delete(info.topicId);
+      sessionToTopic.delete(session.id);
+      sendMsg(info.chatId, `\u274c <b>Session lost</b> \u2014 WezTerm pane ${session.paneId} no longer exists.\nUse /projects to start a new session.`, {
+        message_thread_id: info.topicId,
+      }).catch(() => {});
+    }
+  });
+
   sm.events.on('session:compacted', (session) => {
     const info = sessionToTopic.get(session.id);
     if (info) {

@@ -27,7 +27,7 @@ class TelegramRateLimiter {
     const chat = this.chats.get(key);
 
     return new Promise((resolve, reject) => {
-      chat.queue.push({ fn, resolve, reject });
+      chat.queue.push({ fn, resolve, reject, _retries: 0 });
       if (!chat.processing) {
         this._process(key);
       }
@@ -40,7 +40,7 @@ class TelegramRateLimiter {
     chat.processing = true;
 
     while (chat.queue.length > 0) {
-      const { fn, resolve, reject } = chat.queue.shift();
+      const { fn, resolve, reject, _retries } = chat.queue.shift();
 
       // Wait for minimum interval
       const now = Date.now();
@@ -56,11 +56,17 @@ class TelegramRateLimiter {
       } catch (err) {
         // Handle 429 Too Many Requests
         if (err?.response?.statusCode === 429) {
-          const retryAfter = (err.response?.body?.parameters?.retry_after || 5) * 1000;
-          console.log(`[rate-limiter] 429 for chat ${key}, waiting ${retryAfter}ms`);
-          await this._sleep(retryAfter);
-          // Re-queue the failed call at the front
-          chat.queue.unshift({ fn, resolve, reject });
+          const newRetries = (_retries || 0) + 1;
+          if (newRetries >= 3) {
+            console.error(`[rate-limiter] 429 for chat ${key}, max retries (${newRetries}) reached — rejecting`);
+            reject(err);
+          } else {
+            const retryAfter = (err.response?.body?.parameters?.retry_after || 5) * 1000;
+            console.log(`[rate-limiter] 429 for chat ${key}, retry ${newRetries}/3, waiting ${retryAfter}ms`);
+            await this._sleep(retryAfter);
+            // Re-queue the failed call at the front
+            chat.queue.unshift({ fn, resolve, reject, _retries: newRetries });
+          }
         } else {
           reject(err);
         }

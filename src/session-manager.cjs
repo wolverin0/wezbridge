@@ -437,12 +437,31 @@ function killSession(sessionId) {
  */
 function pollAll() {
   const newlyWaiting = [];
+  const toRemove = [];
   for (const [id, session] of sessions) {
     if (session.status === 'running' || session.status === 'starting') {
       const result = checkCompletion(id);
       if (result.waiting) {
         newlyWaiting.push({ ...session, lastLines: result.lastLines });
       }
+      // Track consecutive errors for dead pane detection
+      if (result.error) {
+        session._errorCount = (session._errorCount || 0) + 1;
+        if (session._errorCount >= 3) {
+          console.log(`\x1b[31m[session]\x1b[0m ${id} — pane dead after ${session._errorCount} errors, removing`);
+          toRemove.push(id);
+        }
+      } else {
+        session._errorCount = 0;
+      }
+    }
+  }
+  for (const id of toRemove) {
+    const session = sessions.get(id);
+    if (session) {
+      session.status = 'dead';
+      events.emit('session:dead', session);
+      sessions.delete(id);
     }
   }
   return newlyWaiting;

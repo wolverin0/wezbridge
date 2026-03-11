@@ -178,7 +178,7 @@ config.unix_domains = { { name = 'unix' } }
 
 -- For /remote command (optional)
 config.ssh_domains = {
-  { name = "openclaw", remote_address = "192.168.100.186", username = "ggorbalan" },
+  { name = "myserver", remote_address = "10.0.0.100", username = "youruser" },
 }
 ```
 

@@ -60,10 +60,13 @@ class PluginLoader {
    * @returns {Array<string>} Names of loaded plugins
    */
   loadAll(deps) {
+    if (process.env.WEZBRIDGE_PLUGINS_ENABLED !== 'true') {
+      console.log('[plugins] Plugins disabled (set WEZBRIDGE_PLUGINS_ENABLED=true to enable)');
+      return [];
+    }
+
     if (!fs.existsSync(PLUGINS_DIR)) {
-      try {
-        fs.mkdirSync(PLUGINS_DIR, { recursive: true });
-      } catch { /* ignore */ }
+      console.log(`[plugins] Plugins directory not found: ${PLUGINS_DIR}`);
       return [];
     }
 
@@ -83,7 +86,18 @@ class PluginLoader {
           }
 
           const ctx = this.createContext(deps);
-          plugin.register(ctx);
+          try {
+            const result = plugin.register(ctx);
+            // Catch async errors from register() if it returns a promise
+            if (result && typeof result.catch === 'function') {
+              result.catch(asyncErr => {
+                console.error(`[plugins] Async error in ${plugin.name} register():`, asyncErr.message);
+              });
+            }
+          } catch (regErr) {
+            console.error(`[plugins] register() threw in ${plugin.name}:`, regErr.message);
+            continue;
+          }
           this.plugins.set(plugin.name, plugin);
           loaded.push(plugin.name);
           console.log(`[plugins] Loaded: ${plugin.name} (${file})`);
