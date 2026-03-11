@@ -39,6 +39,8 @@ const clawtrol = require('./clawtrol-sync.cjs');
 const voiceHandler = require('./voice-handler.cjs');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const https = require('https');
 
 // --- ANSI colors for terminal output ---
 const c = {
@@ -76,44 +78,48 @@ const T = {
 // --- State persistence ---
 const STATE_FILE = path.join(__dirname, '..', '..', '.wezbridge-state.json');
 
+let _saving = false;
 function saveState() {
-  try {
-    const state = {
-      savedAt: new Date().toISOString(),
-      sessions: {},
-      topicMappings: {},
-      liveStreams: {},
-    };
+  if (_saving) return;
+  _saving = true;
 
-    // Save active live streams
-    for (const [sessionId, stream] of liveStreams) {
-      state.liveStreams[sessionId] = { messageId: stream.messageId };
-    }
+  const state = {
+    savedAt: new Date().toISOString(),
+    sessions: {},
+    topicMappings: {},
+    liveStreams: {},
+  };
 
-    // Save topic mappings
-    for (const [sessionId, info] of sessionToTopic) {
-      state.topicMappings[sessionId] = info;
-    }
-
-    // Save full session data (paneId, project, name, status, history)
-    for (const [sessionId] of sessionToTopic) {
-      const session = sm.getSession(sessionId);
-      const history = sm.getCompletionHistory(sessionId);
-      state.sessions[sessionId] = {
-        paneId: session?.paneId,
-        project: session?.project,
-        name: session?.name,
-        status: session?.status,
-        createdAt: session?.createdAt,
-        taskId: session?.taskId,
-        completionHistory: history || [],
-      };
-    }
-
-    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), 'utf-8');
-  } catch (err) {
-    console.error(`${T.err} State save failed:`, err.message);
+  // Save active live streams
+  for (const [sessionId, stream] of liveStreams) {
+    state.liveStreams[sessionId] = { messageId: stream.messageId };
   }
+
+  // Save topic mappings
+  for (const [sessionId, info] of sessionToTopic) {
+    state.topicMappings[sessionId] = info;
+  }
+
+  // Save full session data (paneId, project, name, status, history)
+  for (const [sessionId] of sessionToTopic) {
+    const session = sm.getSession(sessionId);
+    const history = sm.getCompletionHistory(sessionId);
+    state.sessions[sessionId] = {
+      paneId: session?.paneId,
+      project: session?.project,
+      name: session?.name,
+      status: session?.status,
+      createdAt: session?.createdAt,
+      taskId: session?.taskId,
+      completionHistory: history || [],
+    };
+  }
+
+  const data = JSON.stringify(state, null, 2);
+  fs.writeFile(STATE_FILE, data, 'utf-8', (err) => {
+    _saving = false;
+    if (err) console.error(`${T.err} State save failed:`, err.message);
+  });
 }
 
 function loadState() {
@@ -922,6 +928,13 @@ function buildDashboardText() {
 
 async function updateDashboard() {
   if (!dashboardMsg) return;
+
+  // M8: Stop timer if no active sessions
+  if (sm.listSessions().length === 0) {
+    if (dashboardTimer) { clearInterval(dashboardTimer); dashboardTimer = null; }
+    return;
+  }
+
   try {
     const text = buildDashboardText();
     await editMsg(dashboardMsg.chatId, dashboardMsg.messageId, text);
@@ -1654,8 +1667,6 @@ bot.on('message', async (msg) => {
       const url = `https://api.telegram.org/file/bot${TOKEN}/${fileInfo.file_path}`;
 
       // Download to temp
-      const os = require('os');
-      const https = require('https');
       const tempDir = path.join(os.tmpdir(), 'wezbridge');
       if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
       const ext = path.extname(fileInfo.file_path) || '.jpg';
@@ -1680,8 +1691,6 @@ bot.on('message', async (msg) => {
       const fileInfo = await bot.getFile(msg.document.file_id);
       const url = `https://api.telegram.org/file/bot${TOKEN}/${fileInfo.file_path}`;
 
-      const os = require('os');
-      const https = require('https');
       const tempDir = path.join(os.tmpdir(), 'wezbridge');
       if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
       const fileName = path.basename(msg.document.file_name || `file-${Date.now()}`);

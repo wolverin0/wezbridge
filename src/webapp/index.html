@@ -229,6 +229,7 @@ function fmtTokens(n) {
 let online = false, activeTab = 'sessions', openOutputs = new Set();
 let projectSort = 'lastActive', projectFilter = '';
 let sessionsCache = [], projectsCache = [], costsCache = null;
+const sseConnections = {}; // Track EventSource connections per session to prevent leaks
 
 function setOnline(v) {
   if (v === online) return;
@@ -291,6 +292,7 @@ async function toggleOutput(id, el) {
     openOutputs.delete(id);
     // Close SSE connection
     if (viewer._sse) { viewer._sse.close(); viewer._sse = null; }
+    delete sseConnections[id];
     return;
   }
   openOutputs.add(id);
@@ -298,9 +300,13 @@ async function toggleOutput(id, el) {
   const pre = viewer.querySelector('pre');
   pre.textContent = 'Connecting...';
 
+  // Close any existing SSE connection for this session before creating a new one
+  if (sseConnections[id]) { sseConnections[id].close(); delete sseConnections[id]; }
+
   // Start SSE stream
   const sse = new EventSource('/api/session/' + encodeURIComponent(id) + '/stream?initData=' + encodeURIComponent(initData));
   viewer._sse = sse;
+  sseConnections[id] = sse;
   let buffer = '';
   sse.onmessage = (e) => {
     try {

@@ -20,7 +20,6 @@ try { require('dotenv').config({ path: require('path').resolve(__dirname, '../..
  *   POST   /api/tasks/:id/complete — complete a task from dashboard
  */
 const http = require('http');
-const url = require('url');
 const fs = require('fs');
 const pathModule = require('path');
 const crypto = require('crypto');
@@ -30,6 +29,9 @@ const clawtrol = require('./clawtrol-sync.cjs');
 const ps = require('./project-scanner.cjs');
 
 const WEBAPP_DIR = pathModule.join(__dirname, 'webapp');
+
+// SSE connection limiter — max 5 concurrent streams per session
+const sseClients = new Map(); // sessionId -> count
 
 // --- Telegram WebApp initData validation ---
 function validateTelegramInitData(initData, botToken) {
@@ -135,8 +137,9 @@ function cors(res) {
 
 // Route handler
 async function handleRequest(req, res) {
-  const parsed = url.parse(req.url, true);
-  const path = parsed.pathname;
+  const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const path = parsedUrl.pathname;
+  const parsed = { query: Object.fromEntries(parsedUrl.searchParams) };
   const method = req.method;
 
   // CORS headers for Mini App
@@ -400,6 +403,12 @@ async function handleRequest(req, res) {
       const session = sm.getSession(sessionId);
       if (!session) return json(res, 404, { error: 'Session not found' });
 
+      // Limit concurrent SSE connections per session
+      if ((sseClients.get(sessionId) || 0) >= 5) {
+        return json(res, 429, { error: 'Too many stream connections' });
+      }
+      sseClients.set(sessionId, (sseClients.get(sessionId) || 0) + 1);
+
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
@@ -422,7 +431,10 @@ async function handleRequest(req, res) {
         }
       }, 1000);
 
-      req.on('close', () => clearInterval(interval));
+      req.on('close', () => {
+        clearInterval(interval);
+        sseClients.set(sessionId, Math.max(0, (sseClients.get(sessionId) || 1) - 1));
+      });
       return; // Don't end response — SSE stays open
     }
 
@@ -630,6 +642,7 @@ if (require.main === module) {
   start();
 }
 
+// Note: also defined in webapp/server.cjs
 function formatUptime(ms) {
   const seconds = Math.floor(ms / 1000);
   if (seconds < 60) return `${seconds}s`;

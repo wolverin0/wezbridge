@@ -43,6 +43,8 @@ function findWezterm() {
 const WEZTERM = findWezterm();
 let guiLaunched = false;
 
+// Note: execFileSync blocks the event loop. For N sessions, pollAll blocks N * timeout_ms.
+// TODO: Consider async execFile for high session counts.
 function wezCmd(args, opts = {}) {
   try {
     const result = execFileSync(WEZTERM, ['cli', '--prefer-mux', ...args], {
@@ -108,8 +110,10 @@ function ensureGui() {
     child.on('error', () => {}); // Prevent unhandled error crash
     child.unref();
     guiLaunched = true;
-    // Give the GUI a moment to connect
-    // Wait for GUI to connect — use sleep (bash) or timeout (Windows)
+    // Give the GUI a moment to connect to the mux server.
+    // Note: This blocks the event loop for 3s. A non-blocking alternative would require
+    // making ensureGui async, which ripples into spawnPane and all callers.
+    // The blocking sleep is acceptable here because ensureGui only runs once per process.
     try { execFileSync('sleep', ['3'], { windowsHide: true, stdio: 'ignore' }); }
     catch { try { execFileSync('timeout', ['/t', '3', '/nobreak'], { windowsHide: true, stdio: 'ignore' }); } catch {} }
   } catch {

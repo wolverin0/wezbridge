@@ -3,14 +3,15 @@
  * Strips ANSI codes, Claude chrome (status bars, rules), extracts responses and code blocks.
  */
 
-// ANSI escape sequence pattern (covers CSI, OSC, and single-char escapes)
-const ANSI_RE = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]|\x1b[=>Nc]|\x1b\[[\d;]*m/g;
-
 /**
  * Strip all ANSI escape codes from text.
  */
 function stripAnsi(text) {
-  return text.replace(ANSI_RE, '');
+  return text
+    .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')  // CSI sequences (including ?25h/l cursor)
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')  // OSC sequences (BEL or ST terminated)
+    .replace(/\x1b[()][0-9A-B]/g, '')  // Charset sequences
+    .replace(/\x1b[78DEHM]/g, '');  // Single-char escapes
 }
 
 // Patterns for Claude Code "chrome" lines to remove

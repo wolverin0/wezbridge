@@ -392,16 +392,10 @@ function checkCompletion(sessionId) {
 }
 
 /**
- * Simple hash of a string for stability comparison.
+ * Hash of a string for stability comparison (MD5 — fast, no 32-bit collision risk).
  */
 function simpleHash(str) {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    const ch = str.charCodeAt(i);
-    hash = ((hash << 5) - hash) + ch;
-    hash |= 0;
-  }
-  return hash;
+  return require('crypto').createHash('md5').update(str).digest('hex');
 }
 
 /**
@@ -432,10 +426,14 @@ function killSession(sessionId) {
   return true;
 }
 
+// Counter for stale-waiting checks (only run every 6th poll cycle)
+let _pollCycleCounter = 0;
+
 /**
  * Poll all sessions for completion. Returns sessions that just became "waiting".
  */
 function pollAll() {
+  _pollCycleCounter++;
   const newlyWaiting = [];
   const toRemove = [];
   for (const [id, session] of sessions) {
@@ -453,6 +451,16 @@ function pollAll() {
         }
       } else {
         session._errorCount = 0;
+      }
+    }
+
+    // M3: Check stale 'waiting' sessions every 6th cycle — verify pane is still alive
+    if (session.status === 'waiting' && _pollCycleCounter % 6 === 0) {
+      try {
+        wez.getText(session.paneId);
+      } catch {
+        console.log(`\x1b[31m[session]\x1b[0m ${id} — waiting session pane dead, removing`);
+        toRemove.push(id);
       }
     }
   }

@@ -56,7 +56,13 @@ function readLastBytes(filePath, bytes) {
     const buf = Buffer.alloc(Math.min(bytes, stat.size));
     fs.readSync(fd, buf, 0, buf.length, start);
     fs.closeSync(fd);
-    return buf.toString('utf-8');
+    let text = buf.toString('utf-8');
+    // If we started mid-file, discard the first partial line
+    if (start > 0) {
+      const firstNewline = text.indexOf('\n');
+      if (firstNewline > 0) text = text.substring(firstNewline + 1);
+    }
+    return text;
   } catch {
     return '';
   }

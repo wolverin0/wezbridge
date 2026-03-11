@@ -123,6 +123,7 @@ function createApp({ sm, wez, sessionToTopic, liveStreams, startTime }) {
   return app;
 }
 
+// Note: also defined in server.cjs (parent directory)
 function formatUptime(ms) {
   const seconds = Math.floor(ms / 1000);
   if (seconds < 60) return `${seconds}s`;
