@@ -386,17 +386,26 @@ code, pre, .mono { font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace
         <button onclick="dtCascade()">Cascade</button>
         <button onclick="dtStack()">Stack</button>
         <button onclick="dtShowAll()">Show All</button>
+        <button onclick="feedPosition('right')" id="showFeedBtn" style="display:none">Feed</button>
       </div>
       <div style="display:flex;gap:4px;flex:1;max-width:500px;margin-left:12px">
         <input id="broadcastInput" class="prompt-input" placeholder="Broadcast to all sessions..." style="font-size:11px;padding:4px 10px;border-radius:6px" onkeydown="if(event.key==='Enter')doBroadcast()">
         <button onclick="doBroadcast()" style="background:var(--cyan);color:#000;font-size:11px;font-weight:600;padding:4px 10px;border:none;border-radius:6px;cursor:pointer">Broadcast</button>
       </div>
     </div>
-    <div style="display:flex;flex:1;overflow:hidden">
+    <div id="desktopLayout" style="display:flex;flex:1;overflow:hidden">
       <div class="desktop-area" id="desktopArea" style="flex:1"></div>
-      <div id="desktopFeed" style="width:320px;flex-shrink:0;border-left:1px solid var(--glass-border);overflow-y:auto;background:var(--bg-surface)">
-        <div style="padding:10px 12px;font-size:12px;font-weight:700;color:var(--text-secondary);border-bottom:1px solid var(--glass-border)">Live Feed</div>
-        <div id="dtFeedList"><div class="feed-empty" style="font-size:12px;padding:30px 12px">Waiting for events...</div></div>
+      <div id="desktopFeed" style="width:320px;flex-shrink:0;background:var(--bg-surface);display:flex;flex-direction:column;position:relative">
+        <div id="feedResizeHandle" style="position:absolute;left:-3px;top:0;bottom:0;width:6px;cursor:col-resize;z-index:5"></div>
+        <div style="padding:8px 10px;font-size:11px;font-weight:700;color:var(--text-secondary);border-bottom:1px solid var(--glass-border);display:flex;align-items:center;gap:6px;border-left:1px solid var(--glass-border)">
+          <span style="flex:1">Live Feed</span>
+          <span onclick="feedPosition('bottom')" style="cursor:pointer;font-size:9px;padding:1px 5px;border:1px solid var(--glass-border);border-radius:3px" title="Move to bottom">B</span>
+          <span onclick="feedPosition('top')" style="cursor:pointer;font-size:9px;padding:1px 5px;border:1px solid var(--glass-border);border-radius:3px" title="Move to top">T</span>
+          <span onclick="feedPosition('right')" style="cursor:pointer;font-size:9px;padding:1px 5px;border:1px solid var(--glass-border);border-radius:3px" title="Move to right">R</span>
+          <span onclick="feedPosition('float')" style="cursor:pointer;font-size:9px;padding:1px 5px;border:1px solid var(--glass-border);border-radius:3px" title="Detach/Float">F</span>
+          <span onclick="feedPosition('hide')" style="cursor:pointer;font-size:9px;padding:1px 5px;border:1px solid var(--glass-border);border-radius:3px" title="Hide">-</span>
+        </div>
+        <div id="dtFeedList" style="flex:1;overflow-y:auto;border-left:1px solid var(--glass-border)"><div class="feed-empty" style="font-size:12px;padding:30px 12px">Waiting for events...</div></div>
       </div>
     </div>
   </div>
@@ -1056,6 +1065,100 @@ setInterval(function() {
     Object.keys(dtWins).forEach(function(id) { dtLoadOutput(parseInt(id)); });
   }
 }, 3000);
+
+// ─── Feed Position & Resize ───
+var feedPos = 'right'; // right, bottom, top, float, hide
+var feedSize = 320;
+
+function feedPosition(pos) {
+  feedPos = pos;
+  var layout = document.getElementById('desktopLayout');
+  var feed = document.getElementById('desktopFeed');
+  var area = document.getElementById('desktopArea');
+  var handle = document.getElementById('feedResizeHandle');
+
+  // Reset
+  feed.style.position = '';
+  feed.style.left = ''; feed.style.top = ''; feed.style.right = ''; feed.style.bottom = '';
+  feed.style.borderLeft = ''; feed.style.borderTop = ''; feed.style.borderBottom = '';
+  feed.style.boxShadow = '';
+  feed.style.borderRadius = '';
+  layout.style.flexDirection = '';
+
+  var showBtn = document.getElementById('showFeedBtn');
+  if (pos === 'hide') {
+    feed.style.display = 'none';
+    if (showBtn) showBtn.style.display = '';
+    return;
+  }
+  feed.style.display = 'flex';
+  if (showBtn) showBtn.style.display = 'none';
+
+  if (pos === 'right') {
+    layout.style.flexDirection = 'row';
+    feed.style.width = feedSize + 'px';
+    feed.style.height = '';
+    feed.style.flexShrink = '0';
+    feed.style.borderLeft = '1px solid var(--glass-border)';
+    handle.style.cssText = 'position:absolute;left:-3px;top:0;bottom:0;width:6px;cursor:col-resize;z-index:5';
+  } else if (pos === 'bottom') {
+    layout.style.flexDirection = 'column';
+    feed.style.width = '';
+    feed.style.height = Math.min(feedSize, 250) + 'px';
+    feed.style.flexShrink = '0';
+    feed.style.borderTop = '1px solid var(--glass-border)';
+    handle.style.cssText = 'position:absolute;top:-3px;left:0;right:0;height:6px;cursor:row-resize;z-index:5';
+  } else if (pos === 'top') {
+    layout.style.flexDirection = 'column-reverse';
+    feed.style.width = '';
+    feed.style.height = Math.min(feedSize, 250) + 'px';
+    feed.style.flexShrink = '0';
+    feed.style.borderBottom = '1px solid var(--glass-border)';
+    handle.style.cssText = 'position:absolute;bottom:-3px;left:0;right:0;height:6px;cursor:row-resize;z-index:5';
+  } else if (pos === 'float') {
+    feed.style.position = 'absolute';
+    feed.style.right = '10px';
+    feed.style.top = '10px';
+    feed.style.width = feedSize + 'px';
+    feed.style.height = '400px';
+    feed.style.borderRadius = '10px';
+    feed.style.border = '1px solid var(--glass-border)';
+    feed.style.boxShadow = '0 12px 40px rgba(0,0,0,0.5)';
+    feed.style.zIndex = '100';
+    handle.style.cssText = 'position:absolute;left:-3px;top:0;bottom:0;width:6px;cursor:col-resize;z-index:5';
+  }
+}
+
+// Resize handle for feed panel
+(function() {
+  var handle = document.getElementById('feedResizeHandle');
+  if (!handle) return;
+  handle.addEventListener('mousedown', function(e) {
+    e.preventDefault();
+    var feed = document.getElementById('desktopFeed');
+    var startX = e.clientX, startY = e.clientY;
+    var startW = feed.offsetWidth, startH = feed.offsetHeight;
+
+    function onMove(e2) {
+      if (feedPos === 'right' || feedPos === 'float') {
+        feedSize = Math.max(200, Math.min(600, startW - (e2.clientX - startX)));
+        feed.style.width = feedSize + 'px';
+      } else if (feedPos === 'bottom') {
+        var newH = Math.max(100, Math.min(500, startH - (e2.clientY - startY)));
+        feed.style.height = newH + 'px';
+      } else if (feedPos === 'top') {
+        var newH = Math.max(100, Math.min(500, startH + (e2.clientY - startY)));
+        feed.style.height = newH + 'px';
+      }
+    }
+    function onUp() {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+})();
 
 // ─── Broadcast ───
 async function doBroadcast() {
