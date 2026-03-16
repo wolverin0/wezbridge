@@ -258,9 +258,11 @@ if (!fs.existsSync(mcpJsonPath)) {
 }
 
 // Launch Claude as interactive process
+// shell: true is required on Windows so spawn can resolve .cmd/.ps1 shims
 const child = spawn(claudeArgs[0], claudeArgs.slice(1), {
   cwd: targetDir,
   stdio: 'inherit',
+  shell: true,
   env: { ...process.env },
 });
 
