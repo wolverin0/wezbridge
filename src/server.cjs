@@ -27,6 +27,8 @@ const sm = require('./session-manager.cjs');
 const wez = require('./wezterm.cjs');
 const clawtrol = require('./clawtrol-sync.cjs');
 const ps = require('./project-scanner.cjs');
+const orchestrator = require('./terminal-orchestrator.cjs');
+const sharedTasks = require('./shared-tasks.cjs');
 
 const WEBAPP_DIR = pathModule.join(__dirname, 'webapp');
 
@@ -587,6 +589,50 @@ async function handleRequest(req, res) {
       } catch {
         return json(res, 404, { error: 'Not found' });
       }
+    }
+
+    // ─── Orchestrator API ─────────────────────────────────────────────
+    // GET /api/team — team status
+    if (method === 'GET' && path === '/api/team') {
+      return json(res, 200, {
+        aliases: orchestrator.listAliases(),
+        orchestratorRunning: orchestrator.isOrchestratorRunning(),
+        tasks: sharedTasks.listTasks(),
+        pendingMessages: 0, // TODO: expose from orchestrator
+      });
+    }
+    // POST /api/team — create team
+    if (method === 'POST' && path === '/api/team') {
+      const body = await readBody(req);
+      const result = orchestrator.createTeam(body);
+      return json(res, 200, result);
+    }
+    // POST /api/team/message — send inter-session message
+    if (method === 'POST' && path === '/api/team/message') {
+      const body = await readBody(req);
+      const msg = orchestrator.sendMessage(body);
+      return json(res, 200, msg);
+    }
+    // POST /api/team/broadcast — broadcast to all
+    if (method === 'POST' && path === '/api/team/broadcast') {
+      const body = await readBody(req);
+      const msgs = orchestrator.broadcast(body.from || 'api', body.message);
+      return json(res, 200, { sent: msgs.length });
+    }
+    // GET /api/team/tasks — shared task list
+    if (method === 'GET' && path === '/api/team/tasks') {
+      return json(res, 200, sharedTasks.listTasks());
+    }
+    // POST /api/team/tasks — create shared task
+    if (method === 'POST' && path === '/api/team/tasks') {
+      const body = await readBody(req);
+      const task = sharedTasks.createTask(body);
+      return json(res, 200, task);
+    }
+    // POST /api/team/disband — disband team
+    if (method === 'POST' && path === '/api/team/disband') {
+      const killed = orchestrator.disbandTeam();
+      return json(res, 200, { killed });
     }
 
     // Serve Mini App static files (/ and /index.html)

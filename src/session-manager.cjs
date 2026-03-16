@@ -40,9 +40,10 @@ const WAITING_PATTERNS = WAITING_PATTERN_MAP.map(p => p.pattern);
 const MAX_HISTORY = 20;
 
 // Stability check: how many consecutive polls must show the same ❯ before we declare "done"
-// At 3s poll interval, STABILITY_COUNT=2 means 6s of stable ❯ before firing.
-// This prevents false triggers from ❯ flashing between tool calls.
-const STABILITY_COUNT = 2;
+// At 3s poll interval, STABILITY_COUNT=3 means 9s of stable ❯ before firing.
+// This prevents false triggers from ❯ flashing between tool calls or Claude pausing mid-thought.
+// Configurable via WEZBRIDGE_STABILITY_COUNT env var.
+const STABILITY_COUNT = parseInt(process.env.WEZBRIDGE_STABILITY_COUNT || '3', 10);
 
 // Patterns that indicate Claude is still actively working (even if ❯ is visible)
 const STILL_WORKING_PATTERNS = [
@@ -223,7 +224,15 @@ function sendPrompt(sessionId, prompt) {
   const session = sessions.get(sessionId);
   if (!session) throw new Error(`Session ${sessionId} not found`);
 
-  wez.sendText(session.paneId, prompt);
+  try {
+    wez.sendText(session.paneId, prompt);
+  } catch (err) {
+    session.status = 'error';
+    session.error = err.message;
+    events.emit('session:send-failed', { session, error: err });
+    throw err;
+  }
+
   session.status = 'running';
   session.lastActivity = new Date().toISOString();
   session.promptSentAt = Date.now();
@@ -523,8 +532,73 @@ function _registerSession(session) {
   events.emit('session:spawned', session);
 }
 
+/**
+ * Restore a session from a previous orchestrator run.
+ * Spawns a new WezTerm pane and launches `claude -r <claudeSessionId>` to resume.
+ *
+ * @param {object} opts
+ * @param {string} opts.project - Project directory
+ * @param {string} opts.name - Session name / alias
+ * @param {string} opts.claudeSessionId - Claude conversation ID to resume
+ * @param {boolean} [opts.dangerouslySkipPermissions]
+ * @returns {object} Session info
+ */
+function restoreSession(opts) {
+  const {
+    project,
+    name,
+    claudeSessionId,
+    dangerouslySkipPermissions = false,
+  } = opts;
+
+  if (!claudeSessionId) {
+    throw new Error('claudeSessionId is required for restore');
+  }
+
+  const paneId = wez.spawnPane({ cwd: project });
+
+  const sessionId = `wez-${nextId++}`;
+  const session = {
+    id: sessionId,
+    name: name || `session-${sessionId}`,
+    paneId,
+    project,
+    taskId: null,
+    status: 'starting',
+    createdAt: new Date().toISOString(),
+    lastActivity: new Date().toISOString(),
+    lastOutput: '',
+    promptHistory: [],
+    completionHistory: [],
+    promptType: null,
+    restored: true,
+    claudeSessionId,
+  };
+
+  sessions.set(sessionId, session);
+  events.emit('session:spawned', session);
+
+  // Build resume command
+  const claudeArgs = ['claude', '-r', claudeSessionId];
+  if (dangerouslySkipPermissions) claudeArgs.push('--dangerously-skip-permissions');
+
+  setTimeout(() => {
+    try {
+      wez.sendText(paneId, 'unset CLAUDECODE && ' + claudeArgs.join(' '));
+      session.status = 'running';
+      console.log(`\x1b[32m[session]\x1b[0m Restored ${name} → claude -r ${claudeSessionId}`);
+    } catch (err) {
+      session.status = 'error';
+      session.error = err.message;
+    }
+  }, 2000);
+
+  return session;
+}
+
 module.exports = {
   spawnSession,
+  restoreSession,
   sendPrompt,
   readOutput,
   checkCompletion,

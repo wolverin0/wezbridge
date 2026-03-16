@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "wezbridge": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["./src/mcp-server.cjs"]
+    }
+  }
+}

@@ -37,6 +37,9 @@ const NotificationManager = require('./notification-manager.cjs');
 const PluginLoader = require('./plugin-loader.cjs');
 const clawtrol = require('./clawtrol-sync.cjs');
 const voiceHandler = require('./voice-handler.cjs');
+const orchestrator = require('./terminal-orchestrator.cjs');
+const sharedTasks = require('./shared-tasks.cjs');
+const promptQueue = require('./prompt-queue.cjs');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -1526,7 +1529,291 @@ async function handleHelp(msg) {
     '/dashboard \u2014 Pinned live status',
     '',
     'Type in a topic to send prompts. Use buttons for quick actions.',
+    '',
+    '<b>Team orchestrator:</b>',
+    '/team &lt;project&gt; &lt;@name:role, ...&gt; — Create agent team',
+    '/teamstatus — Show team status + task list',
+    '/msg @name &lt;text&gt; — Message a session',
+    '/broadcast &lt;text&gt; — Message all sessions',
+    '/alias @name — Name current topic\'s session',
+    '/tasks — View shared task list',
+    '/addtask &lt;title&gt; — Add a shared task',
+    '/mailbox — View inter-session messages',
+    '/disband — Kill all team sessions',
   ].join('\n'), { message_thread_id: msg.message_thread_id });
+}
+
+// ─── Orchestrator command handlers ─────────────────────────────────────────
+
+/**
+ * /team <project> <@name:role, @name:role> — Create an agent team
+ * Example: /team ~/myapp @frontend:React UI, @backend:API routes, @tests:Write tests
+ */
+async function handleTeam(msg, args) {
+  if (!args || !args.trim()) {
+    return sendMsg(msg.chat.id, [
+      '<b>Usage:</b> <code>/team &lt;project&gt; @name:role, @name:role</code>',
+      '',
+      '<b>Example:</b>',
+      '<code>/team ~/myapp @frontend:React UI, @backend:API routes, @tests:Write tests</code>',
+      '',
+      'Add <code>--orchestrator</code> to include an overseer session.',
+      'Add <code>--yolo</code> to skip permissions.',
+    ].join('\n'), { message_thread_id: msg.message_thread_id });
+  }
+
+  const hasOrchestrator = args.includes('--orchestrator');
+  const hasYolo = args.includes('--yolo');
+  const cleanArgs = args.replace(/--orchestrator/g, '').replace(/--yolo/g, '').trim();
+
+  // Parse: first token is project, rest are @name:role pairs
+  const tokens = cleanArgs.split(/\s+/);
+  const project = resolveProjectPath(tokens[0]) || tokens[0];
+  const memberStr = tokens.slice(1).join(' ');
+
+  // Parse @name:role pairs (comma or space separated)
+  const memberPattern = /@([a-zA-Z0-9_-]+):([^,@]+)/g;
+  const members = [];
+  let match;
+  while ((match = memberPattern.exec(memberStr)) !== null) {
+    members.push({ alias: match[1].toLowerCase(), role: match[2].trim() });
+  }
+
+  if (members.length === 0) {
+    return sendMsg(msg.chat.id, 'No team members specified. Use <code>@name:role</code> format.', {
+      message_thread_id: msg.message_thread_id,
+    });
+  }
+
+  await sendMsg(msg.chat.id, [
+    `\u26a1 <b>Creating team</b> (${members.length} members${hasOrchestrator ? ' + orchestrator' : ''})`,
+    `Project: <code>${outputParser.escapeHtml(project)}</code>`,
+    '',
+    ...members.map(m => `\u2022 @${m.alias}: ${m.role}`),
+  ].join('\n'), { message_thread_id: msg.message_thread_id });
+
+  const result = orchestrator.createTeam({
+    project,
+    members,
+    withOrchestrator: hasOrchestrator,
+    dangerouslySkipPermissions: hasYolo,
+  });
+
+  // Create Telegram topics for each team member
+  for (const member of result.members) {
+    if (member.error) continue;
+    try {
+      const topicName = `@${member.alias}`;
+      const topic = await bot.createForumTopic(GROUP_ID, topicName, { icon_color: 7322096 });
+      const topicId = topic.message_thread_id;
+      sessionToTopic.set(member.sessionId, { topicId, chatId: GROUP_ID, projectName: member.alias });
+      topicToSession.set(topicId, member.sessionId);
+      wez.setTabTitle(sm.getSession(member.sessionId)?.paneId, `@${member.alias}`);
+    } catch (err) {
+      console.error(`${T.err} Topic creation for @${member.alias}:`, err.message);
+    }
+  }
+
+  // Create topic for orchestrator too
+  if (result.orchestrator) {
+    try {
+      const topic = await bot.createForumTopic(GROUP_ID, '\ud83c\udfaf Orchestrator', { icon_color: 16766720 });
+      const topicId = topic.message_thread_id;
+      sessionToTopic.set(result.orchestrator.id, { topicId, chatId: GROUP_ID, projectName: 'orchestrator' });
+      topicToSession.set(topicId, result.orchestrator.id);
+    } catch (err) {
+      console.error(`${T.err} Orchestrator topic creation:`, err.message);
+    }
+  }
+
+  saveState();
+
+  const summary = result.members.map(m =>
+    m.error ? `\u274c @${m.alias}: ${m.error}` : `\u2705 @${m.alias} → ${m.sessionId}`
+  );
+
+  return sendMsg(msg.chat.id, [
+    '<b>\u2705 Team created!</b>',
+    '',
+    ...summary,
+    result.orchestrator ? `\ud83c\udfaf Orchestrator: ${result.orchestrator.id}` : '',
+    '',
+    'Each member has a dedicated topic. Use <code>@name message</code> to communicate.',
+  ].join('\n'), { message_thread_id: msg.message_thread_id });
+}
+
+/**
+ * /teamstatus — Show full team status
+ */
+async function handleTeamStatus(msg) {
+  const status = orchestrator.getTeamStatus();
+  const tasks = sharedTasks.formatForTelegram();
+  return sendMsg(msg.chat.id, `${status}\n\n${tasks}`, { message_thread_id: msg.message_thread_id });
+}
+
+/**
+ * /msg @name <text> — Send a message to a specific session
+ */
+async function handleMsg(msg, args) {
+  if (!args || !args.trim()) {
+    return sendMsg(msg.chat.id, 'Usage: <code>/msg @name your message</code>', {
+      message_thread_id: msg.message_thread_id,
+    });
+  }
+
+  const match = args.match(/^@([a-zA-Z0-9_-]+)\s+(.+)/s);
+  if (!match) {
+    return sendMsg(msg.chat.id, 'Usage: <code>/msg @name your message</code>', {
+      message_thread_id: msg.message_thread_id,
+    });
+  }
+
+  const alias = match[1].toLowerCase();
+  const message = match[2].trim();
+  const targetSessionId = orchestrator.resolveAlias(alias);
+
+  if (!targetSessionId) {
+    const available = orchestrator.listAliases().map(a => `@${a.alias}`).join(', ');
+    return sendMsg(msg.chat.id, `Unknown session: @${alias}\nAvailable: ${available || 'none'}`, {
+      message_thread_id: msg.message_thread_id,
+    });
+  }
+
+  const queued = orchestrator.sendMessage({ from: 'user', to: alias, message });
+  const session = sm.getSession(targetSessionId);
+  const delivered = session && session.status === 'waiting' ? ' (delivered immediately)' : ' (queued for delivery)';
+
+  return sendMsg(msg.chat.id, `\ud83d\udce8 Message to <b>@${alias}</b>${delivered}`, {
+    message_thread_id: msg.message_thread_id,
+  });
+}
+
+/**
+ * /broadcast <text> — Send message to all sessions
+ */
+async function handleBroadcast(msg, text) {
+  if (!text || !text.trim()) {
+    return sendMsg(msg.chat.id, 'Usage: <code>/broadcast your message to all sessions</code>', {
+      message_thread_id: msg.message_thread_id,
+    });
+  }
+
+  const messages = orchestrator.broadcast('user', text.trim());
+  return sendMsg(msg.chat.id, `\ud83d\udce2 Broadcast sent to ${messages.length} sessions`, {
+    message_thread_id: msg.message_thread_id,
+  });
+}
+
+/**
+ * /alias @name — Name the current topic's session
+ */
+async function handleAlias(msg, alias) {
+  if (!alias || !alias.trim()) {
+    return sendMsg(msg.chat.id, 'Usage: <code>/alias @name</code>', {
+      message_thread_id: msg.message_thread_id,
+    });
+  }
+
+  const topicId = msg.message_thread_id;
+  const sessionId = topicToSession.get(topicId);
+  if (!sessionId) {
+    return sendMsg(msg.chat.id, 'No session in this topic. Use /spawn first.', {
+      message_thread_id: topicId,
+    });
+  }
+
+  const clean = alias.replace(/^@/, '').trim();
+  orchestrator.registerAlias(sessionId, clean);
+  return sendMsg(msg.chat.id, `\u2705 Session named <b>@${clean}</b>`, {
+    message_thread_id: topicId,
+  });
+}
+
+/**
+ * /tasks — View shared task list
+ * /addtask <title> — Add a task
+ */
+async function handleTasks(msg) {
+  return sendMsg(msg.chat.id, sharedTasks.formatForTelegram(), {
+    message_thread_id: msg.message_thread_id,
+  });
+}
+
+async function handleAddTask(msg, args) {
+  if (!args || !args.trim()) {
+    return sendMsg(msg.chat.id, [
+      '<b>Usage:</b> <code>/addtask Title text</code>',
+      '<b>Options:</b>',
+      '  <code>--assign @name</code> — Pre-assign to a session',
+      '  <code>--priority high</code> — Set priority (low/normal/high/critical)',
+      '  <code>--depends taskId</code> — Add dependency',
+    ].join('\n'), { message_thread_id: msg.message_thread_id });
+  }
+
+  // Parse options
+  const assignMatch = args.match(/--assign\s+@?([a-zA-Z0-9_-]+)/);
+  const priorityMatch = args.match(/--priority\s+(low|normal|high|critical)/);
+  const dependsMatch = args.match(/--depends\s+([a-f0-9]+)/);
+  const title = args
+    .replace(/--assign\s+@?[a-zA-Z0-9_-]+/g, '')
+    .replace(/--priority\s+\S+/g, '')
+    .replace(/--depends\s+\S+/g, '')
+    .trim();
+
+  const assignedTo = assignMatch ? orchestrator.resolveAlias(assignMatch[1]) : null;
+
+  try {
+    const task = sharedTasks.createTask({
+      title,
+      createdBy: 'user',
+      assignedTo,
+      priority: priorityMatch ? priorityMatch[1] : 'normal',
+      dependsOn: dependsMatch ? [dependsMatch[1]] : [],
+    });
+    return sendMsg(msg.chat.id, `\u2705 Task created: <code>${task.id}</code> — ${outputParser.escapeHtml(task.title)}`, {
+      message_thread_id: msg.message_thread_id,
+    });
+  } catch (err) {
+    return sendMsg(msg.chat.id, `\u274c ${outputParser.escapeHtml(err.message)}`, {
+      message_thread_id: msg.message_thread_id,
+    });
+  }
+}
+
+/**
+ * /mailbox — View inter-session messages
+ */
+async function handleMailbox(msg) {
+  return sendMsg(msg.chat.id, orchestrator.getMailboxStatus(), {
+    message_thread_id: msg.message_thread_id,
+  });
+}
+
+/**
+ * /disband — Kill all team sessions
+ */
+async function handleDisband(msg) {
+  const killed = orchestrator.disbandTeam();
+  if (killed.length === 0) {
+    return sendMsg(msg.chat.id, '<i>No active team to disband</i>', {
+      message_thread_id: msg.message_thread_id,
+    });
+  }
+
+  // Clean up topic mappings for killed sessions
+  for (const alias of killed) {
+    for (const [sessionId, info] of sessionToTopic) {
+      if (info.projectName === alias) {
+        topicToSession.delete(info.topicId);
+        sessionToTopic.delete(sessionId);
+      }
+    }
+  }
+  saveState();
+
+  return sendMsg(msg.chat.id, `\ud83d\udca5 Team disbanded: ${killed.map(a => `@${a}`).join(', ')}`, {
+    message_thread_id: msg.message_thread_id,
+  });
 }
 
 // --- Register commands (all gated by authed()) ---
@@ -1547,6 +1834,18 @@ bot.onText(/\/dump$/, authed((msg) => handleDump(msg)));
 bot.onText(/\/task\s*(.*)/, authed((msg, match) => handleTask(msg, match[1])));
 bot.onText(/\/help$/, authed((msg) => handleHelp(msg)));
 bot.onText(/\/start$/, authed((msg) => handleHelp(msg)));
+
+// --- Orchestrator commands ---
+bot.onText(/\/team\s+(.+)/, authed((msg, match) => handleTeam(msg, match[1])));
+bot.onText(/\/team$/, authed((msg) => handleTeam(msg, '')));
+bot.onText(/\/teamstatus$/, authed((msg) => handleTeamStatus(msg)));
+bot.onText(/\/msg\s+(.+)/s, authed((msg, match) => handleMsg(msg, match[1])));
+bot.onText(/\/broadcast\s+(.+)/s, authed((msg, match) => handleBroadcast(msg, match[1])));
+bot.onText(/\/alias\s+(.+)/, authed((msg, match) => handleAlias(msg, match[1])));
+bot.onText(/\/tasks$/, authed((msg) => handleTasks(msg)));
+bot.onText(/\/addtask\s+(.+)/, authed((msg, match) => handleAddTask(msg, match[1])));
+bot.onText(/\/mailbox$/, authed((msg) => handleMailbox(msg)));
+bot.onText(/\/disband$/, authed((msg) => handleDisband(msg)));
 
 // /split — split current session's pane
 bot.onText(/\/split(?:\s+(.+))?/, authed(async (msg, match) => {
@@ -1761,7 +2060,35 @@ bot.on('message', async (msg) => {
 
     if (!promptText) return;
 
-    sm.sendPrompt(sessionId, promptText);
+    // ─── @ Mention Routing ─────────────────────────────────────────────
+    // If the message contains @alias mentions, route to those sessions
+    // instead of (or in addition to) the current topic's session.
+    const { mentions, cleanText, isBroadcast } = orchestrator.parseMentions(promptText);
+
+    if (mentions.length > 0 && cleanText) {
+      if (isBroadcast) {
+        // @all or @team — broadcast to everyone
+        orchestrator.broadcast('user', cleanText);
+        await sendMsg(msg.chat.id, `\ud83d\udce2 Broadcast to ${orchestrator.listAliases().length} sessions`, {
+          message_thread_id: topicId,
+        });
+      } else {
+        // Route to specific sessions
+        for (const alias of mentions) {
+          orchestrator.sendMessage({ from: 'user', to: alias, message: cleanText });
+        }
+        const targets = mentions.map(a => `@${a}`).join(', ');
+        await sendMsg(msg.chat.id, `\ud83d\udce8 Sent to ${targets}`, {
+          message_thread_id: topicId,
+        });
+      }
+      setReaction(msg.chat.id, msg.message_id, '\ud83d\udce8');
+      return;
+    }
+    // ─── End @ Mention Routing ─────────────────────────────────────────
+
+    // Use prompt queue for safe, atomic delivery
+    promptQueue.enqueue(sessionId, promptText, { source: 'telegram-user', priority: 0 });
 
     // Clean up temp files after a delay
     if (_tempFiles.length > 0) {
@@ -2351,6 +2678,9 @@ function startBot() {
   // Discover projects
   const projects = projectScanner.scanProjects();
   console.log(`${T.bot} Projects: ${c.green}${projects.length}${c.reset} discovered`);
+
+  // Initialize orchestrator auto-coordination
+  orchestrator.setupAutoCoordination();
 
   seedFromArgs();
 
