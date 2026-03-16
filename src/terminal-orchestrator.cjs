@@ -532,6 +532,77 @@ function createTeam(spec) {
 }
 
 /**
+ * Resume a team from saved persistence state.
+ * For each member, spawns a new pane and resumes the Claude conversation.
+ *
+ * @param {object} state - Loaded OrchestratorState from session-persistence
+ * @returns {object} { orchestrator, members, restored, failed }
+ */
+function resumeTeam(state) {
+  const persistence = require('./session-persistence.cjs');
+  const result = { orchestrator: null, members: [], restored: 0, failed: 0 };
+
+  for (const member of state.members) {
+    // Try to find a resumable Claude session
+    let claudeId = member.claudeSessionId;
+    if (!claudeId) {
+      claudeId = persistence.findResumableSession(member.project || state.project, state.savedAt);
+    }
+
+    if (!claudeId) {
+      console.warn(`[orchestrator] @${member.alias}: no resumable Claude session found, spawning fresh`);
+      try {
+        const session = spawnTeamMember({
+          alias: member.alias,
+          project: member.project || state.project,
+          role: member.role,
+          dangerouslySkipPermissions: state.yolo || false,
+        });
+        result.members.push({ alias: member.alias, sessionId: session.id, resumed: false });
+        result.restored++;
+      } catch (err) {
+        result.members.push({ alias: member.alias, error: err.message });
+        result.failed++;
+      }
+      continue;
+    }
+
+    try {
+      const session = sm.restoreSession({
+        project: member.project || state.project,
+        name: member.alias,
+        claudeSessionId: claudeId,
+        dangerouslySkipPermissions: state.yolo || false,
+      });
+
+      registerAlias(session.id, member.alias);
+      events.emit('team:member-resumed', { sessionId: session.id, alias: member.alias, claudeSessionId: claudeId });
+
+      result.members.push({ alias: member.alias, sessionId: session.id, claudeSessionId: claudeId, resumed: true });
+      result.restored++;
+    } catch (err) {
+      console.error(`[orchestrator] Failed to resume @${member.alias}:`, err.message);
+      result.members.push({ alias: member.alias, error: err.message });
+      result.failed++;
+    }
+  }
+
+  // Resume orchestrator if it was running
+  if (state.hasOrchestrator) {
+    try {
+      result.orchestrator = startOrchestrator({
+        project: state.project,
+        dangerouslySkipPermissions: state.yolo || false,
+      });
+    } catch (err) {
+      console.error('[orchestrator] Failed to resume overseer:', err.message);
+    }
+  }
+
+  return result;
+}
+
+/**
  * Disband the team — kill all members and orchestrator.
  */
 function disbandTeam() {
@@ -620,6 +691,7 @@ module.exports = {
   // Team management
   spawnTeamMember,
   createTeam,
+  resumeTeam,
   disbandTeam,
   // Auto-coordination
   setupAutoCoordination,

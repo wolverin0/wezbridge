@@ -12,13 +12,16 @@
  *     --orchestrator --port 4200 --yolo
  *
  * Flags:
- *   --project <path>       Project directory (required)
- *   --team "<spec>"        Team members as @alias:role pairs (required)
+ *   --project <path>       Project directory (required for new teams)
+ *   --team "<spec>"        Team members as @alias:role pairs (required for new teams)
  *   --orchestrator         Spawn an overseer session that monitors all others
  *   --port <number>        Start REST API server on this port
  *   --yolo                 Skip Claude Code permission prompts
  *   --stability <count>    Stability poll count before declaring completion (default: 3)
  *   --poll <ms>            Poll interval in milliseconds (default: 3000)
+ *   --resume               Resume the last saved orchestrator session
+ *   --discard              Discard saved state and start fresh
+ *   --status               Show saved state info and exit
  *
  * Without Telegram:
  *   The orchestrator runs purely from the PC. Status is shown in console output.
@@ -35,6 +38,7 @@ const sharedTasks = require('./shared-tasks.cjs');
 const promptQueue = require('./prompt-queue.cjs');
 const sanitizer = require('./message-sanitizer.cjs');
 const outputParser = require('./output-parser.cjs');
+const persistence = require('./session-persistence.cjs');
 
 // ─── ANSI colors ───────────────────────────────────────────────────────────
 const c = {
@@ -57,6 +61,9 @@ function parseArgs() {
     orchestrator: false,
     port: null,
     yolo: false,
+    resume: false,
+    discard: false,
+    status: false,
     stability: parseInt(process.env.WEZBRIDGE_STABILITY_COUNT || '3', 10),
     poll: parseInt(process.env.TELEGRAM_POLL_MS || '3000', 10),
   };
@@ -77,6 +84,15 @@ function parseArgs() {
         break;
       case '--yolo':
         opts.yolo = true;
+        break;
+      case '--resume':
+        opts.resume = true;
+        break;
+      case '--discard':
+        opts.discard = true;
+        break;
+      case '--status':
+        opts.status = true;
         break;
       case '--stability':
         opts.stability = parseInt(args[++i], 10);
@@ -111,9 +127,14 @@ ${c.bold}${c.cyan}WezBridge Orchestrator${c.reset} — Multi-session Claude Code
 ${c.bold}Usage:${c.reset}
   node src/orchestrator-cli.cjs --project <path> --team "<spec>" [options]
 
-${c.bold}Required:${c.reset}
+${c.bold}Required (new team):${c.reset}
   --project <path>       Project directory
   --team "<spec>"        Team members: "@name:role, @name:role"
+
+${c.bold}Session management:${c.reset}
+  --resume               Resume the last saved orchestrator session
+  --discard              Discard saved state and start fresh
+  --status               Show saved state info and exit
 
 ${c.bold}Options:${c.reset}
   --orchestrator         Spawn an overseer session
@@ -126,6 +147,16 @@ ${c.bold}Examples:${c.reset}
   ${c.dim}# Basic team${c.reset}
   node src/orchestrator-cli.cjs --project ~/myapp \\
     --team "@frontend:Build UI, @backend:Build API"
+
+  ${c.dim}# Resume after reboot${c.reset}
+  node src/orchestrator-cli.cjs --resume
+
+  ${c.dim}# Check saved state${c.reset}
+  node src/orchestrator-cli.cjs --status
+
+  ${c.dim}# Discard old state and start fresh${c.reset}
+  node src/orchestrator-cli.cjs --discard --project ~/myapp \\
+    --team "@frontend:UI, @backend:API"
 
   ${c.dim}# With orchestrator and REST API${c.reset}
   node src/orchestrator-cli.cjs --project ~/myapp \\
@@ -179,64 +210,90 @@ function startCompletionLoop(pollMs) {
   }, pollMs);
 }
 
-// ─── Startup ───────────────────────────────────────────────────────────────
-async function main() {
-  const opts = parseArgs();
+// ─── Status Command ───────────────────────────────────────────────────────
+function showStatus() {
+  const info = persistence.peekState();
+  if (!info) {
+    console.log(`${c.yellow}No saved orchestrator state found.${c.reset}`);
+    console.log(`Use --project and --team to start a new team.`);
+    return;
+  }
 
-  if (!opts.project) {
-    console.error(`${c.red}Error: --project is required${c.reset}`);
-    printHelp();
+  const ageMin = Math.round(info.age / 60000);
+  const ageStr = ageMin < 60 ? `${ageMin}m ago` : `${Math.round(ageMin / 60)}h ago`;
+
+  console.log(`\n${c.bold}${c.cyan}Saved Orchestrator State${c.reset}\n`);
+  console.log(`  ${c.bold}Project:${c.reset}       ${info.project}`);
+  console.log(`  ${c.bold}Members:${c.reset}       ${info.members.join(', ')} (${info.memberCount} total)`);
+  console.log(`  ${c.bold}Orchestrator:${c.reset}  ${info.hasOrchestrator ? 'yes' : 'no'}`);
+  console.log(`  ${c.bold}Saved:${c.reset}         ${info.savedAt} (${ageStr})`);
+  console.log(`  ${c.bold}State file:${c.reset}    ${persistence.STATE_FILE}`);
+
+  // Check for resumable Claude sessions
+  const state = persistence.loadState();
+  if (state && state.members) {
+    console.log(`\n  ${c.bold}Resumable sessions:${c.reset}`);
+    for (const member of state.members) {
+      const claudeId = persistence.findResumableSession(member.project || state.project, state.savedAt);
+      if (claudeId) {
+        console.log(`    ${c.green}@${member.alias}${c.reset} → ${claudeId.slice(0, 12)}...`);
+      } else {
+        console.log(`    ${c.yellow}@${member.alias}${c.reset} → no resumable session (will start fresh)`);
+      }
+    }
+  }
+
+  console.log(`\n  Run ${c.bold}--resume${c.reset} to restore this team.`);
+  console.log(`  Run ${c.bold}--discard${c.reset} to clear and start fresh.\n`);
+}
+
+// ─── Resume Flow ──────────────────────────────────────────────────────────
+function resumeFromSaved(opts) {
+  const state = persistence.loadState();
+  if (!state) {
+    console.error(`${c.red}Error: No saved state to resume.${c.reset}`);
+    console.log(`Use --project and --team to start a new team.`);
     process.exit(1);
   }
 
-  if (opts.team.length === 0) {
-    console.error(`${c.red}Error: --team is required (e.g., --team "@frontend:UI, @backend:API")${c.reset}`);
-    printHelp();
-    process.exit(1);
+  const ageMin = Math.round((Date.now() - new Date(state.savedAt).getTime()) / 60000);
+  const ageStr = ageMin < 60 ? `${ageMin}m ago` : `${Math.round(ageMin / 60)}h ago`;
+
+  console.log(`\n${c.bold}${c.cyan}━━━ WezBridge Orchestrator (Resume) ━━━${c.reset}\n`);
+  log('resume', c.cyan, `Restoring team from ${ageStr}`);
+  log('resume', c.cyan, `Project: ${state.project}`);
+  log('resume', c.cyan, `Members: ${state.members.map(m => `@${m.alias}`).join(', ')}`);
+
+  // Apply saved options (CLI flags override saved state)
+  const project = opts.project || state.project;
+  const yolo = opts.yolo || state.yolo || false;
+  const poll = opts.poll || state.poll || 3000;
+  const stability = opts.stability || state.stability || 3;
+  const port = opts.port || state.port || null;
+
+  if (stability) {
+    process.env.WEZBRIDGE_STABILITY_COUNT = String(stability);
   }
-
-  // Resolve project path
-  const path = require('path');
-  const fs = require('fs');
-  const project = path.resolve(opts.project.replace(/^~/, process.env.HOME || process.env.USERPROFILE || ''));
-
-  if (!fs.existsSync(project)) {
-    console.error(`${c.red}Error: Project directory not found: ${project}${c.reset}`);
-    process.exit(1);
-  }
-
-  // Set env vars for configurable stability
-  if (opts.stability) {
-    process.env.WEZBRIDGE_STABILITY_COUNT = String(opts.stability);
-  }
-
-  // Banner
-  console.log(`\n${c.bold}${c.cyan}━━━ WezBridge Orchestrator ━━━${c.reset}\n`);
-  log('init', c.cyan, `Project: ${project}`);
-  log('init', c.cyan, `Team: ${opts.team.map(m => `@${m.alias}`).join(', ')}`);
-  log('init', c.cyan, `Orchestrator: ${opts.orchestrator ? 'yes' : 'no'}`);
-  log('init', c.cyan, `YOLO: ${opts.yolo ? 'yes' : 'no'}`);
-  log('init', c.cyan, `Stability: ${opts.stability} polls (${opts.stability * opts.poll / 1000}s)`);
 
   // Setup auto-coordination
   orchestrator.setupAutoCoordination();
 
-  // Create team
-  log('team', c.magenta, 'Spawning team members...');
-  const result = orchestrator.createTeam({
+  // Resume team
+  log('resume', c.magenta, 'Resuming team members...');
+  const result = orchestrator.resumeTeam({
+    ...state,
     project,
-    members: opts.team,
-    withOrchestrator: opts.orchestrator,
-    dangerouslySkipPermissions: opts.yolo,
+    yolo,
   });
 
   // Report results
   for (const member of result.members) {
     if (member.error) {
       log(member.alias, c.red, `Failed: ${member.error}`);
+    } else if (member.resumed) {
+      log(member.alias, c.green, `Resumed → claude -r ${member.claudeSessionId?.slice(0, 12)}... (${member.sessionId})`);
     } else {
-      const session = sm.getSession(member.sessionId);
-      log(member.alias, c.green, `Spawned → pane ${session?.paneId} (${member.sessionId})`);
+      log(member.alias, c.yellow, `Spawned fresh (no resumable session) → ${member.sessionId}`);
     }
   }
 
@@ -244,16 +301,168 @@ async function main() {
     log('orchestrator', c.magenta, `Overseer → ${result.orchestrator.id}`);
   }
 
+  // Restore pending prompt queue items
+  const savedQueue = persistence.loadQueue();
+  let restoredPrompts = 0;
+  for (const [oldSessionId, items] of Object.entries(savedQueue)) {
+    // Map old session IDs to new ones via alias
+    const alias = state.members.find(m => m.sessionId === oldSessionId)?.alias;
+    if (!alias) continue;
+    const newSessionId = orchestrator.resolveAlias(alias);
+    if (!newSessionId) continue;
+
+    for (const item of items) {
+      promptQueue.enqueue(newSessionId, item.text, {
+        source: item.source || 'restored',
+        priority: item.priority || 2,
+      });
+      restoredPrompts++;
+    }
+  }
+  if (restoredPrompts > 0) {
+    log('resume', c.blue, `Restored ${restoredPrompts} pending prompt(s) from queue`);
+  }
+  persistence.clearQueue();
+
+  console.log(`\n${c.bold}${c.green}✓ Team resumed${c.reset} — ${result.restored} restored, ${result.failed} failed\n`);
+
+  return { project, poll, stability, port, yolo, memberCount: state.members.length };
+}
+
+// ─── Startup ───────────────────────────────────────────────────────────────
+async function main() {
+  const opts = parseArgs();
+
+  // --status: show saved state and exit
+  if (opts.status) {
+    showStatus();
+    process.exit(0);
+  }
+
+  // --discard: clear saved state
+  if (opts.discard) {
+    persistence.clearState();
+    persistence.clearQueue();
+    log('init', c.yellow, 'Saved state discarded');
+  }
+
+  let project, poll, port, memberCount;
+
+  // --resume: restore from saved state
+  if (opts.resume) {
+    const resumed = resumeFromSaved(opts);
+    project = resumed.project;
+    poll = resumed.poll;
+    port = resumed.port;
+    memberCount = resumed.memberCount;
+  } else {
+    // Normal startup — require --project and --team
+    if (!opts.project) {
+      // Check if there's a saved state to offer resuming
+      if (persistence.hasSavedState()) {
+        const info = persistence.peekState();
+        console.log(`${c.yellow}Saved orchestrator state found:${c.reset} ${info.members.join(', ')} (${info.savedAt})`);
+        console.log(`Use ${c.bold}--resume${c.reset} to restore, or provide --project and --team for a new session.\n`);
+      }
+      console.error(`${c.red}Error: --project is required${c.reset}`);
+      printHelp();
+      process.exit(1);
+    }
+
+    if (opts.team.length === 0) {
+      console.error(`${c.red}Error: --team is required (e.g., --team "@frontend:UI, @backend:API")${c.reset}`);
+      printHelp();
+      process.exit(1);
+    }
+
+    // Resolve project path
+    const pathMod = require('path');
+    const fs = require('fs');
+    project = pathMod.resolve(opts.project.replace(/^~/, process.env.HOME || process.env.USERPROFILE || ''));
+
+    if (!fs.existsSync(project)) {
+      console.error(`${c.red}Error: Project directory not found: ${project}${c.reset}`);
+      process.exit(1);
+    }
+
+    // Set env vars for configurable stability
+    if (opts.stability) {
+      process.env.WEZBRIDGE_STABILITY_COUNT = String(opts.stability);
+    }
+
+    // Banner
+    console.log(`\n${c.bold}${c.cyan}━━━ WezBridge Orchestrator ━━━${c.reset}\n`);
+    log('init', c.cyan, `Project: ${project}`);
+    log('init', c.cyan, `Team: ${opts.team.map(m => `@${m.alias}`).join(', ')}`);
+    log('init', c.cyan, `Orchestrator: ${opts.orchestrator ? 'yes' : 'no'}`);
+    log('init', c.cyan, `YOLO: ${opts.yolo ? 'yes' : 'no'}`);
+    log('init', c.cyan, `Stability: ${opts.stability} polls (${opts.stability * opts.poll / 1000}s)`);
+
+    // Setup auto-coordination
+    orchestrator.setupAutoCoordination();
+
+    // Create team
+    log('team', c.magenta, 'Spawning team members...');
+    const result = orchestrator.createTeam({
+      project,
+      members: opts.team,
+      withOrchestrator: opts.orchestrator,
+      dangerouslySkipPermissions: opts.yolo,
+    });
+
+    // Report results
+    for (const member of result.members) {
+      if (member.error) {
+        log(member.alias, c.red, `Failed: ${member.error}`);
+      } else {
+        const session = sm.getSession(member.sessionId);
+        log(member.alias, c.green, `Spawned → pane ${session?.paneId} (${member.sessionId})`);
+      }
+    }
+
+    if (result.orchestrator) {
+      log('orchestrator', c.magenta, `Overseer → ${result.orchestrator.id}`);
+    }
+
+    poll = opts.poll;
+    port = opts.port;
+    memberCount = opts.team.length;
+
+    console.log(`\n${c.bold}${c.green}✓ Orchestrator running${c.reset} — ${memberCount} sessions active\n`);
+  }
+
   // Start completion loop
-  startCompletionLoop(opts.poll);
+  startCompletionLoop(poll);
 
   // Start REST API if port specified
-  if (opts.port) {
-    process.env.WEZ_BRIDGE_PORT = String(opts.port);
+  if (port) {
+    process.env.WEZ_BRIDGE_PORT = String(port);
     const { start } = require('./server.cjs');
     start();
-    log('api', c.blue, `REST API on port ${opts.port}`);
+    log('api', c.blue, `REST API on port ${port}`);
   }
+
+  // Start auto-save (every 30s)
+  persistence.startAutoSave(() => {
+    return persistence.buildState({
+      project,
+      listAliases: orchestrator.listAliases,
+      getSession: sm.getSession,
+      isOrchestratorRunning: orchestrator.isOrchestratorRunning,
+      cliOpts: opts,
+    });
+  }, 30000);
+
+  // Save state immediately on first startup
+  const initialState = persistence.buildState({
+    project,
+    listAliases: orchestrator.listAliases,
+    getSession: sm.getSession,
+    isOrchestratorRunning: orchestrator.isOrchestratorRunning,
+    cliOpts: opts,
+  });
+  persistence.saveState(initialState);
+  log('persist', c.dim, `State saved → ${persistence.STATE_FILE}`);
 
   // Queue stats every 30 seconds
   setInterval(() => {
@@ -290,15 +499,27 @@ async function main() {
     log('mail', c.green, `${count} message(s) delivered to @${alias}`);
   });
 
-  console.log(`\n${c.bold}${c.green}✓ Orchestrator running${c.reset} — ${opts.team.length} sessions active\n`);
-  log('info', c.dim, 'Press Ctrl+C to shutdown all sessions');
+  log('info', c.dim, 'Press Ctrl+C to shutdown (state auto-saved for --resume)');
 }
 
 // ─── Graceful Shutdown ─────────────────────────────────────────────────────
 function shutdown() {
-  console.log(`\n${c.yellow}[shutdown]${c.reset} Stopping all sessions...`);
+  console.log(`\n${c.yellow}[shutdown]${c.reset} Saving state and stopping sessions...`);
 
   if (completionTimer) clearInterval(completionTimer);
+
+  // Final save before killing sessions (so we capture the latest Claude session IDs)
+  persistence.finalSave();
+
+  // Save any pending prompt queue items
+  const pendingQueues = {};
+  for (const alias of orchestrator.listAliases()) {
+    const queue = promptQueue.getQueue(alias.sessionId);
+    if (queue.length > 0) {
+      pendingQueues[alias.sessionId] = queue;
+    }
+  }
+  persistence.saveQueue(pendingQueues);
 
   // Kill all team members
   const killed = orchestrator.disbandTeam();
@@ -306,10 +527,13 @@ function shutdown() {
     log('shutdown', c.yellow, `Killed: ${killed.map(a => `@${a}`).join(', ')}`);
   }
 
-  // Clear prompt queues
+  // Stop auto-save
+  persistence.stopAutoSave();
+
+  // Clear prompt queues (in memory)
   promptQueue.clearAll();
 
-  console.log(`${c.green}[shutdown]${c.reset} Clean exit.`);
+  console.log(`${c.green}[shutdown]${c.reset} State saved. Use ${c.bold}--resume${c.reset} to restore.`);
   process.exit(0);
 }
 
