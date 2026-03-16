@@ -270,7 +270,7 @@ function pollGitTimeline() {
 
       try {
         const log = execFileSync('git', [
-          'log', '--oneline', '--no-walk', '--format=%H|%s|%an|%ai', '-5'
+          'log', '--format=%H|%s|%an|%ai', '-1'
         ], {
           cwd: project,
           encoding: 'utf-8',
@@ -284,8 +284,8 @@ function pollGitTimeline() {
           if (!hash || knownCommits.has(hash)) continue;
           knownCommits.add(hash);
 
-          // Don't emit for initial load (first 50 commits are "known")
-          if (knownCommits.size > panes.length * 5) {
+          // Don't emit for initial load — need at least 2 full poll cycles
+          if (knownCommits._initialized) {
             emitEvent({
               type: 'git_commit',
               project: pane.projectName,
@@ -302,10 +302,13 @@ function pollGitTimeline() {
   } catch { /* ignore */ }
 }
 
-// Poll git every 10s
-setInterval(pollGitTimeline, 10000);
-// Initial load (populate known commits without emitting events)
-setTimeout(pollGitTimeline, 2000);
+// Poll git every 15s (not too frequent)
+setInterval(pollGitTimeline, 15000);
+// Initial load: populate known commits silently, then mark initialized
+setTimeout(function() {
+  pollGitTimeline();
+  knownCommits._initialized = true;
+}, 3000);
 
 // ─── API Routes ──────────────────────────────────────────────────────────────
 
