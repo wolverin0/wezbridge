@@ -63,9 +63,9 @@ function quickHash(str) {
 }
 
 // Stability threshold: content must be unchanged for N polls to be "idle"
-const STABILITY_THRESHOLD = 3; // 3 polls × 3s = 9s of no change = idle
-// Minimum working duration before emitting completed (avoids false cycles)
-const MIN_WORKING_MS = 5000; // must be "working" for at least 5s to count
+const STABILITY_THRESHOLD = 2; // 2 polls × 3s = 6s of no change = idle
+// Minimum working duration before emitting completed (avoids false cycles from cursor blink)
+const MIN_WORKING_MS = 2000; // must be "working" for at least 2s to count
 
 // Poll loop: detect status transitions via content hashing
 // Instead of relying solely on regex patterns (which miss many working states),
@@ -148,27 +148,12 @@ setInterval(() => {
             output: lastLines,
           });
         } else if (effectiveStatus === 'working') {
-          // Only emit "started" after debounce (wait 1 more poll to confirm it's real)
-          // For now, just record the start time — we'll emit on next poll if still working
+          emitEvent({
+            type: 'started',
+            pane_id: pane.paneId,
+            project: pane.projectName,
+          });
         }
-      }
-
-      // Emit "started" only if we've been working for 2+ polls (confirmed working, not flicker)
-      const wasWorking = prevEffective === 'working';
-      const isWorking = effectiveStatus === 'working';
-      const workingStartedAt = isWorking
-        ? (prev.workingStartedAt || (wasWorking ? prev.workingStartedAt : Date.now()))
-        : 0;
-
-      if (isWorking && !wasWorking) {
-        // Don't emit yet — wait for confirmation
-      } else if (isWorking && wasWorking && !prev.startedEmitted) {
-        // Second poll confirmed working — emit started now
-        emitEvent({
-          type: 'started',
-          pane_id: pane.paneId,
-          project: pane.projectName,
-        });
       }
 
       prevStatus.set(pane.paneId, {
@@ -176,8 +161,9 @@ setInterval(() => {
         effectiveStatus,
         hash: contentHash,
         stableCount: newStable,
-        workingStartedAt,
-        startedEmitted: isWorking && (wasWorking || prev.startedEmitted),
+        workingStartedAt: effectiveStatus === 'working'
+          ? (prev.workingStartedAt || Date.now())
+          : 0,
       });
     }
 
