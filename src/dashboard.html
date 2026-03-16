@@ -214,8 +214,9 @@ code, pre, .mono { font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace
   background: oklch(0.08 0.012 270); border: 1px solid var(--border-subtle);
   border-radius: 8px; padding: 8px 12px; margin: 6px 0;
   font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.5;
-  color: oklch(0.72 0.01 260); max-height: 200px; overflow-y: auto;
+  color: oklch(0.72 0.01 260); overflow-y: auto;
   white-space: pre-wrap; word-break: break-word;
+  min-height: 40px; resize: vertical;
 }
 .feed-reply { display: flex; gap: 6px; margin-top: 8px; }
 .feed-reply input { flex: 1; }
@@ -527,7 +528,7 @@ function renderFeed() {
         '<span class="feed-time">' + time + '</span>' +
         '<span onclick="dismissFeedEvent(' + i + ')" style="cursor:pointer;color:var(--text-tertiary);font-size:16px;margin-left:auto;padding:0 4px" title="Dismiss">x</span>' +
       '</div>';
-    if (output) html += '<div class="feed-output">' + esc(output) + '</div>';
+    if (output) html += '<div class="feed-output" onclick="this.style.maxHeight=this.style.maxHeight?\'\':\' 200px\'" style="cursor:pointer;resize:vertical;overflow:auto">' + esc(output) + '</div>';
     if (ev.type === 'completed') {
       html += '<div class="feed-reply">' +
         '<input class="prompt-input" placeholder="Reply to ' + esc(ev.project) + '..." onkeydown="if(event.key===\'Enter\')feedReply(' + ev.pane_id + ',this)">' +
@@ -1040,7 +1041,7 @@ function dtRenderLiveFeed() {
         '<span class="feed-time">' + time + '</span>' +
         '<span onclick="dismissFeedEvent(' + i + ')" style="cursor:pointer;color:var(--text-tertiary);font-size:14px;margin-left:auto;padding:0 4px" title="Dismiss">x</span>' +
       '</div>';
-    if (output) html += '<div class="feed-output" style="max-height:120px">' + esc(output) + '</div>';
+    if (output) html += '<div class="feed-output" onclick="this.style.maxHeight=this.style.maxHeight?\'\':\' 120px\'" style="cursor:pointer;resize:vertical;overflow:auto">' + esc(output) + '</div>';
     if (ev.type === 'completed') {
       html += '<div class="feed-reply">' +
         '<input class="prompt-input" style="font-size:11px;padding:4px 8px" placeholder="Reply..." onkeydown="if(event.key===\'Enter\')feedReply(' + ev.pane_id + ',this)">' +
