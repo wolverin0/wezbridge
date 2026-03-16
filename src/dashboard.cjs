@@ -63,7 +63,9 @@ function quickHash(str) {
 }
 
 // Stability threshold: content must be unchanged for N polls to be "idle"
-const STABILITY_THRESHOLD = 2; // 2 polls × 3s = 6s of no change = idle
+const STABILITY_THRESHOLD = 3; // 3 polls × 3s = 9s of no change = idle
+// Minimum working duration before emitting completed (avoids false cycles)
+const MIN_WORKING_MS = 5000; // must be "working" for at least 5s to count
 
 // Poll loop: detect status transitions via content hashing
 // Instead of relying solely on regex patterns (which miss many working states),
@@ -115,15 +117,28 @@ setInterval(() => {
       // Emit events on transitions
       if (prevEffective !== effectiveStatus) {
         if (prevEffective === 'working' && effectiveStatus === 'idle') {
-          // Task completed!
-          let output = '';
-          try { output = wez.getFullText(pane.paneId, 40); } catch {}
-          emitEvent({
-            type: 'completed',
-            pane_id: pane.paneId,
-            project: pane.projectName,
-            output: output.split('\n').filter(l => l.trim()).slice(-15).join('\n'),
-          });
+          // Only emit "completed" if the session was working long enough
+          const workingStart = prev.workingStartedAt || 0;
+          const workingDuration = Date.now() - workingStart;
+
+          if (workingDuration >= MIN_WORKING_MS) {
+            let output = '';
+            try { output = wez.getFullText(pane.paneId, 40); } catch {}
+            const cleanOutput = output.split('\n').filter(l => l.trim()).slice(-15).join('\n');
+            emitEvent({
+              type: 'completed',
+              pane_id: pane.paneId,
+              project: pane.projectName,
+              output: cleanOutput,
+            });
+
+            // Store completion summary for cross-session context
+            storeCompletionSummary(pane.paneId, pane.projectName, output);
+
+            // Auto-drain task queue: send next queued task
+            setTimeout(() => drainQueue(pane.paneId), 1000);
+          }
+          // else: too short, was just a flicker — ignore
         } else if (effectiveStatus === 'permission' || effectiveStatus === 'continuation') {
           const lastLines = pane.lastLines.split('\n').filter(l => l.trim()).slice(-8).join('\n');
           emitEvent({
@@ -133,12 +148,27 @@ setInterval(() => {
             output: lastLines,
           });
         } else if (effectiveStatus === 'working') {
-          emitEvent({
-            type: 'started',
-            pane_id: pane.paneId,
-            project: pane.projectName,
-          });
+          // Only emit "started" after debounce (wait 1 more poll to confirm it's real)
+          // For now, just record the start time — we'll emit on next poll if still working
         }
+      }
+
+      // Emit "started" only if we've been working for 2+ polls (confirmed working, not flicker)
+      const wasWorking = prevEffective === 'working';
+      const isWorking = effectiveStatus === 'working';
+      const workingStartedAt = isWorking
+        ? (prev.workingStartedAt || (wasWorking ? prev.workingStartedAt : Date.now()))
+        : 0;
+
+      if (isWorking && !wasWorking) {
+        // Don't emit yet — wait for confirmation
+      } else if (isWorking && wasWorking && !prev.startedEmitted) {
+        // Second poll confirmed working — emit started now
+        emitEvent({
+          type: 'started',
+          pane_id: pane.paneId,
+          project: pane.projectName,
+        });
       }
 
       prevStatus.set(pane.paneId, {
@@ -146,6 +176,8 @@ setInterval(() => {
         effectiveStatus,
         hash: contentHash,
         stableCount: newStable,
+        workingStartedAt,
+        startedEmitted: isWorking && (wasWorking || prev.startedEmitted),
       });
     }
 
@@ -158,6 +190,136 @@ setInterval(() => {
     }
   } catch { /* ignore poll errors */ }
 }, 3000);
+
+// ─── Task Queues ─────────────────────────────────────────────────────────────
+// Per-session prompt queues. When a session becomes idle, auto-send next task.
+
+const taskQueues = new Map(); // paneId → [{ text, addedAt, status }]
+
+function enqueueTask(paneId, text) {
+  if (!taskQueues.has(paneId)) taskQueues.set(paneId, []);
+  const task = { text, addedAt: new Date().toISOString(), status: 'pending' };
+  taskQueues.get(paneId).push(task);
+  return task;
+}
+
+function drainQueue(paneId) {
+  const queue = taskQueues.get(paneId);
+  if (!queue || queue.length === 0) return null;
+  const next = queue.find(t => t.status === 'pending');
+  if (!next) return null;
+
+  try {
+    wez.sendText(paneId, next.text);
+    next.status = 'sent';
+    next.sentAt = new Date().toISOString();
+    emitEvent({
+      type: 'queue_sent',
+      pane_id: paneId,
+      project: getProjectName(paneId),
+      text: next.text.slice(0, 100),
+    });
+    return next;
+  } catch {
+    return null;
+  }
+}
+
+function getProjectName(paneId) {
+  try {
+    const panes = discovery.discoverPanes();
+    const p = panes.find(p => p.paneId === paneId);
+    return p ? p.projectName : 'pane ' + paneId;
+  } catch { return 'pane ' + paneId; }
+}
+
+// Auto-drain: when a session completes, send next queued task
+// Hook into the completion event in the poll loop (patched below)
+
+// ─── Cross-Session Context ───────────────────────────────────────────────────
+// When a session completes, store a summary. Other sessions can be told about it.
+
+const sessionSummaries = new Map(); // paneId → { project, summary, timestamp }
+
+function storeCompletionSummary(paneId, project, output) {
+  // Extract the last meaningful lines as a summary
+  const lines = output.split('\n').filter(l => l.trim());
+  const summary = lines.slice(-10).join('\n');
+  sessionSummaries.set(paneId, {
+    project,
+    summary,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+function buildContextBrief() {
+  // Build a one-paragraph context of what all sessions have been doing
+  const entries = [];
+  for (const [paneId, info] of sessionSummaries) {
+    const age = (Date.now() - new Date(info.timestamp).getTime()) / 60000;
+    if (age < 30) { // only include recent (last 30 min)
+      entries.push(info.project + ': ' + info.summary.split('\n').slice(-3).join(' ').slice(0, 150));
+    }
+  }
+  return entries.length > 0
+    ? 'Context from other sessions:\n' + entries.join('\n')
+    : '';
+}
+
+// ─── Git Timeline ────────────────────────────────────────────────────────────
+// Poll git log from each session's project dir, emit events for new commits.
+
+const { execFileSync } = require('child_process');
+const knownCommits = new Set();
+
+function pollGitTimeline() {
+  try {
+    const panes = discovery.discoverPanes().filter(p => p.isClaude && p.project);
+    const seenProjects = new Set();
+
+    for (const pane of panes) {
+      const project = pane.project.replace(/^\//, '').replace(/\//g, '\\');
+      if (seenProjects.has(project)) continue;
+      seenProjects.add(project);
+
+      try {
+        const log = execFileSync('git', [
+          'log', '--oneline', '--no-walk', '--format=%H|%s|%an|%ai', '-5'
+        ], {
+          cwd: project,
+          encoding: 'utf-8',
+          timeout: 5000,
+          windowsHide: true,
+        }).trim();
+
+        if (!log) continue;
+        for (const line of log.split('\n')) {
+          const [hash, message, author, date] = line.split('|');
+          if (!hash || knownCommits.has(hash)) continue;
+          knownCommits.add(hash);
+
+          // Don't emit for initial load (first 50 commits are "known")
+          if (knownCommits.size > panes.length * 5) {
+            emitEvent({
+              type: 'git_commit',
+              project: pane.projectName,
+              pane_id: pane.paneId,
+              hash: hash.slice(0, 8),
+              message,
+              author,
+              date,
+            });
+          }
+        }
+      } catch { /* not a git repo or git not available */ }
+    }
+  } catch { /* ignore */ }
+}
+
+// Poll git every 10s
+setInterval(pollGitTimeline, 10000);
+// Initial load (populate known commits without emitting events)
+setTimeout(pollGitTimeline, 2000);
 
 // ─── API Routes ──────────────────────────────────────────────────────────────
 
@@ -286,6 +448,87 @@ function handleApi(req, res) {
           return { ...p, name, path: p.projectRoot || p.path };
         });
       return json(projects);
+    }
+
+    // ─── Task Queue endpoints ───
+
+    // GET /api/sessions/:paneId/queue — get task queue
+    if (pathname.match(/^\/api\/sessions\/(\d+)\/queue$/) && req.method === 'GET') {
+      const paneId = parseInt(pathname.match(/(\d+)\/queue/)[1], 10);
+      const queue = taskQueues.get(paneId) || [];
+      return json({ pane_id: paneId, queue });
+    }
+
+    // POST /api/sessions/:paneId/queue — add task(s) to queue
+    if (pathname.match(/^\/api\/sessions\/(\d+)\/queue$/) && req.method === 'POST') {
+      const paneId = parseInt(pathname.match(/(\d+)\/queue/)[1], 10);
+      return readBody().then(body => {
+        const tasks = Array.isArray(body.tasks) ? body.tasks : body.text ? [body.text] : [];
+        const added = tasks.map(t => enqueueTask(paneId, t));
+        // If session is idle, drain immediately
+        const prev = prevStatus.get(paneId);
+        if (prev && prev.effectiveStatus === 'idle') {
+          setTimeout(() => drainQueue(paneId), 500);
+        }
+        json({ ok: true, pane_id: paneId, added: added.length, queue_size: (taskQueues.get(paneId) || []).filter(t => t.status === 'pending').length });
+      });
+    }
+
+    // DELETE /api/sessions/:paneId/queue — clear queue
+    if (pathname.match(/^\/api\/sessions\/(\d+)\/queue$/) && req.method === 'DELETE') {
+      const paneId = parseInt(pathname.match(/(\d+)\/queue/)[1], 10);
+      taskQueues.delete(paneId);
+      return json({ ok: true, pane_id: paneId });
+    }
+
+    // POST /api/broadcast — send same prompt to multiple sessions
+    if (pathname === '/api/broadcast' && req.method === 'POST') {
+      return readBody().then(body => {
+        const text = body.text;
+        const targets = body.pane_ids || 'all';
+        if (!text) return json({ error: 'empty text' }, 400);
+        const panes = discovery.discoverPanes().filter(p => p.isClaude);
+        const sent = [];
+        for (const p of panes) {
+          if (targets !== 'all' && !targets.includes(p.paneId)) continue;
+          enqueueTask(p.paneId, text);
+          const prev = prevStatus.get(p.paneId);
+          if (prev && prev.effectiveStatus === 'idle') {
+            setTimeout(() => drainQueue(p.paneId), 500);
+          }
+          sent.push(p.paneId);
+        }
+        json({ ok: true, sent_to: sent, text: text.slice(0, 80) });
+      });
+    }
+
+    // ─── Cross-Session Context endpoints ───
+
+    // GET /api/context — get combined context from all recent sessions
+    if (pathname === '/api/context' && req.method === 'GET') {
+      const brief = buildContextBrief();
+      const summaries = {};
+      for (const [pid, info] of sessionSummaries) {
+        summaries[pid] = info;
+      }
+      return json({ brief, summaries });
+    }
+
+    // POST /api/sessions/:paneId/inject-context — send context brief to a session
+    if (pathname.match(/^\/api\/sessions\/(\d+)\/inject-context$/) && req.method === 'POST') {
+      const paneId = parseInt(pathname.match(/(\d+)\/inject-context/)[1], 10);
+      const brief = buildContextBrief();
+      if (!brief) return json({ ok: false, reason: 'no recent context available' });
+      wez.sendText(paneId, 'FYI — here is what the other sessions have been doing recently:\n' + brief);
+      return json({ ok: true, pane_id: paneId, context_length: brief.length });
+    }
+
+    // ─── Git Timeline endpoint ───
+
+    // GET /api/git-timeline — recent commits across all projects
+    if (pathname === '/api/git-timeline' && req.method === 'GET') {
+      const commits = eventLog.filter(e => e.type === 'git_commit').slice(-20);
+      return json(commits);
     }
 
     // GET /api/events — SSE stream for live events
