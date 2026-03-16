@@ -39,6 +39,7 @@ const clawtrol = require('./clawtrol-sync.cjs');
 const voiceHandler = require('./voice-handler.cjs');
 const orchestrator = require('./terminal-orchestrator.cjs');
 const sharedTasks = require('./shared-tasks.cjs');
+const promptQueue = require('./prompt-queue.cjs');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -2086,7 +2087,8 @@ bot.on('message', async (msg) => {
     }
     // ─── End @ Mention Routing ─────────────────────────────────────────
 
-    sm.sendPrompt(sessionId, promptText);
+    // Use prompt queue for safe, atomic delivery
+    promptQueue.enqueue(sessionId, promptText, { source: 'telegram-user', priority: 0 });
 
     // Clean up temp files after a delay
     if (_tempFiles.length > 0) {

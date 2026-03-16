@@ -4,12 +4,14 @@
   "description": "Control Claude Code sessions from Telegram — live terminal streaming, voice prompts, native streaming, split panes, inline status. Your phone becomes Mission Control.",
   "main": "src/telegram-bot.cjs",
   "bin": {
-    "wezbridge": "src/bot-watchdog.cjs"
+    "wezbridge": "src/bot-watchdog.cjs",
+    "wezbridge-orchestrate": "src/orchestrator-cli.cjs"
   },
   "scripts": {
     "start": "pm2 start ecosystem.config.cjs",
     "start:watchdog": "node src/bot-watchdog.cjs",
     "bot": "node src/telegram-bot.cjs",
+    "orchestrate": "node src/orchestrator-cli.cjs",
     "stop": "pm2 stop wezbridge-bot",
     "logs": "pm2 logs wezbridge-bot",
     "restart": "pm2 restart wezbridge-bot",

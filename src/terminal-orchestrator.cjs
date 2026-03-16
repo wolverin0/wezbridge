@@ -3,12 +3,12 @@
  *
  * Architecture (mirrors Claude Code Agent Teams):
  *
- *   Telegram User
+ *   orchestrator-cli.cjs (PC) or Telegram (remote)
  *       ↕
  *   Orchestrator (overseer session)
- *       ↕ inter-session mailbox
+ *       ↕ inter-session mailbox (via prompt-queue)
  *   ┌───────┬───────┬───────┐
- *   │ @front│ @back │ @test │  ← named sessions
+ *   │ @front│ @back │ @test │  ← named sessions in WezTerm panes
  *   └───────┴───────┴───────┘
  *       ↕ shared task list
  *
@@ -18,12 +18,16 @@
  * - Overseer session that monitors all others and auto-coordinates
  * - Shared task list with dependencies
  * - Auto-routing: when a session completes, notify dependents
- * - Works with WezTerminal, Windows Terminal (headless via SDK), or any terminal backend
+ * - Message sanitization to prevent cross-session instruction leakage
+ * - Prompt queue for atomic, FIFO delivery (no interleaving)
+ * - Works standalone (PC) or with Telegram as optional viewer
  */
 const { EventEmitter } = require('events');
 const sm = require('./session-manager.cjs');
 const sharedTasks = require('./shared-tasks.cjs');
 const outputParser = require('./output-parser.cjs');
+const promptQueue = require('./prompt-queue.cjs');
+const sanitizer = require('./message-sanitizer.cjs');
 
 const events = new EventEmitter();
 
@@ -147,10 +151,12 @@ function broadcast(from, message) {
 }
 
 /**
- * Deliver pending messages to a session by injecting them as prompts.
- * Messages are formatted as: "[From @alias]: message"
+ * Deliver pending messages to a session via the prompt queue.
+ * Messages are sanitized and wrapped in safe delimiters before delivery.
+ * Uses promptQueue.enqueue() for atomic, FIFO delivery.
+ *
  * @param {string} sessionId
- * @returns {number} Number of messages delivered
+ * @returns {number} Number of messages enqueued for delivery
  */
 function deliverToSession(sessionId) {
   const session = sm.getSession(sessionId);
@@ -159,30 +165,36 @@ function deliverToSession(sessionId) {
   const pending = mailbox.filter(m => m.toSessionId === sessionId && !m.delivered);
   if (pending.length === 0) return 0;
 
-  // Format all pending messages into a single prompt
-  const formatted = pending.map(m => {
+  // Build sanitized messages
+  const messages = pending.map(m => {
     const fromLabel = m.from === 'user' ? 'User'
       : m.from === 'orchestrator' ? 'Orchestrator'
       : `@${m.from}`;
-    return `[Message from ${fromLabel}]: ${m.message}`;
+    return { from: fromLabel, message: m.message };
   });
 
+  // Format using sanitizer (single or batch)
   const prompt = pending.length === 1
-    ? formatted[0]
-    : `You have ${pending.length} messages from your team:\n\n${formatted.join('\n\n')}`;
+    ? sanitizer.formatInterSessionMessage(messages[0].from, messages[0].message)
+    : sanitizer.formatBatchMessages(messages);
 
-  try {
-    sm.sendPrompt(sessionId, prompt);
-    for (const m of pending) {
-      m.delivered = true;
-      m.deliveredAt = new Date().toISOString();
-    }
-    events.emit('message:delivered', { sessionId, count: pending.length });
-    return pending.length;
-  } catch (err) {
-    console.error(`[orchestrator] Failed to deliver messages to ${sessionId}:`, err.message);
-    return 0;
-  }
+  // Enqueue via prompt queue (atomic delivery)
+  promptQueue.enqueue(sessionId, prompt, {
+    source: 'orchestrator-mailbox',
+    priority: 1, // High priority for team messages
+    onDelivered: () => {
+      for (const m of pending) {
+        m.delivered = true;
+        m.deliveredAt = new Date().toISOString();
+      }
+      events.emit('message:delivered', { sessionId, count: pending.length });
+    },
+    onFailed: (item, err) => {
+      console.error(`[orchestrator] Failed to deliver messages to ${sessionId}:`, err.message);
+    },
+  });
+
+  return pending.length;
 }
 
 /**
@@ -224,7 +236,7 @@ function parseMentions(text) {
  * - Monitors all session completions
  * - Routes results to dependent sessions
  * - Manages the shared task list
- * - Reports status to Telegram
+ * - Reports status via events (Telegram/dashboard listen optionally)
  *
  * @param {object} opts
  * @param {string} opts.project - Project directory
@@ -296,55 +308,27 @@ function buildOrchestratorSystemPrompt() {
 
 /**
  * Notify the orchestrator about a session event.
- * The orchestrator gets a summary and can decide what to do.
+ * Uses sanitizer for safe formatting and prompt queue for delivery.
  */
 function notifyOrchestrator(eventType, data) {
   if (!orchestratorEnabled || !orchestratorSessionId) return;
-  const session = sm.getSession(orchestratorSessionId);
-  if (!session || session.status !== 'waiting') {
-    // Queue for later delivery
-    sendMessage({
-      from: 'system',
-      to: 'orchestrator',
-      message: formatOrchestratorNotification(eventType, data),
-    });
-    return;
-  }
 
-  const notification = formatOrchestratorNotification(eventType, data);
-  try {
-    sm.sendPrompt(orchestratorSessionId, notification);
-  } catch (err) {
-    console.error('[orchestrator] Failed to notify:', err.message);
-  }
+  const alias = data.alias || sessionAliases.get(data.sessionId) || data.sessionId || 'unknown';
+  const safeOutput = data.response
+    ? sanitizer.sanitize(data.response, { maxLength: sanitizer.ORCHESTRATOR_MAX_LENGTH })
+    : '';
+
+  const notification = sanitizer.formatOrchestratorNotification(alias, safeOutput, eventType === 'session:completed' ? 'completed' : eventType === 'session:error' ? 'error' : eventType === 'session:spawned' ? 'spawned' : eventType);
+
+  // Always enqueue via prompt queue — it handles idle detection
+  promptQueue.enqueue(orchestratorSessionId, notification, {
+    source: 'orchestrator-notify',
+    priority: eventType === 'session:error' ? 0 : 1,
+  });
 }
 
-function formatOrchestratorNotification(eventType, data) {
-  const alias = data.alias || sessionAliases.get(data.sessionId) || data.sessionId;
-
-  switch (eventType) {
-    case 'session:completed': {
-      const response = data.response ? data.response.slice(0, 500) : '(no response captured)';
-      return [
-        `[SESSION COMPLETED] @${alias} finished its task.`,
-        `Response summary: ${response}`,
-        '',
-        'Review this and decide:',
-        '1. Should any other session be notified about this result?',
-        '2. Are there pending tasks that are now unblocked?',
-        '3. Should you update the task list?',
-      ].join('\n');
-    }
-    case 'session:error':
-      return `[SESSION ERROR] @${alias} encountered an error: ${data.error || 'unknown'}. Decide whether to retry or reassign.`;
-    case 'task:completed':
-      return `[TASK COMPLETED] Task "${data.task?.title}" completed by @${alias}. Result: ${data.task?.result || 'none'}`;
-    case 'session:spawned':
-      return `[NEW SESSION] @${alias} has joined the team. Project: ${data.project || 'unknown'}`;
-    default:
-      return `[EVENT] ${eventType}: ${JSON.stringify(data).slice(0, 200)}`;
-  }
-}
+// formatOrchestratorNotification is now handled by message-sanitizer.cjs
+// See sanitizer.formatOrchestratorNotification()
 
 /**
  * Stop the orchestrator.
@@ -394,16 +378,18 @@ function setupAutoCoordination() {
     // Deliver any pending messages
     deliverToSession(session.id);
 
-    // If orchestrator is running, notify it
+    // Also trigger prompt queue drain for this session
+    promptQueue.onSessionIdle(session.id);
+
+    // If orchestrator is running, notify it with sanitized output
     if (orchestratorEnabled && session.id !== orchestratorSessionId) {
-      // Read the session's output to include in notification
       try {
         const output = sm.readOutput(session.id);
-        const parsed = outputParser.extractLastResponse(output);
+        const safeResponse = sanitizer.extractSafeResult(output);
         notifyOrchestrator('session:completed', {
           sessionId: session.id,
           alias,
-          response: parsed,
+          response: safeResponse,
         });
       } catch {
         notifyOrchestrator('session:completed', {

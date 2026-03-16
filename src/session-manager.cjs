@@ -40,9 +40,10 @@ const WAITING_PATTERNS = WAITING_PATTERN_MAP.map(p => p.pattern);
 const MAX_HISTORY = 20;
 
 // Stability check: how many consecutive polls must show the same ❯ before we declare "done"
-// At 3s poll interval, STABILITY_COUNT=2 means 6s of stable ❯ before firing.
-// This prevents false triggers from ❯ flashing between tool calls.
-const STABILITY_COUNT = 2;
+// At 3s poll interval, STABILITY_COUNT=3 means 9s of stable ❯ before firing.
+// This prevents false triggers from ❯ flashing between tool calls or Claude pausing mid-thought.
+// Configurable via WEZBRIDGE_STABILITY_COUNT env var.
+const STABILITY_COUNT = parseInt(process.env.WEZBRIDGE_STABILITY_COUNT || '3', 10);
 
 // Patterns that indicate Claude is still actively working (even if ❯ is visible)
 const STILL_WORKING_PATTERNS = [
@@ -223,7 +224,15 @@ function sendPrompt(sessionId, prompt) {
   const session = sessions.get(sessionId);
   if (!session) throw new Error(`Session ${sessionId} not found`);
 
-  wez.sendText(session.paneId, prompt);
+  try {
+    wez.sendText(session.paneId, prompt);
+  } catch (err) {
+    session.status = 'error';
+    session.error = err.message;
+    events.emit('session:send-failed', { session, error: err });
+    throw err;
+  }
+
   session.status = 'running';
   session.lastActivity = new Date().toISOString();
   session.promptSentAt = Date.now();

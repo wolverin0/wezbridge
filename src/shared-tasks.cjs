@@ -77,6 +77,7 @@ function createTask(opts) {
 
 /**
  * Claim a task for a session.
+ * Uses atomic file-based locking to prevent two sessions claiming the same task.
  * @param {string} taskId
  * @param {string} sessionId - Who is claiming
  * @returns {object|null} The claimed task, or null if not claimable
@@ -92,12 +93,27 @@ function claimTask(taskId, sessionId) {
     if (!dep || dep.status !== 'completed') return null;
   }
 
-  task.status = 'in_progress';
-  task.assignedTo = sessionId;
-  task.updatedAt = new Date().toISOString();
-  events.emit('task:claimed', task);
-  save();
-  return task;
+  // Atomic file-based lock to prevent concurrent claims
+  const lockFile = `${TASKS_FILE}.${taskId}.lock`;
+  try {
+    fs.writeFileSync(lockFile, sessionId, { flag: 'wx' }); // Fails if file exists
+  } catch {
+    return null; // Another session already claiming this task
+  }
+
+  try {
+    // Re-check status under lock (another claim may have succeeded)
+    if (task.status !== 'pending') return null;
+
+    task.status = 'in_progress';
+    task.assignedTo = sessionId;
+    task.updatedAt = new Date().toISOString();
+    events.emit('task:claimed', task);
+    save();
+    return task;
+  } finally {
+    try { fs.unlinkSync(lockFile); } catch {}
+  }
 }
 
 /**
