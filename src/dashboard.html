@@ -899,6 +899,7 @@ function dtCreateWin(s) {
       '<button onclick="addToQueue(' + s.pane_id + ')" style="background:var(--cyan);color:#000;font-size:9px;padding:4px 6px;border:none;border-radius:4px;cursor:pointer" title="Add to queue">Q+</button>' +
       '<button onclick="injectContext(' + s.pane_id + ')" style="background:var(--bg-hover);color:var(--text-secondary);font-size:9px;padding:4px 6px;border:1px solid var(--glass-border);border-radius:4px;cursor:pointer" title="Inject context from other sessions">Ctx</button>' +
       '<button onclick="sendAltM(' + s.pane_id + ')" style="background:var(--bg-hover);color:var(--yellow);font-size:9px;padding:4px 6px;border:1px solid rgba(245,158,11,0.3);border-radius:4px;cursor:pointer" title="Toggle permission mode (Alt+M)">Mode</button>' +
+      '<button onclick="setOmni(' + s.pane_id + ')" id="omni-btn-' + s.pane_id + '" style="background:var(--bg-hover);color:var(--accent);font-size:9px;padding:4px 6px;border:1px solid rgba(99,102,241,0.3);border-radius:4px;cursor:pointer" title="Set as Omni orchestrator">Omni</button>' +
     '</div>' +
     '<div class="dwin-resize rs"></div>' +
     '<div class="dwin-resize re"></div>' +
@@ -1248,6 +1249,39 @@ async function addMultiQueue(paneId) {
     body: JSON.stringify({ tasks: tasks }),
   });
   toast(tasks.length + ' tasks queued');
+}
+
+// ─── Omni Mode ───
+var omniPane = null;
+async function setOmni(paneId) {
+  if (omniPane === paneId) {
+    // Unregister
+    await fetch(API + '/api/omni/unregister', { method: 'POST' });
+    omniPane = null;
+    toast('Omni mode disabled');
+  } else {
+    await fetch(API + '/api/omni/register', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ pane_id: paneId }),
+    });
+    omniPane = paneId;
+    toast('Pane ' + paneId + ' is now the Omni orchestrator — other sessions will auto-notify it');
+  }
+  // Update button styles
+  document.querySelectorAll('[id^="omni-btn-"]').forEach(function(btn) {
+    var pid = parseInt(btn.id.replace('omni-btn-', ''));
+    if (pid === omniPane) {
+      btn.style.background = 'var(--accent)';
+      btn.style.color = '#fff';
+      btn.style.borderColor = 'var(--accent)';
+      btn.textContent = 'OMNI';
+    } else {
+      btn.style.background = 'var(--bg-hover)';
+      btn.style.color = 'var(--accent)';
+      btn.style.borderColor = 'rgba(99,102,241,0.3)';
+      btn.textContent = 'Omni';
+    }
+  });
 }
 
 // ─── Toggle Permission Mode (Alt+M) ───

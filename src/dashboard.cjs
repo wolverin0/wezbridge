@@ -41,6 +41,13 @@ for (let i = 0; i < args.length; i++) {
 const sseClients = new Set();
 const prevStatus = new Map(); // paneId → { status, hash, stableCount }
 const eventLog = [];          // last 50 events for new SSE clients
+const paneCreatedAt = new Map(); // paneId → timestamp (suppress events for 15s after spawn)
+const SPAWN_QUIET_MS = 15000;  // suppress started/completed for 15s after a pane appears
+
+// ─── Omni Mode ───────────────────────────────────────────────────────────────
+// When a pane is registered as "omni", completion notifications from other
+// panes are auto-injected into the omni pane as text prompts.
+let omniPaneId = null; // set via POST /api/omni/register
 
 function emitEvent(event) {
   event.timestamp = new Date().toISOString();
@@ -88,8 +95,16 @@ setInterval(() => {
         prevStatus.set(pane.paneId, {
           status: 'idle',
           hash: contentHash,
-          stableCount: STABILITY_THRESHOLD, // assume started idle
+          stableCount: STABILITY_THRESHOLD,
         });
+        if (!paneCreatedAt.has(pane.paneId)) paneCreatedAt.set(pane.paneId, Date.now());
+        continue;
+      }
+
+      // Suppress events for recently spawned panes
+      const paneAge = Date.now() - (paneCreatedAt.get(pane.paneId) || 0);
+      if (paneAge < SPAWN_QUIET_MS) {
+        prevStatus.set(pane.paneId, { status: pane.status, effectiveStatus: 'idle', hash: contentHash, stableCount: STABILITY_THRESHOLD, workingStartedAt: 0 });
         continue;
       }
 
@@ -137,6 +152,15 @@ setInterval(() => {
 
             // Auto-drain task queue: send next queued task
             setTimeout(() => drainQueue(pane.paneId), 1000);
+
+            // Omni auto-notify: inject completion message into omni pane
+            if (omniPaneId !== null && pane.paneId !== omniPaneId) {
+              const summary = cleanOutput.split('\n').slice(-5).join('\n').slice(0, 300);
+              const msg = 'NOTIFICATION: ' + pane.projectName + ' finished their task. Output:\n' + summary + '\n\nWhat should I tell them to do next? Or should I check another session?';
+              try {
+                setTimeout(() => wez.sendText(omniPaneId, msg), 2000);
+              } catch { /* omni pane might be dead */ }
+            }
           }
           // else: too short, was just a flicker — ignore
         } else if (effectiveStatus === 'permission' || effectiveStatus === 'continuation') {
@@ -522,6 +546,27 @@ function handleApi(req, res) {
     if (pathname === '/api/git-timeline' && req.method === 'GET') {
       const commits = eventLog.filter(e => e.type === 'git_commit').slice(-20);
       return json(commits);
+    }
+
+    // ─── Omni Mode endpoints ───
+
+    // POST /api/omni/register — designate a pane as the omni orchestrator
+    if (pathname === '/api/omni/register' && req.method === 'POST') {
+      return readBody().then(body => {
+        omniPaneId = body.pane_id;
+        json({ ok: true, omni_pane: omniPaneId });
+      });
+    }
+
+    // GET /api/omni/status — check omni mode
+    if (pathname === '/api/omni/status' && req.method === 'GET') {
+      return json({ omni_pane: omniPaneId, active: omniPaneId !== null });
+    }
+
+    // POST /api/omni/unregister — disable omni mode
+    if (pathname === '/api/omni/unregister' && req.method === 'POST') {
+      omniPaneId = null;
+      return json({ ok: true });
     }
 
     // GET /api/events — SSE stream for live events
