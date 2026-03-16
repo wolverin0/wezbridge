@@ -233,8 +233,8 @@ code, pre, .mono { font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace
 .notif-body { font-size: 12px; color: var(--text-secondary); }
 
 /* ─── Desktop OS View ─── */
-.desktop-panel { display:none; position:relative; flex:1; overflow:hidden; }
-.desktop-panel.open { display:block; }
+.desktop-panel { display:none; position:relative; flex:1; overflow:hidden; flex-direction:column; }
+.desktop-panel.open { display:flex; }
 .desktop-toolbar { display:flex; gap:4px; padding:8px 12px; background:rgba(0,0,0,0.2); border-bottom:1px solid var(--glass-border); font-size:11px; }
 .desktop-toolbar button { background:rgba(255,255,255,0.06); border:1px solid var(--glass-border); color:var(--text-secondary); font-size:11px; font-weight:600; padding:4px 12px; border-radius:6px; cursor:pointer; font-family:inherit; }
 .desktop-toolbar button:hover { background:rgba(255,255,255,0.1); color:var(--text-primary); }
@@ -378,7 +378,13 @@ code, pre, .mono { font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace
       <button onclick="dtStack()">Stack</button>
       <button onclick="dtShowAll()">Show All</button>
     </div>
-    <div class="desktop-area" id="desktopArea"></div>
+    <div style="display:flex;flex:1;overflow:hidden">
+      <div class="desktop-area" id="desktopArea" style="flex:1"></div>
+      <div id="desktopFeed" style="width:320px;flex-shrink:0;border-left:1px solid var(--glass-border);overflow-y:auto;background:var(--bg-surface)">
+        <div style="padding:10px 12px;font-size:12px;font-weight:700;color:var(--text-secondary);border-bottom:1px solid var(--glass-border)">Live Feed</div>
+        <div id="dtFeedList"><div class="feed-empty" style="font-size:12px;padding:30px 12px">Waiting for events...</div></div>
+      </div>
+    </div>
   </div>
 
   <!-- Main: Spawn View -->
@@ -553,8 +559,12 @@ function showNotification(event) {
   el.innerHTML = '<div class="notif-title">' + esc(title) + '</div><div class="notif-body">' + esc(body).slice(0, 150) + '</div>';
   el.onclick = () => {
     el.remove();
-    selectSession(event.pane_id);
-    switchView('sessions');
+    if (currentView === 'desktop') {
+      dtFocus(event.pane_id);
+    } else {
+      selectSession(event.pane_id);
+      switchView('sessions');
+    }
   };
   document.body.appendChild(el);
   if (notifTimeout) clearTimeout(notifTimeout);
@@ -794,68 +804,11 @@ var dtTopZ = 10;
 var dtInited = false;
 
 function initDesktop() {
-  if (dtInited && Object.keys(dtWins).length > 0) return;
-  dtInited = true;
-  dtCreateLiveFeedWin();
   dtSyncWindows();
-}
-
-function dtCreateLiveFeedWin() {
-  if (dtWins['live']) return;
-  var area = document.getElementById('desktopArea');
-  var aw = area.offsetWidth, ah = area.offsetHeight;
-  dtWins['live'] = { x: aw - 420, y: 6, w: 410, h: ah - 12, z: dtTopZ++, minimized: false };
-  var w = dtWins['live'];
-  var el = document.createElement('div');
-  el.className = 'dwin';
-  el.id = 'dw-live';
-  el.style.cssText = 'left:' + w.x + 'px;top:' + w.y + 'px;width:' + w.w + 'px;height:' + w.h + 'px;z-index:' + w.z;
-  el.innerHTML =
-    '<div class="dwin-header">' +
-      '<div class="dwin-dots">' +
-        '<span class="dc" onclick="dtMinWin(\'live\')"></span>' +
-        '<span class="dm" onclick="dtMinWin(\'live\')"></span>' +
-        '<span class="dx" onclick="dtMaxWin(\'live\')"></span>' +
-      '</div>' +
-      '<span class="dwin-name">Live Feed</span>' +
-      '<span class="dwin-st idle">FEED</span>' +
-    '</div>' +
-    '<div class="dwin-body" id="dbody-live" style="font-family:Inter,sans-serif;font-size:12px;line-height:1.5;padding:0;background:var(--bg-app)"></div>' +
-    '<div class="dwin-resize rs"></div><div class="dwin-resize re"></div><div class="dwin-resize rb"></div>';
-
-  el.addEventListener('mousedown', function() { dtFocus('live'); });
-
-  // Drag
-  var hdr = el.querySelector('.dwin-header');
-  hdr.addEventListener('mousedown', function(e) {
-    if (e.target.closest('.dwin-dots')) return;
-    e.preventDefault();
-    var wn = dtWins['live'], sx = e.clientX - wn.x, sy = e.clientY - wn.y;
-    function mv(e2) { wn.x = e2.clientX - sx; wn.y = e2.clientY - sy; el.style.left = wn.x + 'px'; el.style.top = wn.y + 'px'; }
-    function up() { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); }
-    document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
-  });
-
-  // Resize
-  el.querySelectorAll('.dwin-resize').forEach(function(h) {
-    h.addEventListener('mousedown', function(e) {
-      e.preventDefault(); e.stopPropagation();
-      var wn = dtWins['live'], ow = wn.w, oh = wn.h, sx = e.clientX, sy = e.clientY;
-      var isE = h.classList.contains('re') || h.classList.contains('rs');
-      var isS = h.classList.contains('rb') || h.classList.contains('rs');
-      function mv(e2) {
-        if (isE) wn.w = Math.max(300, ow + (e2.clientX - sx));
-        if (isS) wn.h = Math.max(200, oh + (e2.clientY - sy));
-        el.style.width = wn.w + 'px'; el.style.height = wn.h + 'px';
-      }
-      function up() { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); }
-      document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
-    });
-  });
-
-  area.appendChild(el);
   dtRenderLiveFeed();
+  dtInited = true;
 }
+
 
 function dtSyncWindows() {
   var area = document.getElementById('desktopArea');
@@ -865,11 +818,15 @@ function dtSyncWindows() {
 
   sessions.forEach(function(s, i) {
     existing[s.pane_id] = true;
-    if (!dtWins[s.pane_id]) {
-      var cols = Math.ceil(Math.sqrt(sessions.length));
-      var ww = Math.max(380, Math.floor(aw / cols) - 12);
-      var wh = Math.max(250, Math.floor(ah / Math.ceil(sessions.length / cols)) - 12);
-      dtWins[s.pane_id] = { x: 6 + (i % cols) * (ww + 12), y: 6 + Math.floor(i / cols) * (wh + 12), w: ww, h: wh, z: dtTopZ++, minimized: false };
+    var elExists = document.getElementById('dw-' + s.pane_id);
+    if (!dtWins[s.pane_id] || !elExists) {
+      if (!dtWins[s.pane_id]) {
+        var cols = Math.ceil(Math.sqrt(sessions.length));
+        var ww = Math.max(380, Math.floor(aw / cols) - 12);
+        var wh = Math.max(250, Math.floor(ah / Math.ceil(sessions.length / cols)) - 12);
+        dtWins[s.pane_id] = { x: 6 + (i % cols) * (ww + 12), y: 6 + Math.floor(i / cols) * (wh + 12), w: ww, h: wh, z: dtTopZ++, minimized: false };
+      }
+      if (elExists) elExists.remove();
       dtCreateWin(s);
     }
     dtUpdateWin(s);
@@ -988,16 +945,7 @@ function dtSend(pid, input) {
 function dtTile() {
   var area = document.getElementById('desktopArea');
   var aw = area.offsetWidth, ah = area.offsetHeight;
-  // Live feed window gets right 30%, session windows get left 70%
-  var liveFeed = dtWins['live'];
-  var liveW = liveFeed && !liveFeed.minimized ? Math.min(400, Math.floor(aw * 0.3)) : 0;
-  if (liveFeed && !liveFeed.minimized) {
-    liveFeed.x = aw - liveW; liveFeed.y = 0; liveFeed.w = liveW; liveFeed.h = ah; liveFeed._max = false;
-    var lel = document.getElementById('dw-live');
-    if (lel) { lel.style.left = liveFeed.x + 'px'; lel.style.top = '0'; lel.style.width = liveW + 'px'; lel.style.height = ah + 'px'; }
-  }
-  var vis = Object.keys(dtWins).filter(function(id) { return id !== 'live' && !dtWins[id].minimized; });
-  aw = aw - liveW - (liveW ? 4 : 0);
+  var vis = Object.keys(dtWins).filter(function(id) { return !dtWins[id].minimized; });
   if (!vis.length) return;
   var cols = Math.ceil(Math.sqrt(vis.length)), rows = Math.ceil(vis.length / cols);
   var ww = Math.floor(aw / cols) - 6, wh = Math.floor(ah / rows) - 6;
@@ -1032,7 +980,7 @@ function dtStack() {
 }
 
 function dtRenderLiveFeed() {
-  var el = document.getElementById('dbody-live');
+  var el = document.getElementById('dtFeedList');
   if (!el) return;
   if (!feedEvents.length) {
     el.innerHTML = '<div style="padding:30px 16px;text-align:center;color:var(--text-tertiary);font-size:12px">Waiting for events...</div>';

@@ -329,7 +329,11 @@ function serveStatic(req, res, url) {
   // Only serve dashboard.html
   if (pathname === '/dashboard.html') {
     if (fs.existsSync(DASHBOARD_HTML)) {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+        'Pragma': 'no-cache',
+      });
       res.end(fs.readFileSync(DASHBOARD_HTML, 'utf-8'));
       return;
     }
