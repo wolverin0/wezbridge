@@ -43,14 +43,96 @@ function findWezterm() {
 const WEZTERM = findWezterm();
 let guiLaunched = false;
 
+/**
+ * Find the live GUI socket by matching gui-sock-* files to running wezterm-gui PIDs.
+ * On Windows, WezTerm creates gui-sock-{PID} files but the CLI defaults to the
+ * last-created one which may be stale. We find the correct one by checking tasklist.
+ *
+ * Returns the WEZTERM_UNIX_SOCKET path for the best GUI socket, or null to use default.
+ */
+let _cachedGuiSocket = undefined; // undefined = not yet checked, null = use default
+function findGuiSocket() {
+  if (_cachedGuiSocket !== undefined) return _cachedGuiSocket;
+
+  if (process.platform !== 'win32') {
+    _cachedGuiSocket = null;
+    return null;
+  }
+
+  const fs = require('fs');
+  const sockDir = require('path').join(
+    process.env.USERPROFILE || process.env.HOME || '',
+    '.local', 'share', 'wezterm'
+  );
+
+  try {
+    // Get running wezterm-gui PIDs
+    const tasks = execFileSync('tasklist', ['/fi', 'imagename eq wezterm-gui.exe', '/fo', 'csv', '/nh'], {
+      encoding: 'utf-8', timeout: 5000, windowsHide: true,
+    });
+    const pids = [];
+    for (const line of tasks.split('\n')) {
+      const match = line.match(/"wezterm-gui\.exe","(\d+)"/i);
+      if (match) pids.push(match[1]);
+    }
+
+    if (pids.length === 0) {
+      _cachedGuiSocket = null;
+      return null;
+    }
+
+    // Find gui-sock files matching running PIDs, pick the one with most panes
+    const sockFiles = fs.readdirSync(sockDir).filter(f => f.startsWith('gui-sock-'));
+    let bestSocket = null;
+    let bestPaneCount = 0;
+
+    for (const pid of pids) {
+      const sockName = `gui-sock-${pid}`;
+      if (sockFiles.includes(sockName)) {
+        const sockPath = require('path').join(sockDir, sockName);
+        try {
+          const out = execFileSync(WEZTERM, ['cli', 'list', '--format', 'json'], {
+            encoding: 'utf-8', timeout: 5000, windowsHide: true,
+            env: { ...process.env, WEZTERM_UNIX_SOCKET: sockPath },
+          });
+          const paneCount = JSON.parse(out).length;
+          if (paneCount > bestPaneCount) {
+            bestPaneCount = paneCount;
+            bestSocket = sockPath;
+          }
+        } catch { /* this socket didn't work, try next */ }
+      }
+    }
+
+    if (bestSocket) {
+      _cachedGuiSocket = bestSocket;
+      return bestSocket;
+    }
+  } catch { /* tasklist or fs failed */ }
+
+  _cachedGuiSocket = null;
+  return null;
+}
+
 // Note: execFileSync blocks the event loop. For N sessions, pollAll blocks N * timeout_ms.
 // TODO: Consider async execFile for high session counts.
 function wezCmd(args, opts = {}) {
   try {
-    const result = execFileSync(WEZTERM, ['cli', '--prefer-mux', ...args], {
+    const guiSocket = findGuiSocket();
+    const env = guiSocket
+      ? { ...process.env, WEZTERM_UNIX_SOCKET: guiSocket }
+      : process.env;
+
+    // Connect to GUI if available, fall back to mux
+    const cliArgs = guiSocket
+      ? ['cli', ...args]
+      : ['cli', '--prefer-mux', ...args];
+
+    const result = execFileSync(WEZTERM, cliArgs, {
       encoding: 'utf-8',
       timeout: opts.timeout || 10000,
       windowsHide: true,
+      env,
     });
     return result.trim();
   } catch (err) {
@@ -155,22 +237,33 @@ function spawnPane({ cwd, program, args: spawnArgs, splitFrom, splitDirection } 
 
 /** Send text to a pane (simulates typing + Enter). */
 function sendText(paneId, text) {
-  // Send text + \r via --no-paste. \r is the actual Enter keypress in terminals.
-  execFileSync(WEZTERM, ['cli', '--prefer-mux', 'send-text', '--pane-id', String(paneId), '--no-paste'], {
+  const guiSocket = findGuiSocket();
+  const cliArgs = guiSocket
+    ? ['cli', 'send-text', '--pane-id', String(paneId), '--no-paste']
+    : ['cli', '--prefer-mux', 'send-text', '--pane-id', String(paneId), '--no-paste'];
+  const env = guiSocket ? { ...process.env, WEZTERM_UNIX_SOCKET: guiSocket } : process.env;
+  execFileSync(WEZTERM, cliArgs, {
     input: text + '\r',
     encoding: 'utf-8',
     timeout: 5000,
     windowsHide: true,
+    env,
   });
 }
 
 /** Send text WITHOUT pressing Enter (for partial input). */
 function sendTextNoEnter(paneId, text) {
-  execFileSync(WEZTERM, ['cli', '--prefer-mux', 'send-text', '--pane-id', String(paneId), '--no-paste'], {
+  const guiSocket = findGuiSocket();
+  const cliArgs = guiSocket
+    ? ['cli', 'send-text', '--pane-id', String(paneId), '--no-paste']
+    : ['cli', '--prefer-mux', 'send-text', '--pane-id', String(paneId), '--no-paste'];
+  const env = guiSocket ? { ...process.env, WEZTERM_UNIX_SOCKET: guiSocket } : process.env;
+  execFileSync(WEZTERM, cliArgs, {
     input: text,
     encoding: 'utf-8',
     timeout: 5000,
     windowsHide: true,
+    env,
   });
 }
 

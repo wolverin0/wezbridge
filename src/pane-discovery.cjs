@@ -12,7 +12,7 @@ const wez = require('./wezterm.cjs');
 
 // Patterns that indicate a pane is running Claude Code
 const CLAUDE_INDICATORS = [
-  /[❯>]\s*$/m,                          // Claude idle prompt
+  /❯/,                                   // Claude prompt character (anywhere)
   /\? \(y\/n\)/,                         // Permission prompt
   /\(Y\/n\)/i,                           // Permission variant
   /Total cost:/,                          // Cost summary
@@ -25,27 +25,44 @@ const CLAUDE_INDICATORS = [
   /Claude Code/i,                        // Banner
   /\$ claude\b/,                         // Launch command visible
   /─.*claude.*─/i,                       // Status bar
+  /bypass permissions/i,                  // Permission mode indicator
+  /⏵⏵/,                                  // Claude status bar arrows
+  /✻\s*(Cooked|Sautéed|Baked)/,          // Claude cooking metaphors (thinking time)
+  /\(ctrl\+o to expand\)/,               // Claude collapsed output
+  /⎿/,                                   // Claude agent output marker
+  /●/,                                   // Claude action bullet
 ];
 
-// Patterns for detecting session status
+// Patterns for detecting session status (checked against LAST lines of output)
+// Order matters: more specific patterns first, idle last (it's the fallback)
 const STATUS_PATTERNS = {
-  idle: [/[❯>]\s*$/m],
+  idle: [
+    /❯.*$/m,                              // ❯ anywhere on a line (idle prompt, may have text/backslash after it)
+    /[>]\s*$/m,                           // Generic > prompt
+  ],
   permission: [
     /\? \(y\/n\)/,
     /\(Y\/n\)/i,
     /Do you want to proceed/i,
     /Allow .+\? \[y\/N\]/i,
     /❯\s*1\.\s*Yes/i,
+    /approve or deny/i,
+    /\[Yes\].*\[No\]/,
   ],
   continuation: [
     /Press Enter to continue/,
     /\? Enter .+ to continue/,
+    /\(press enter\)/i,
   ],
   working: [
-    /Thinking\.\.\./i,
-    /Running/i,
-    /background task/i,
-    /Choreographing/i,
+    /⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏/,   // Spinner characters (Claude's working indicator)
+    /\bThinking\.\.\./,              // Exact "Thinking..." (not just "thinking" in text)
+    /\bReading\b.*\.\.\./,           // "Reading file..."
+    /\bEditing\b.*\.\.\./,           // "Editing file..."
+    /\bSearching\b.*\.\.\./,         // "Searching..."
+    /\bWriting\b.*\.\.\./,           // "Writing file..."
+    /\bRunning\b.*\.\.\./,           // "Running command..."
+    /●.*agent/i,                      // Agent running indicator
   ],
 };
 

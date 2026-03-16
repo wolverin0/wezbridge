@@ -209,37 +209,54 @@ if (flags.setup) {
 
 const OMNI_SYSTEM_PROMPT = `You are the Omni orchestrator — a manager Claude that oversees all other Claude Code sessions running in WezTerm terminals.
 
-You have MCP tools from WezBridge that let you:
-- discover_sessions: Scan WezTerm to find all active Claude sessions and their projects
-- read_output(pane_id): Read what a Claude session has been doing
-- send_prompt(pane_id, text): Send instructions to any Claude session
-- get_status(pane_id): Check if a session is idle, working, or waiting for permission
-- list_projects: See all projects with active sessions
-- send_key(pane_id, key): Answer permission prompts (y/n), press Enter, or Ctrl+C
+You have MCP tools from WezBridge:
 
-Your workflow:
-1. Start by running discover_sessions to see what's running
-2. The user will ask you to coordinate work across projects
-3. Check status before sending prompts — only send to idle sessions
-4. After sending a prompt, wait and check back with read_output to see results
-5. Report back to the user with a summary of what happened
+**Discovery & monitoring:**
+- discover_sessions — Scan WezTerm for all active Claude sessions (project, status, pane ID)
+- get_status(pane_id) — Detailed status of one session (idle/working/permission)
+- list_projects — Overview of all projects with active sessions
+- read_output(pane_id, lines?) — Read terminal output from a session (default 100 lines, max 500)
 
-Rules:
-- Never send prompts to sessions that are "working" — they'll queue up and cause confusion
-- Always check status first with get_status or discover_sessions
-- When delegating tasks, be specific in your instructions to each session
-- If a session has a permission prompt, use send_key to approve or deny it
-- Summarize results from multiple sessions concisely for the user`;
+**Interaction:**
+- send_prompt(pane_id, text) — Send a prompt to an idle Claude session (types text + Enter)
+- send_key(pane_id, key) — Send special keys: "y", "n", "enter", "ctrl+c", or any short text
+- wait_for_idle(pane_id, max_wait?, poll_interval?) — Block until a session finishes and returns to ❯ prompt, then return the output. Use after send_prompt.
+
+**Lifecycle:**
+- spawn_session(cwd?, prompt?, split_from?, dangerously_skip_permissions?) — Launch a new Claude Code session in a new WezTerm pane
+- kill_session(pane_id) — Kill a pane (sends Ctrl+C then kills)
+
+**Standard workflow:**
+1. discover_sessions → see what's running
+2. get_status(pane) → verify it's idle before sending
+3. send_prompt(pane, "your task here") → delegate work
+4. wait_for_idle(pane) → wait for result and get the output
+5. Report back to the user
+
+**Rules:**
+- NEVER send prompts to sessions with status "working" — they'll queue and cause confusion
+- ALWAYS check status first with get_status or discover_sessions
+- Use wait_for_idle after send_prompt to get the result — don't make the user manually poll
+- If a session has a permission prompt, use send_key("y") or send_key("n")
+- When spawning new sessions, provide a specific cwd (project path)
+- Be specific in your instructions — each target Claude has no context about what you're doing
+- Summarize results concisely for the user`;
 
 console.log(`\n${c.bold}${c.cyan}━━━ WezBridge Omni ━━━${c.reset}\n`);
 console.log(`Launching Claude Code with WezBridge MCP tools...`);
 console.log(`The omni Claude can see and command all your terminal sessions.\n`);
 
-// Build claude command
-const claudeArgs = ['claude'];
-if (flags.yolo) claudeArgs.push('--dangerously-skip-permissions');
+// Build claude command args
+const claudeArgs = [];
 
-// Add system prompt
+// Omni mode defaults to --dangerously-skip-permissions since it needs
+// to freely call MCP tools. Pass --no-yolo to disable.
+const noYolo = process.argv.includes('--no-yolo');
+if (flags.yolo || !noYolo) {
+  claudeArgs.push('--dangerously-skip-permissions');
+}
+
+// System prompt — passed as arg (works fine when shell: false)
 claudeArgs.push('--system-prompt', OMNI_SYSTEM_PROMPT);
 
 // Add MCP server inline if .mcp.json doesn't exist in target dir
@@ -257,12 +274,32 @@ if (!fs.existsSync(mcpJsonPath)) {
   }));
 }
 
+// Resolve the claude command — on Windows, `claude` is a .cmd shim from npm
+// We need shell:true for Windows to resolve it, but that mangles args.
+// Solution: find the actual path if possible, else fall back to shell:true.
+let claudeCmd = 'claude';
+let useShell = true;
+try {
+  const resolved = execSync('where claude.cmd', { encoding: 'utf-8', timeout: 3000, windowsHide: true }).trim().split('\n')[0];
+  if (resolved) {
+    claudeCmd = resolved;
+    useShell = false;
+  }
+} catch {
+  try {
+    const resolved = execSync('which claude', { encoding: 'utf-8', timeout: 3000, windowsHide: true }).trim();
+    if (resolved) {
+      claudeCmd = resolved;
+      useShell = false;
+    }
+  } catch { /* fall back to shell: true */ }
+}
+
 // Launch Claude as interactive process
-// shell: true is required on Windows so spawn can resolve .cmd/.ps1 shims
-const child = spawn(claudeArgs[0], claudeArgs.slice(1), {
+const child = spawn(claudeCmd, claudeArgs, {
   cwd: targetDir,
   stdio: 'inherit',
-  shell: true,
+  shell: useShell,
   env: { ...process.env },
 });
 

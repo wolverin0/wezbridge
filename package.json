@@ -16,6 +16,7 @@
     "omni": "node src/omni.cjs",
     "omni:setup": "node src/omni.cjs --setup",
     "omni:scan": "node src/omni.cjs --scan",
+    "dashboard": "node src/dashboard.cjs --open",
     "stop": "pm2 stop wezbridge-bot",
     "logs": "pm2 logs wezbridge-bot",
     "restart": "pm2 restart wezbridge-bot",

@@ -127,6 +127,67 @@ const TOOLS = [
       required: ['pane_id', 'key'],
     },
   },
+  {
+    name: 'wait_for_idle',
+    description: 'Poll a pane until the Claude session becomes idle (shows the ❯ prompt), then return the new output. Use after send_prompt to wait for the result. Times out after max_wait seconds.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pane_id: {
+          type: 'number',
+          description: 'The WezTerm pane ID to watch.',
+        },
+        max_wait: {
+          type: 'number',
+          description: 'Maximum seconds to wait before giving up. Default: 120. Max: 600.',
+        },
+        poll_interval: {
+          type: 'number',
+          description: 'Seconds between polls. Default: 3.',
+        },
+      },
+      required: ['pane_id'],
+    },
+  },
+  {
+    name: 'spawn_session',
+    description: 'Launch a new Claude Code session in a new WezTerm pane. Optionally provide a project directory and an initial prompt. Returns the new pane ID.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cwd: {
+          type: 'string',
+          description: 'Working directory for the new session (project path). Default: current directory.',
+        },
+        prompt: {
+          type: 'string',
+          description: 'Optional initial prompt to send after Claude starts up. The session will start, wait for the ❯ prompt, then send this text.',
+        },
+        split_from: {
+          type: 'number',
+          description: 'If set, split from this pane ID instead of opening a new tab.',
+        },
+        dangerously_skip_permissions: {
+          type: 'boolean',
+          description: 'If true, launch Claude with --dangerously-skip-permissions. Default: false.',
+        },
+      },
+    },
+  },
+  {
+    name: 'kill_session',
+    description: 'Kill a WezTerm pane, terminating whatever is running in it. Use with caution — this force-kills the process.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pane_id: {
+          type: 'number',
+          description: 'The WezTerm pane ID to kill.',
+        },
+      },
+      required: ['pane_id'],
+    },
+  },
 ];
 
 // ─── Tool Implementations ─────────────────────────────────────────────────
@@ -290,7 +351,8 @@ function handleToolCall(name, args) {
             break;
           case 'y':
           case 'n':
-            wez.sendText(paneId, key);
+            // Don't append Enter — permission prompts read the char directly
+            wez.sendTextNoEnter(paneId, key);
             break;
           default:
             wez.sendTextNoEnter(paneId, key);
@@ -303,6 +365,166 @@ function handleToolCall(name, args) {
       } catch (err) {
         return {
           content: [{ type: 'text', text: `Error sending key to pane ${paneId}: ${err.message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'wait_for_idle': {
+      const paneId = args.pane_id;
+      const maxWait = Math.min(args.max_wait || 120, 600);
+      const pollInterval = Math.max(args.poll_interval || 3, 1);
+
+      const startTime = Date.now();
+      const deadline = startTime + maxWait * 1000;
+
+      // Helper: blocking sleep via wezterm (no async in this codebase)
+      function sleepSync(ms) {
+        try {
+          require('child_process').execFileSync(
+            process.platform === 'win32' ? 'timeout' : 'sleep',
+            process.platform === 'win32' ? ['/t', String(Math.ceil(ms / 1000)), '/nobreak'] : [String(ms / 1000)],
+            { windowsHide: true, stdio: 'ignore', timeout: ms + 2000 }
+          );
+        } catch { /* ignore */ }
+      }
+
+      let lastText = '';
+      let timedOut = true;
+
+      while (Date.now() < deadline) {
+        try {
+          const text = wez.getFullText(paneId, 50);
+          const lines = text.split('\n').filter(l => l.trim());
+          lastText = lines.slice(-20).join('\n');
+
+          // Check if idle: last non-empty line ends with ❯ or >
+          const lastLine = lines[lines.length - 1] || '';
+          if (/[❯>]\s*$/.test(lastLine)) {
+            timedOut = false;
+            break;
+          }
+
+          // Also check permission prompts — those also need attention
+          if (/\(y\/n\)|\(Y\/n\)|Allow .+\? \[y\/N\]/i.test(lastLine)) {
+            timedOut = false;
+            break;
+          }
+        } catch (err) {
+          return {
+            content: [{ type: 'text', text: `Error reading pane ${paneId}: ${err.message}` }],
+            isError: true,
+          };
+        }
+
+        sleepSync(pollInterval * 1000);
+      }
+
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+      if (timedOut) {
+        return {
+          content: [{
+            type: 'text',
+            text: `Timed out after ${elapsed}s waiting for pane ${paneId} to become idle.\n\nLast output:\n${lastText}`,
+          }],
+        };
+      }
+
+      return {
+        content: [{
+          type: 'text',
+          text: `Pane ${paneId} is now idle (waited ${elapsed}s).\n\nOutput:\n${lastText}`,
+        }],
+      };
+    }
+
+    case 'spawn_session': {
+      const cwd = args.cwd || process.cwd();
+      const skipPerms = args.dangerously_skip_permissions || false;
+
+      try {
+        // Spawn a plain shell pane, then send the claude command as text.
+        // This works on all platforms (Windows cmd, bash, pwsh) without
+        // needing to know the user's shell in advance.
+        let newPaneId;
+        if (args.split_from !== undefined) {
+          newPaneId = wez.splitHorizontal(args.split_from, { cwd });
+        } else {
+          newPaneId = wez.spawnPane({ cwd });
+        }
+
+        // Give the shell a moment to initialize
+        try {
+          require('child_process').execFileSync(
+            process.platform === 'win32' ? 'timeout' : 'sleep',
+            process.platform === 'win32' ? ['/t', '2', '/nobreak'] : ['2'],
+            { windowsHide: true, stdio: 'ignore', timeout: 4000 }
+          );
+        } catch { /* ignore */ }
+
+        // Type the claude command into the shell (--continue resumes last session)
+        let claudeCmd = 'claude --continue';
+        if (skipPerms) claudeCmd += ' --dangerously-skip-permissions';
+        wez.sendText(newPaneId, claudeCmd);
+
+        log(`Spawned Claude session in pane ${newPaneId} at ${cwd}`);
+
+        // If an initial prompt was given, wait for the session to boot then send it
+        if (args.prompt) {
+          // Give Claude a few seconds to start up and show ❯
+          const bootWait = 8;
+          for (let i = 0; i < bootWait; i++) {
+            try {
+              require('child_process').execFileSync(
+                process.platform === 'win32' ? 'timeout' : 'sleep',
+                process.platform === 'win32' ? ['/t', '1', '/nobreak'] : ['1'],
+                { windowsHide: true, stdio: 'ignore', timeout: 3000 }
+              );
+            } catch { /* ignore */ }
+
+            try {
+              const text = wez.getFullText(newPaneId, 20);
+              if (/[❯>]\s*$/m.test(text)) break;
+            } catch { /* pane not ready */ }
+          }
+
+          wez.sendText(newPaneId, args.prompt);
+        }
+
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              pane_id: newPaneId,
+              cwd,
+              initial_prompt: args.prompt || null,
+              message: `Claude session spawned in pane ${newPaneId}. ${args.prompt ? 'Initial prompt sent.' : 'Ready for prompts.'}`,
+            }, null, 2),
+          }],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `Error spawning session: ${err.message}` }],
+          isError: true,
+        };
+      }
+    }
+
+    case 'kill_session': {
+      const paneId = args.pane_id;
+
+      try {
+        // Send Ctrl+C first to gracefully stop, then kill
+        try { wez.sendTextNoEnter(paneId, '\x03'); } catch { /* ignore */ }
+        wez.killPane(paneId);
+
+        return {
+          content: [{ type: 'text', text: `Pane ${paneId} killed.` }],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `Error killing pane ${paneId}: ${err.message}` }],
           isError: true,
         };
       }

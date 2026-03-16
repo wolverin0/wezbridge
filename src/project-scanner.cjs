@@ -473,6 +473,7 @@ function formatDuration(seconds) {
 
 module.exports = {
   scanProjects,
+  scanAll: scanProjects,
   scanSessions,
   getSessionPreview,
   getSessionCost,
