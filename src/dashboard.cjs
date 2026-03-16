@@ -39,7 +39,7 @@ for (let i = 0; i < args.length; i++) {
 // Polls panes and emits SSE events when status changes (working→idle, etc.)
 
 const sseClients = new Set();
-const prevStatus = new Map(); // paneId → { status, lastLine }
+const prevStatus = new Map(); // paneId → { status, hash, stableCount }
 const eventLog = [];          // last 50 events for new SSE clients
 
 function emitEvent(event) {
@@ -53,27 +53,68 @@ function emitEvent(event) {
   }
 }
 
-// Poll loop: detect status transitions
+// Simple hash for detecting content changes
+function quickHash(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) {
+    h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+  }
+  return h;
+}
+
+// Stability threshold: content must be unchanged for N polls to be "idle"
+const STABILITY_THRESHOLD = 2; // 2 polls × 3s = 6s of no change = idle
+
+// Poll loop: detect status transitions via content hashing
+// Instead of relying solely on regex patterns (which miss many working states),
+// we track whether terminal content is changing. If it's changing → working.
+// If stable for STABILITY_THRESHOLD polls → idle.
 setInterval(() => {
   try {
     const panes = discovery.discoverPanes().filter(p => p.isClaude);
 
     for (const pane of panes) {
+      let contentHash = 0;
+      try {
+        const text = wez.getFullText(pane.paneId, 30);
+        contentHash = quickHash(text);
+      } catch { continue; }
+
       const prev = prevStatus.get(pane.paneId);
-      const prevSt = prev?.status;
-      const currSt = pane.status;
 
       if (!prev) {
-        // First time seeing this pane
-        prevStatus.set(pane.paneId, { status: currSt });
+        prevStatus.set(pane.paneId, {
+          status: 'idle',
+          hash: contentHash,
+          stableCount: STABILITY_THRESHOLD, // assume started idle
+        });
         continue;
       }
 
-      // Detect transitions
-      if (prevSt !== currSt) {
-        const lastLines = pane.lastLines.split('\n').filter(l => l.trim()).slice(-8).join('\n');
+      const contentChanged = contentHash !== prev.hash;
+      let newStable = contentChanged ? 0 : prev.stableCount + 1;
+      const wasIdle = prev.stableCount >= STABILITY_THRESHOLD;
+      const isNowIdle = newStable >= STABILITY_THRESHOLD;
 
-        if (prevSt === 'working' && currSt === 'idle') {
+      // Override: permission/continuation prompts are always "idle-like" (waiting for input)
+      const isPermission = pane.status === 'permission' || pane.status === 'continuation';
+
+      // Determine effective status
+      let effectiveStatus;
+      if (isPermission) {
+        effectiveStatus = pane.status;
+        newStable = STABILITY_THRESHOLD; // treat as stable
+      } else if (isNowIdle) {
+        effectiveStatus = 'idle';
+      } else {
+        effectiveStatus = 'working';
+      }
+
+      const prevEffective = prev.effectiveStatus || prev.status;
+
+      // Emit events on transitions
+      if (prevEffective !== effectiveStatus) {
+        if (prevEffective === 'working' && effectiveStatus === 'idle') {
           // Task completed!
           let output = '';
           try { output = wez.getFullText(pane.paneId, 40); } catch {}
@@ -83,31 +124,29 @@ setInterval(() => {
             project: pane.projectName,
             output: output.split('\n').filter(l => l.trim()).slice(-15).join('\n'),
           });
-        } else if (currSt === 'permission') {
+        } else if (effectiveStatus === 'permission' || effectiveStatus === 'continuation') {
+          const lastLines = pane.lastLines.split('\n').filter(l => l.trim()).slice(-8).join('\n');
           emitEvent({
             type: 'permission',
             pane_id: pane.paneId,
             project: pane.projectName,
             output: lastLines,
           });
-        } else if (prevSt === 'idle' && currSt === 'working') {
+        } else if (effectiveStatus === 'working') {
           emitEvent({
             type: 'started',
             pane_id: pane.paneId,
             project: pane.projectName,
           });
-        } else {
-          emitEvent({
-            type: 'status_change',
-            pane_id: pane.paneId,
-            project: pane.projectName,
-            from: prevSt,
-            to: currSt,
-          });
         }
-
-        prevStatus.set(pane.paneId, { status: currSt });
       }
+
+      prevStatus.set(pane.paneId, {
+        status: pane.status,
+        effectiveStatus,
+        hash: contentHash,
+        stableCount: newStable,
+      });
     }
 
     // Detect removed panes
