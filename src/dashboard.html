@@ -1011,7 +1011,7 @@ function dtRenderLiveFeed() {
     return;
   }
   var html = '';
-  feedEvents.forEach(function(ev) {
+  feedEvents.forEach(function(ev, i) {
     var time = new Date(ev.timestamp).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit', second:'2-digit' });
     var output = ev.output ? stripAnsi(ev.output) : '';
     var badge = ev.type, msg = '';
