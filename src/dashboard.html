@@ -1124,18 +1124,27 @@ function feedPosition(pos) {
   }
 }
 
-// Drag support for float mode (on the feed header bar)
-(function() {
-  // We need to wait for DOM, use event delegation
-  document.addEventListener('mousedown', function(e) {
-    // Check if clicking on the feed header (not the buttons)
-    var feedHeader = e.target.closest('#desktopFeed > div:first-child');
-    if (!feedHeader) return;
-    if (e.target.tagName === 'SPAN' && e.target.onclick) return; // skip buttons
+// Drag support for float mode — attached directly to the header element
+function setupFeedDrag() {
+  var feed = document.getElementById('desktopFeed');
+  if (!feed) return;
+  // The header is the second child (first is resize handle)
+  var headers = feed.querySelectorAll('div');
+  var header = null;
+  for (var i = 0; i < headers.length; i++) {
+    if (headers[i].textContent.indexOf('Live Feed') >= 0 && headers[i].parentNode === feed) {
+      header = headers[i]; break;
+    }
+  }
+  if (!header) return;
+
+  header.addEventListener('mousedown', function(e) {
+    // Skip if clicking a position button (B, T, R, F, -)
+    var txt = (e.target.textContent || '').trim();
+    if (txt === 'B' || txt === 'T' || txt === 'R' || txt === 'F' || txt === '-') return;
     if (feedPos !== 'float') return;
 
     e.preventDefault();
-    var feed = document.getElementById('desktopFeed');
     var startX = e.clientX, startY = e.clientY;
     var startLeft = feed.offsetLeft, startTop = feed.offsetTop;
 
@@ -1152,7 +1161,9 @@ function feedPosition(pos) {
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   });
-})();
+}
+// Run after DOM is ready
+setTimeout(setupFeedDrag, 500);
 
 // Resize handle
 (function() {
