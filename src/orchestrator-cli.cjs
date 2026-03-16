@@ -60,7 +60,7 @@ function parseArgs() {
     team: [],
     orchestrator: false,
     port: null,
-    yolo: false,
+    yolo: !!process.env.WEZBRIDGE_YOLO,
     resume: false,
     discard: false,
     status: false,
@@ -140,6 +140,7 @@ ${c.bold}Options:${c.reset}
   --orchestrator         Spawn an overseer session
   --port <number>        Start REST API on this port
   --yolo                 Skip permission prompts (--dangerously-skip-permissions)
+                         Also settable via WEZBRIDGE_YOLO=1 env var
   --stability <count>    Polls before completion (default: 3)
   --poll <ms>            Poll interval (default: 3000)
 
