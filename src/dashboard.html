@@ -898,6 +898,7 @@ function dtCreateWin(s) {
       '<button onclick="dtSend(' + s.pane_id + ',this.previousElementSibling)">Send</button>' +
       '<button onclick="addToQueue(' + s.pane_id + ')" style="background:var(--cyan);color:#000;font-size:9px;padding:4px 6px;border:none;border-radius:4px;cursor:pointer" title="Add to queue">Q+</button>' +
       '<button onclick="injectContext(' + s.pane_id + ')" style="background:var(--bg-hover);color:var(--text-secondary);font-size:9px;padding:4px 6px;border:1px solid var(--glass-border);border-radius:4px;cursor:pointer" title="Inject context from other sessions">Ctx</button>' +
+      '<button onclick="sendAltM(' + s.pane_id + ')" style="background:var(--bg-hover);color:var(--yellow);font-size:9px;padding:4px 6px;border:1px solid rgba(245,158,11,0.3);border-radius:4px;cursor:pointer" title="Toggle permission mode (Alt+M)">Mode</button>' +
     '</div>' +
     '<div class="dwin-resize rs"></div>' +
     '<div class="dwin-resize re"></div>' +
@@ -1247,6 +1248,17 @@ async function addMultiQueue(paneId) {
     body: JSON.stringify({ tasks: tasks }),
   });
   toast(tasks.length + ' tasks queued');
+}
+
+// ─── Toggle Permission Mode (Alt+M) ───
+async function sendAltM(paneId) {
+  try {
+    await fetch(API + '/api/sessions/' + paneId + '/key', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ key: 'alt+m' }),
+    });
+    toast('Alt+M sent to pane ' + paneId);
+  } catch { toast('Failed'); }
 }
 
 // ─── Inject Context ───

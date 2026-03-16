@@ -349,6 +349,11 @@ function handleToolCall(name, args) {
             // Send ETX (Ctrl+C = ASCII 3)
             wez.sendTextNoEnter(paneId, '\x03');
             break;
+          case 'alt+m':
+          case 'meta+m':
+            // ESC + m = Alt+M (toggle permission mode in Claude Code)
+            wez.sendTextNoEnter(paneId, '\x1bm');
+            break;
           case 'y':
           case 'n':
             // Don't append Enter — permission prompts read the char directly

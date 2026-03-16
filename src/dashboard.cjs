@@ -379,6 +379,7 @@ function handleApi(req, res) {
         switch (key) {
           case 'enter': wez.sendText(paneId, ''); break;
           case 'ctrl+c': case 'ctrl-c': wez.sendTextNoEnter(paneId, '\x03'); break;
+          case 'alt+m': case 'meta+m': wez.sendTextNoEnter(paneId, '\x1bm'); break; // ESC + m = Alt+M
           case 'y': case 'n': wez.sendTextNoEnter(paneId, key); break;
           default: wez.sendTextNoEnter(paneId, body.key || ''); break;
         }
