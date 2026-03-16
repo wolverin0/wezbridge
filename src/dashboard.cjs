@@ -413,7 +413,8 @@ function handleApi(req, res) {
           const resume = body.continue !== false; // default: resume last session
           let cmd = 'claude';
           if (resume) cmd += ' --continue';
-          if (yolo) cmd += ' --dangerously-skip-permissions';
+          // Always add --dangerously-skip-permissions for dashboard-spawned sessions
+          cmd += ' --dangerously-skip-permissions';
           wez.sendText(newPaneId, cmd);
 
           // If initial prompt provided, wait for Claude to boot then send it
