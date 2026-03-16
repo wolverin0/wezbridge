@@ -442,6 +442,7 @@ function connectSSE() {
       feedEvents.unshift(event); // newest first
       if (feedEvents.length > 100) feedEvents.pop();
       renderFeed();
+      dtRenderLiveFeed(); // also update desktop live feed window
 
       // Browser notification
       if (event.type === 'completed' || event.type === 'permission') {
@@ -795,7 +796,65 @@ var dtInited = false;
 function initDesktop() {
   if (dtInited && Object.keys(dtWins).length > 0) return;
   dtInited = true;
+  dtCreateLiveFeedWin();
   dtSyncWindows();
+}
+
+function dtCreateLiveFeedWin() {
+  if (dtWins['live']) return;
+  var area = document.getElementById('desktopArea');
+  var aw = area.offsetWidth, ah = area.offsetHeight;
+  dtWins['live'] = { x: aw - 420, y: 6, w: 410, h: ah - 12, z: dtTopZ++, minimized: false };
+  var w = dtWins['live'];
+  var el = document.createElement('div');
+  el.className = 'dwin';
+  el.id = 'dw-live';
+  el.style.cssText = 'left:' + w.x + 'px;top:' + w.y + 'px;width:' + w.w + 'px;height:' + w.h + 'px;z-index:' + w.z;
+  el.innerHTML =
+    '<div class="dwin-header">' +
+      '<div class="dwin-dots">' +
+        '<span class="dc" onclick="dtMinWin(\'live\')"></span>' +
+        '<span class="dm" onclick="dtMinWin(\'live\')"></span>' +
+        '<span class="dx" onclick="dtMaxWin(\'live\')"></span>' +
+      '</div>' +
+      '<span class="dwin-name">Live Feed</span>' +
+      '<span class="dwin-st idle">FEED</span>' +
+    '</div>' +
+    '<div class="dwin-body" id="dbody-live" style="font-family:Inter,sans-serif;font-size:12px;line-height:1.5;padding:0;background:var(--bg-app)"></div>' +
+    '<div class="dwin-resize rs"></div><div class="dwin-resize re"></div><div class="dwin-resize rb"></div>';
+
+  el.addEventListener('mousedown', function() { dtFocus('live'); });
+
+  // Drag
+  var hdr = el.querySelector('.dwin-header');
+  hdr.addEventListener('mousedown', function(e) {
+    if (e.target.closest('.dwin-dots')) return;
+    e.preventDefault();
+    var wn = dtWins['live'], sx = e.clientX - wn.x, sy = e.clientY - wn.y;
+    function mv(e2) { wn.x = e2.clientX - sx; wn.y = e2.clientY - sy; el.style.left = wn.x + 'px'; el.style.top = wn.y + 'px'; }
+    function up() { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); }
+    document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+  });
+
+  // Resize
+  el.querySelectorAll('.dwin-resize').forEach(function(h) {
+    h.addEventListener('mousedown', function(e) {
+      e.preventDefault(); e.stopPropagation();
+      var wn = dtWins['live'], ow = wn.w, oh = wn.h, sx = e.clientX, sy = e.clientY;
+      var isE = h.classList.contains('re') || h.classList.contains('rs');
+      var isS = h.classList.contains('rb') || h.classList.contains('rs');
+      function mv(e2) {
+        if (isE) wn.w = Math.max(300, ow + (e2.clientX - sx));
+        if (isS) wn.h = Math.max(200, oh + (e2.clientY - sy));
+        el.style.width = wn.w + 'px'; el.style.height = wn.h + 'px';
+      }
+      function up() { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); }
+      document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+    });
+  });
+
+  area.appendChild(el);
+  dtRenderLiveFeed();
 }
 
 function dtSyncWindows() {
@@ -929,7 +988,16 @@ function dtSend(pid, input) {
 function dtTile() {
   var area = document.getElementById('desktopArea');
   var aw = area.offsetWidth, ah = area.offsetHeight;
-  var vis = Object.keys(dtWins).filter(function(id) { return !dtWins[id].minimized; });
+  // Live feed window gets right 30%, session windows get left 70%
+  var liveFeed = dtWins['live'];
+  var liveW = liveFeed && !liveFeed.minimized ? Math.min(400, Math.floor(aw * 0.3)) : 0;
+  if (liveFeed && !liveFeed.minimized) {
+    liveFeed.x = aw - liveW; liveFeed.y = 0; liveFeed.w = liveW; liveFeed.h = ah; liveFeed._max = false;
+    var lel = document.getElementById('dw-live');
+    if (lel) { lel.style.left = liveFeed.x + 'px'; lel.style.top = '0'; lel.style.width = liveW + 'px'; lel.style.height = ah + 'px'; }
+  }
+  var vis = Object.keys(dtWins).filter(function(id) { return id !== 'live' && !dtWins[id].minimized; });
+  aw = aw - liveW - (liveW ? 4 : 0);
   if (!vis.length) return;
   var cols = Math.ceil(Math.sqrt(vis.length)), rows = Math.ceil(vis.length / cols);
   var ww = Math.floor(aw / cols) - 6, wh = Math.floor(ah / rows) - 6;
@@ -961,6 +1029,49 @@ function dtStack() {
     el.style.left = w.x + 'px'; el.style.top = w.y + 'px'; el.style.width = w.w + 'px'; el.style.height = w.h + 'px'; el.style.zIndex = w.z;
   });
   dtTopZ = 10 + vis.length;
+}
+
+function dtRenderLiveFeed() {
+  var el = document.getElementById('dbody-live');
+  if (!el) return;
+  if (!feedEvents.length) {
+    el.innerHTML = '<div style="padding:30px 16px;text-align:center;color:var(--text-tertiary);font-size:12px">Waiting for events...</div>';
+    return;
+  }
+  var html = '';
+  feedEvents.forEach(function(ev) {
+    var time = new Date(ev.timestamp).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+    var output = ev.output ? stripAnsi(ev.output) : '';
+    var badge = ev.type, msg = '';
+    if (ev.type === 'completed') msg = 'Task finished';
+    else if (ev.type === 'permission') msg = 'Needs approval';
+    else if (ev.type === 'started') msg = 'Started working';
+    else if (ev.type === 'status_change') { msg = (ev.from || '?') + ' > ' + (ev.to || '?'); badge = ev.to || ev.type; }
+    else msg = ev.type;
+
+    html += '<div class="feed-event ' + ev.type + '">' +
+      '<div class="feed-head">' +
+        '<span class="feed-badge ' + ev.type + '">' + esc(badge) + '</span>' +
+        '<span class="feed-project">' + esc(ev.project || 'pane ' + ev.pane_id) + '</span>' +
+        '<span style="font-size:11px;color:var(--text-secondary)">' + esc(msg) + '</span>' +
+        '<span class="feed-time">' + time + '</span>' +
+      '</div>';
+    if (output) html += '<div class="feed-output" style="max-height:120px">' + esc(output) + '</div>';
+    if (ev.type === 'completed') {
+      html += '<div class="feed-reply">' +
+        '<input class="prompt-input" style="font-size:11px;padding:4px 8px" placeholder="Reply..." onkeydown="if(event.key===\'Enter\')feedReply(' + ev.pane_id + ',this)">' +
+        '<button class="btn btn-accent" style="font-size:10px;padding:4px 8px" onclick="feedReply(' + ev.pane_id + ',this.previousElementSibling)">Send</button>' +
+      '</div>';
+    }
+    if (ev.type === 'permission') {
+      html += '<div class="feed-reply">' +
+        '<button class="btn btn-green" style="font-size:10px;padding:4px 8px" onclick="sendKeyFeed(' + ev.pane_id + ',\'y\')">Yes</button>' +
+        '<button class="btn btn-red" style="font-size:10px;padding:4px 8px" onclick="sendKeyFeed(' + ev.pane_id + ',\'n\')">No</button>' +
+      '</div>';
+    }
+    html += '</div>';
+  });
+  el.innerHTML = html;
 }
 
 // Refresh desktop outputs every 3s
