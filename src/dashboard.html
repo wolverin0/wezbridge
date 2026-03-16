@@ -7,12 +7,15 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
+/* ─── FuturaOS Design System (adapted) ─── */
 :root {
   --bg-app: oklch(0.10 0.015 270);
   --bg-surface: oklch(0.15 0.015 270);
   --bg-elevated: oklch(0.18 0.015 270);
   --bg-hover: oklch(0.21 0.015 270);
+  --bg-active: oklch(0.24 0.015 270);
   --accent: oklch(0.65 0.24 270);
+  --accent-dim: oklch(0.45 0.18 270);
   --green: oklch(0.75 0.18 155);
   --red: oklch(0.65 0.22 25);
   --yellow: oklch(0.80 0.18 85);
@@ -21,572 +24,969 @@
   --text-secondary: oklch(0.72 0.015 260);
   --text-tertiary: oklch(0.50 0.015 260);
   --border: oklch(0.25 0.012 270);
-  --glass: rgba(23, 23, 23, 0.92);
+  --border-subtle: oklch(0.22 0.012 270 / 0.6);
+  --glass: rgba(23, 23, 23, 0.85);
   --glass-border: rgba(255, 255, 255, 0.08);
+  --radius: 12px;
+  --radius-lg: 16px;
+  --shadow-card: 0 4px 24px rgba(0,0,0,0.3);
+  --shadow-active: 0 8px 40px rgba(0,0,0,0.5);
 }
-* { margin:0; padding:0; box-sizing:border-box; }
-body { font-family:'Inter',system-ui,sans-serif; background:var(--bg-app); color:var(--text-primary); overflow:hidden; height:100vh; user-select:none; }
-code,pre,.mono { font-family:'JetBrains Mono',monospace; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  background: var(--bg-app); color: var(--text-primary);
+  min-height: 100vh; overflow-x: hidden;
+}
+code, pre, .mono { font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace; }
 
 /* ─── Top Bar ─── */
 .topbar {
-  height:32px; display:flex; align-items:center; justify-content:space-between;
-  padding:0 16px; background:rgba(0,0,0,0.5); backdrop-filter:blur(20px);
-  border-bottom:1px solid var(--glass-border); z-index:9999; position:relative;
-  font-size:12px; font-weight:500;
+  height: 36px; display: flex; align-items: center; justify-content: space-between;
+  padding: 0 20px; background: rgba(0,0,0,0.4); backdrop-filter: blur(20px);
+  border-bottom: 1px solid var(--glass-border); position: sticky; top: 0; z-index: 50;
+  font-size: 12px; font-weight: 500;
 }
-.topbar-left { display:flex; align-items:center; gap:14px; }
-.topbar-brand { font-weight:700; letter-spacing:-0.5px; font-size:13px; }
-.topbar-brand span { color:var(--accent); }
-.topbar-menu { display:flex; gap:2px; }
-.topbar-menu button { background:none; border:none; color:var(--text-secondary); font-size:11px; font-weight:600; padding:3px 10px; border-radius:4px; cursor:pointer; font-family:inherit; }
-.topbar-menu button:hover { background:rgba(255,255,255,0.08); color:var(--text-primary); }
-.topbar-right { display:flex; align-items:center; gap:12px; font-size:11px; color:var(--text-secondary); }
-.topbar-stat { display:flex; align-items:center; gap:3px; }
-.topbar-dot { width:6px; height:6px; border-radius:50%; display:inline-block; }
-.topbar-dot.g { background:var(--green); }
-.topbar-dot.y { background:var(--yellow); }
-.topbar-dot.r { background:var(--red); }
-.topbar-time { font-weight:600; color:var(--text-primary); }
+.topbar-left { display: flex; align-items: center; gap: 16px; }
+.topbar-brand { font-weight: 700; letter-spacing: -0.5px; font-size: 13px; }
+.topbar-brand span { color: var(--accent); }
+.topbar-menu { display: flex; gap: 12px; color: var(--text-secondary); }
+.topbar-menu a { color: inherit; text-decoration: none; cursor: pointer; transition: color 0.15s; }
+.topbar-menu a:hover { color: var(--text-primary); }
+.topbar-menu a.active { color: var(--accent); }
+.topbar-right { display: flex; align-items: center; gap: 14px; color: var(--text-secondary); }
+.topbar-stat { display: flex; align-items: center; gap: 4px; }
+.topbar-stat .dot { width: 6px; height: 6px; border-radius: 50%; }
+.topbar-time { font-weight: 600; color: var(--text-primary); min-width: 50px; text-align: right; }
 
-/* ─── Desktop ─── */
-.desktop { position:relative; width:100%; height:calc(100vh - 32px - 56px); overflow:hidden; }
-
-/* ─── Window ─── */
-.window {
-  position:absolute; min-width:380px; min-height:250px;
-  background:var(--glass); backdrop-filter:blur(25px);
-  border:1px solid var(--glass-border); border-radius:12px;
-  box-shadow:0 8px 32px rgba(0,0,0,0.4);
-  display:flex; flex-direction:column; overflow:hidden;
-  transition:box-shadow 0.2s;
+/* ─── Layout ─── */
+.app { display: flex; height: calc(100vh - 36px); }
+.sidebar {
+  width: 220px; flex-shrink: 0; background: var(--bg-surface);
+  border-right: 1px solid var(--border-subtle); padding: 12px; display: flex; flex-direction: column; gap: 4px;
+  overflow-y: auto;
 }
-.window.active { box-shadow:0 16px 60px rgba(0,0,0,0.6); border-color:rgba(255,255,255,0.12); }
-.window.maximized { border-radius:0; }
-.window.minimized { display:none; }
+.main { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
 
-.win-header {
-  height:38px; display:flex; align-items:center; padding:0 12px; gap:10px;
+/* ─── Sidebar sessions ─── */
+.sidebar-title { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--text-tertiary); padding: 8px 8px 4px; }
+.sidebar-item {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px;
+  cursor: pointer; transition: all 0.15s; border: 1px solid transparent;
+}
+.sidebar-item:hover { background: var(--bg-hover); }
+.sidebar-item.active { background: var(--bg-active); border-color: var(--accent-dim); }
+.sidebar-item .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.dot.idle { background: var(--green); box-shadow: 0 0 6px oklch(0.75 0.18 155 / 0.5); }
+.dot.working { background: var(--yellow); animation: pulse 1.4s infinite; box-shadow: 0 0 6px oklch(0.80 0.18 85 / 0.5); }
+.dot.permission { background: var(--red); animation: pulse 0.8s infinite; box-shadow: 0 0 6px oklch(0.65 0.22 25 / 0.5); }
+.dot.unknown { background: var(--text-tertiary); }
+.dot.continuation { background: var(--cyan); }
+@keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.35; } }
+.sidebar-item-name { font-size: 13px; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-item-pane { font-size: 10px; color: var(--text-tertiary); font-family: 'JetBrains Mono', monospace; }
+.sidebar-divider { height: 1px; background: var(--border-subtle); margin: 8px 4px; }
+.sidebar-spawn { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; cursor: pointer; color: var(--accent); font-size: 13px; font-weight: 600; transition: all 0.15s; border: 1px dashed var(--accent-dim); }
+.sidebar-spawn:hover { background: oklch(0.65 0.24 270 / 0.1); border-style: solid; }
+
+/* ─── Main content ─── */
+.panel-header {
+  display: flex; align-items: center; justify-content: space-between; padding: 4px 0;
+}
+.panel-title { font-size: 18px; font-weight: 700; letter-spacing: -0.3px; }
+.panel-meta { font-size: 12px; color: var(--text-secondary); display: flex; gap: 12px; }
+
+/* ─── Status bar ─── */
+.status-strip { display: flex; gap: 8px; }
+.status-pill {
+  display: flex; align-items: center; gap: 6px; padding: 5px 12px;
+  background: var(--bg-surface); border: 1px solid var(--border-subtle);
+  border-radius: 20px; font-size: 12px; font-weight: 500;
+}
+.status-pill .dot { width: 6px; height: 6px; border-radius: 50%; }
+
+/* ─── Terminal output (always visible) ─── */
+.terminal-card {
+  background: var(--glass); backdrop-filter: blur(25px);
+  border: 1px solid var(--glass-border); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card); flex: 1; display: flex; flex-direction: column;
+  min-height: 300px; overflow: hidden;
+}
+.terminal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 16px; border-bottom: 1px solid var(--glass-border);
+  background: rgba(0,0,0,0.2);
+}
+.terminal-header-left { display: flex; align-items: center; gap: 10px; }
+.terminal-dots { display: flex; gap: 6px; }
+.terminal-dots span { width: 12px; height: 12px; border-radius: 50%; cursor: pointer; transition: filter 0.15s; }
+.terminal-dots span:hover { filter: brightness(1.3); }
+.terminal-dots .d-red { background: #ff5f57; }
+.terminal-dots .d-yellow { background: #febc2e; }
+.terminal-dots .d-green { background: #28c840; }
+.terminal-title { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+.terminal-status { font-size: 11px; padding: 2px 8px; border-radius: 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+.terminal-status.idle { background: oklch(0.75 0.18 155 / 0.15); color: var(--green); }
+.terminal-status.working { background: oklch(0.80 0.18 85 / 0.15); color: var(--yellow); }
+.terminal-status.permission { background: oklch(0.65 0.22 25 / 0.15); color: var(--red); }
+.terminal-status.unknown { background: oklch(0.50 0.015 260 / 0.15); color: var(--text-tertiary); }
+.terminal-body {
+  flex: 1; overflow: auto; padding: 12px 16px;
+  font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.6;
+  color: oklch(0.78 0.01 260); white-space: pre-wrap; word-break: break-word;
+  background: oklch(0.08 0.012 270);
+}
+.terminal-body::-webkit-scrollbar { width: 6px; }
+.terminal-body::-webkit-scrollbar-track { background: transparent; }
+.terminal-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* ─── Actions bar ─── */
+.actions-bar {
+  display: flex; gap: 6px; padding: 10px 16px;
+  border-top: 1px solid var(--glass-border); background: rgba(0,0,0,0.15);
+  flex-wrap: wrap; align-items: center;
+}
+.btn {
+  font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 600;
+  padding: 6px 14px; border-radius: 8px; border: none; cursor: pointer;
+  transition: all 0.15s; display: inline-flex; align-items: center; gap: 5px;
+}
+.btn:hover { filter: brightness(1.1); transform: translateY(-1px); }
+.btn:active { transform: scale(0.97) translateY(0); }
+.btn-accent { background: var(--accent); color: #fff; }
+.btn-green { background: var(--green); color: #000; }
+.btn-red { background: transparent; color: var(--red); border: 1px solid oklch(0.65 0.22 25 / 0.4); }
+.btn-red:hover { background: oklch(0.65 0.22 25 / 0.15); }
+.btn-ghost { background: var(--bg-hover); color: var(--text-secondary); border: 1px solid var(--border-subtle); }
+.btn-ghost:hover { color: var(--text-primary); background: var(--bg-active); }
+
+/* ─── Prompt input ─── */
+.prompt-bar {
+  display: flex; gap: 8px; padding: 10px 16px;
+  border-top: 1px solid var(--glass-border); background: rgba(0,0,0,0.1);
+}
+.prompt-input {
+  flex: 1; background: var(--bg-app); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 14px; font-size: 13px; color: var(--text-primary);
+  font-family: 'JetBrains Mono', monospace; outline: none; transition: border-color 0.2s;
+}
+.prompt-input:focus { border-color: var(--accent); }
+.prompt-input::placeholder { color: var(--text-tertiary); }
+
+/* ─── Spawn panel ─── */
+.spawn-panel { display: none; flex: 1; flex-direction: column; gap: 12px; }
+.spawn-panel.open { display: flex; }
+.proj-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; overflow-y: auto; }
+.proj-card {
+  background: var(--bg-surface); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius); padding: 12px; cursor: pointer; transition: all 0.2s;
+}
+.proj-card:hover { border-color: var(--accent-dim); background: var(--bg-elevated); transform: translateY(-1px); }
+.proj-card.has-session { border-left: 3px solid var(--green); }
+.proj-card-name { font-size: 13px; font-weight: 600; margin-bottom: 3px; }
+.proj-card-path { font-size: 10px; color: var(--text-tertiary); font-family: 'JetBrains Mono', monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proj-card-badge { font-size: 10px; color: var(--green); font-weight: 600; margin-top: 4px; }
+
+/* ─── Live Feed ─── */
+.feed-panel { display: none; flex: 1; flex-direction: column; gap: 0; overflow-y: auto; }
+.feed-panel.open { display: flex; }
+.feed-event {
+  padding: 12px 16px; border-bottom: 1px solid var(--border-subtle);
+  animation: feedIn 0.3s ease-out;
+}
+@keyframes feedIn { from { opacity: 0; transform: translateX(-10px); } }
+.feed-event.completed { border-left: 3px solid var(--green); }
+.feed-event.permission { border-left: 3px solid var(--red); }
+.feed-event.started { border-left: 3px solid var(--yellow); }
+.feed-event.status_change { border-left: 3px solid var(--cyan); }
+.feed-event.removed { border-left: 3px solid var(--text-tertiary); opacity: 0.6; }
+.feed-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.feed-badge {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+  padding: 2px 8px; border-radius: 4px;
+}
+.feed-badge.completed { background: oklch(0.75 0.18 155 / 0.2); color: var(--green); }
+.feed-badge.permission { background: oklch(0.65 0.22 25 / 0.2); color: var(--red); }
+.feed-badge.started { background: oklch(0.80 0.18 85 / 0.2); color: var(--yellow); }
+.feed-project { font-weight: 600; font-size: 14px; }
+.feed-time { font-size: 11px; color: var(--text-tertiary); margin-left: auto; font-family: 'JetBrains Mono', monospace; }
+.feed-output {
+  background: oklch(0.08 0.012 270); border: 1px solid var(--border-subtle);
+  border-radius: 8px; padding: 8px 12px; margin: 6px 0;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.5;
+  color: oklch(0.72 0.01 260); max-height: 200px; overflow-y: auto;
+  white-space: pre-wrap; word-break: break-word;
+}
+.feed-reply { display: flex; gap: 6px; margin-top: 8px; }
+.feed-reply input { flex: 1; }
+.feed-empty { text-align: center; padding: 60px 20px; color: var(--text-tertiary); font-size: 14px; }
+.feed-notification {
+  position: fixed; top: 44px; right: 20px; z-index: 100;
+  background: var(--bg-elevated); border: 1px solid var(--green);
+  border-radius: 12px; padding: 12px 18px; max-width: 360px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.5); animation: notifIn 0.4s ease-out;
+  cursor: pointer;
+}
+.feed-notification.permission-notif { border-color: var(--red); }
+@keyframes notifIn { from { opacity: 0; transform: translateY(-10px) scale(0.95); } }
+.notif-title { font-weight: 700; font-size: 13px; margin-bottom: 3px; }
+.notif-body { font-size: 12px; color: var(--text-secondary); }
+
+/* ─── Desktop OS View ─── */
+.desktop-panel { display:none; position:relative; flex:1; overflow:hidden; }
+.desktop-panel.open { display:block; }
+.desktop-toolbar { display:flex; gap:4px; padding:8px 12px; background:rgba(0,0,0,0.2); border-bottom:1px solid var(--glass-border); font-size:11px; }
+.desktop-toolbar button { background:rgba(255,255,255,0.06); border:1px solid var(--glass-border); color:var(--text-secondary); font-size:11px; font-weight:600; padding:4px 12px; border-radius:6px; cursor:pointer; font-family:inherit; }
+.desktop-toolbar button:hover { background:rgba(255,255,255,0.1); color:var(--text-primary); }
+.desktop-area { position:relative; width:100%; height:calc(100% - 40px); overflow:hidden; }
+.dwin {
+  position:absolute; min-width:360px; min-height:220px;
+  background:var(--glass); backdrop-filter:blur(20px);
+  border:1px solid var(--glass-border); border-radius:10px;
+  box-shadow:0 6px 24px rgba(0,0,0,0.4); display:flex; flex-direction:column; overflow:hidden;
+}
+.dwin.active { box-shadow:0 12px 48px rgba(0,0,0,0.6); border-color:rgba(255,255,255,0.12); }
+.dwin.minimized { display:none; }
+.dwin-header {
+  height:34px; display:flex; align-items:center; padding:0 10px; gap:8px;
   background:rgba(0,0,0,0.25); border-bottom:1px solid var(--glass-border);
-  cursor:grab; flex-shrink:0;
+  cursor:grab; flex-shrink:0; font-size:11px;
 }
-.win-header:active { cursor:grabbing; }
-.win-dots { display:flex; gap:6px; }
-.win-dots span { width:12px; height:12px; border-radius:50%; cursor:pointer; transition:filter 0.15s; }
-.win-dots span:hover { filter:brightness(1.4); }
-.win-dots .wd-close { background:#ff5f57; }
-.win-dots .wd-min { background:#febc2e; }
-.win-dots .wd-max { background:#28c840; }
-.win-title { font-size:12px; font-weight:600; color:var(--text-secondary); flex:1; text-align:center; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.win-status { font-size:10px; font-weight:700; text-transform:uppercase; padding:2px 6px; border-radius:4px; letter-spacing:0.3px; }
-.win-status.idle { background:rgba(34,197,94,0.15); color:var(--green); }
-.win-status.working { background:rgba(245,158,11,0.15); color:var(--yellow); }
-.win-status.permission { background:rgba(239,68,68,0.15); color:var(--red); }
-.win-status.unknown { background:rgba(100,100,120,0.15); color:var(--text-tertiary); }
+.dwin-header:active { cursor:grabbing; }
+.dwin-dots { display:flex; gap:5px; }
+.dwin-dots span { width:11px; height:11px; border-radius:50%; cursor:pointer; }
+.dwin-dots .dc { background:#ff5f57; }
+.dwin-dots .dm { background:#febc2e; }
+.dwin-dots .dx { background:#28c840; }
+.dwin-name { font-weight:600; color:var(--text-secondary); flex:1; text-align:center; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.dwin-st { font-size:9px; font-weight:700; text-transform:uppercase; padding:2px 5px; border-radius:3px; }
+.dwin-st.idle { background:rgba(34,197,94,0.15); color:var(--green); }
+.dwin-st.working { background:rgba(245,158,11,0.15); color:var(--yellow); }
+.dwin-st.permission { background:rgba(239,68,68,0.15); color:var(--red); }
+.dwin-body { flex:1; overflow:auto; padding:8px 10px; font-family:'JetBrains Mono',monospace; font-size:10px; line-height:1.5; color:oklch(0.74 0.01 260); white-space:pre-wrap; word-break:break-word; background:oklch(0.07 0.012 270); }
+.dwin-body::-webkit-scrollbar { width:4px; }
+.dwin-body::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
+.dwin-prompt { display:flex; gap:4px; padding:6px 8px; border-top:1px solid var(--glass-border); background:rgba(0,0,0,0.15); }
+.dwin-prompt input { flex:1; background:var(--bg-app); border:1px solid var(--border); border-radius:5px; padding:4px 8px; font-size:10px; color:var(--text-primary); font-family:'JetBrains Mono',monospace; outline:none; }
+.dwin-prompt input:focus { border-color:var(--accent); }
+.dwin-prompt button { font-size:10px; font-weight:600; padding:4px 8px; border-radius:5px; border:none; cursor:pointer; background:var(--accent); color:#fff; font-family:inherit; }
+.dwin-resize { position:absolute; z-index:2; }
+.dwin-resize.rs { bottom:-3px; right:-3px; width:14px; height:14px; cursor:se-resize; }
+.dwin-resize.re { right:-3px; top:10px; bottom:10px; width:5px; cursor:e-resize; }
+.dwin-resize.rb { bottom:-3px; left:10px; right:10px; height:5px; cursor:s-resize; }
 
-.win-body { flex:1; overflow:auto; padding:10px 14px; font-family:'JetBrains Mono',monospace; font-size:11px; line-height:1.55; color:oklch(0.76 0.01 260); white-space:pre-wrap; word-break:break-word; background:oklch(0.07 0.012 270); }
-.win-body::-webkit-scrollbar { width:5px; }
-.win-body::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
-
-.win-prompt { display:flex; gap:6px; padding:8px 10px; border-top:1px solid var(--glass-border); background:rgba(0,0,0,0.15); }
-.win-prompt input { flex:1; background:var(--bg-app); border:1px solid var(--border); border-radius:6px; padding:5px 10px; font-size:11px; color:var(--text-primary); font-family:'JetBrains Mono',monospace; outline:none; }
-.win-prompt input:focus { border-color:var(--accent); }
-.win-prompt button { font-family:'Inter',sans-serif; font-size:11px; font-weight:600; padding:5px 12px; border-radius:6px; border:none; cursor:pointer; background:var(--accent); color:#fff; }
-.win-prompt .btn-yes { background:var(--green); color:#000; }
-.win-prompt .btn-no { background:transparent; color:var(--red); border:1px solid var(--red); }
-
-/* Resize handles */
-.win-resize { position:absolute; z-index:2; }
-.win-resize.n { top:-3px; left:10px; right:10px; height:6px; cursor:n-resize; }
-.win-resize.s { bottom:-3px; left:10px; right:10px; height:6px; cursor:s-resize; }
-.win-resize.e { right:-3px; top:10px; bottom:10px; width:6px; cursor:e-resize; }
-.win-resize.w { left:-3px; top:10px; bottom:10px; width:6px; cursor:w-resize; }
-.win-resize.ne { top:-3px; right:-3px; width:12px; height:12px; cursor:ne-resize; }
-.win-resize.nw { top:-3px; left:-3px; width:12px; height:12px; cursor:nw-resize; }
-.win-resize.se { bottom:-3px; right:-3px; width:12px; height:12px; cursor:se-resize; }
-.win-resize.sw { bottom:-3px; left:-3px; width:12px; height:12px; cursor:sw-resize; }
-
-/* ─── Dock ─── */
-.dock {
-  position:fixed; bottom:8px; left:50%; transform:translateX(-50%);
-  display:flex; gap:6px; padding:6px 12px; background:rgba(0,0,0,0.5);
-  backdrop-filter:blur(20px); border:1px solid var(--glass-border);
-  border-radius:16px; z-index:9998;
-}
-.dock-item {
-  width:44px; height:44px; border-radius:10px; display:flex; align-items:center;
-  justify-content:center; cursor:pointer; transition:all 0.2s; position:relative;
-  font-size:11px; font-weight:700; color:var(--text-primary);
-}
-.dock-item:hover { transform:translateY(-4px) scale(1.1); }
-.dock-item.idle { background:rgba(34,197,94,0.2); border:1px solid rgba(34,197,94,0.3); }
-.dock-item.working { background:rgba(245,158,11,0.2); border:1px solid rgba(245,158,11,0.3); }
-.dock-item.permission { background:rgba(239,68,68,0.2); border:1px solid rgba(239,68,68,0.3); }
-.dock-item.unknown { background:rgba(100,100,120,0.2); border:1px solid rgba(100,100,120,0.3); }
-.dock-item .dock-dot { position:absolute; bottom:-2px; width:5px; height:5px; border-radius:50%; background:var(--text-primary); }
-.dock-item .dock-label { position:absolute; bottom:-18px; font-size:9px; white-space:nowrap; color:var(--text-secondary); font-weight:500; pointer-events:none; opacity:0; transition:opacity 0.2s; }
-.dock-item:hover .dock-label { opacity:1; }
-.dock-add { background:rgba(255,255,255,0.05); border:1px dashed rgba(255,255,255,0.15); color:var(--accent); font-size:18px; font-weight:400; }
-
-/* ─── Feed notification ─── */
-.feed-notif {
-  position:fixed; top:40px; right:12px; z-index:10000; max-width:360px;
-  background:var(--bg-elevated); border:1px solid var(--green); border-radius:10px;
-  padding:10px 14px; box-shadow:0 8px 30px rgba(0,0,0,0.5); animation:notifIn 0.3s;
-  cursor:pointer; font-size:12px;
-}
-.feed-notif.perm { border-color:var(--red); }
-@keyframes notifIn { from { opacity:0; transform:translateY(-8px); } }
-.feed-notif-title { font-weight:700; margin-bottom:2px; }
-.feed-notif-body { color:var(--text-secondary); font-size:11px; max-height:60px; overflow:hidden; }
+/* ─── Empty / loading ─── */
+.empty-state { text-align: center; padding: 60px 20px; color: var(--text-tertiary); }
+.empty-icon { font-size: 32px; opacity: 0.3; margin-bottom: 8px; }
 
 /* ─── Toast ─── */
-.toast { position:fixed; bottom:72px; right:16px; background:var(--bg-elevated); border:1px solid var(--border); border-radius:8px; padding:8px 16px; font-size:12px; z-index:10000; animation:notifIn 0.3s; }
+.toast {
+  position: fixed; bottom: 20px; right: 20px; background: var(--bg-elevated);
+  border: 1px solid var(--border); border-radius: 10px; padding: 10px 18px;
+  font-size: 13px; font-weight: 500; z-index: 200; animation: toastIn 0.3s;
+  backdrop-filter: blur(10px);
+}
+@keyframes toastIn { from { opacity:0; transform: translateY(8px); } }
+
+/* ─── Responsive ─── */
+@media (max-width: 700px) {
+  .sidebar { display: none; }
+  .app { flex-direction: column; }
+}
 </style>
 </head>
 <body>
 
+<!-- Top Bar -->
 <div class="topbar">
   <div class="topbar-left">
     <div class="topbar-brand">Wez<span>Bridge</span></div>
     <div class="topbar-menu">
-      <button onclick="tileWindows()">Tile</button>
-      <button onclick="cascadeWindows()">Cascade</button>
-      <button onclick="stackWindows()">Stack</button>
+      <a class="active" data-view="sessions" onclick="switchView('sessions')">Sessions</a>
+      <a data-view="live" onclick="switchView('live')">Live</a>
+      <a data-view="desktop" onclick="switchView('desktop')">Desktop</a>
+      <a data-view="spawn" onclick="switchView('spawn')">Spawn</a>
     </div>
   </div>
   <div class="topbar-right">
-    <div class="topbar-stat"><span class="topbar-dot g"></span><span id="topIdle">0</span></div>
-    <div class="topbar-stat"><span class="topbar-dot y"></span><span id="topWork">0</span></div>
-    <div class="topbar-stat"><span class="topbar-dot r"></span><span id="topPerm">0</span></div>
-    <span class="topbar-time" id="clock"></span>
+    <div class="topbar-stat"><div class="dot idle"></div><span id="topIdle">0</span></div>
+    <div class="topbar-stat"><div class="dot working"></div><span id="topWorking">0</span></div>
+    <div class="topbar-stat"><div class="dot permission"></div><span id="topPerm">0</span></div>
+    <div class="topbar-time" id="clock"></div>
   </div>
 </div>
 
-<div class="desktop" id="desktop"></div>
+<div class="app">
+  <!-- Sidebar -->
+  <div class="sidebar" id="sidebar">
+    <div class="sidebar-title">Sessions</div>
+    <div id="sidebarList"></div>
+    <div class="sidebar-divider"></div>
+    <div class="sidebar-spawn" onclick="switchView('spawn')">+ Spawn Session</div>
+  </div>
 
-<div class="dock" id="dock"></div>
+  <!-- Main: Session View -->
+  <div class="main" id="sessionView">
+    <div class="panel-header">
+      <div>
+        <div class="panel-title" id="panelTitle">Select a session</div>
+        <div class="panel-meta" id="panelMeta"></div>
+      </div>
+      <div class="status-strip" id="statusStrip"></div>
+    </div>
+    <div class="terminal-card" id="terminalCard" style="display:none">
+      <div class="terminal-header">
+        <div class="terminal-header-left">
+          <div class="terminal-dots">
+            <span class="d-red" title="Kill" onclick="killActive()"></span>
+            <span class="d-yellow" title="Refresh" onclick="refreshOutput()"></span>
+            <span class="d-green" title="Maximize"></span>
+          </div>
+          <span class="terminal-title" id="termTitle">--</span>
+        </div>
+        <span class="terminal-status" id="termStatus">--</span>
+      </div>
+      <div class="terminal-body" id="termBody">Select a session from the sidebar to view output.</div>
+      <div class="actions-bar" id="actionsBar"></div>
+      <div class="prompt-bar">
+        <input class="prompt-input" id="promptInput" placeholder="Send a prompt..." onkeydown="if(event.key==='Enter')sendPromptActive()">
+        <button class="btn btn-accent" onclick="sendPromptActive()">Send</button>
+      </div>
+    </div>
+    <div id="noSession" class="empty-state">
+      <div class="empty-icon">~</div>
+      <div>Select a session from the sidebar</div>
+    </div>
+  </div>
+
+  <!-- Main: Live Feed View -->
+  <div class="main feed-panel" id="liveView">
+    <div class="panel-header">
+      <div class="panel-title">Live Feed</div>
+      <button class="btn btn-ghost" onclick="clearFeed()" style="font-size:11px">Clear</button>
+    </div>
+    <div id="feedList">
+      <div class="feed-empty">Waiting for events... sessions will appear here when they finish tasks, need permissions, or change status.</div>
+    </div>
+  </div>
+
+  <!-- Main: Desktop OS View -->
+  <div class="main desktop-panel" id="desktopView" style="padding:0;overflow:hidden">
+    <div class="desktop-toolbar">
+      <button onclick="dtTile()">Tile</button>
+      <button onclick="dtCascade()">Cascade</button>
+      <button onclick="dtStack()">Stack</button>
+      <button onclick="dtShowAll()">Show All</button>
+    </div>
+    <div class="desktop-area" id="desktopArea"></div>
+  </div>
+
+  <!-- Main: Spawn View -->
+  <div class="main spawn-panel" id="spawnView">
+    <div class="panel-header">
+      <div class="panel-title">Spawn New Session</div>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:8px">
+      <input class="prompt-input" id="customPath" placeholder="Custom project path..." style="font-family:'Inter',sans-serif;font-size:13px">
+      <button class="btn btn-accent" onclick="spawnCustom()">Spawn</button>
+    </div>
+    <div class="proj-grid" id="projGrid">
+      <div class="empty-state">Loading projects...</div>
+    </div>
+  </div>
+</div>
 
 <script>
-var API = '';
-var stripAnsi = function(s) { return s.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, ''); };
-var esc = function(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
-var sessions = [];
-var windows = {};  // paneId -> { el, x, y, w, h, maximized, minimized, zIndex }
-var topZ = 10;
-var activeWinId = null;
-var TOPBAR_H = 32;
-var DOCK_H = 56;
+const API = '';
+const stripAnsi = s => s.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+const esc = s => { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
 
-// Clock
-function tick() { document.getElementById('clock').textContent = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}); }
-tick(); setInterval(tick, 10000);
+let sessions = [];
+let activePane = null;
+let currentView = 'sessions';
+let outputRefreshTimer = null;
+let projectsLoaded = false;
 
-// ─── Fetch sessions ───
-function refresh() {
-  fetch(API + '/api/sessions').then(function(r){ return r.json(); }).then(function(data) {
-    sessions = (data.sessions || []).filter(function(s){ return s.is_claude; });
-    updateTopStats();
-    syncWindows();
-    renderDock();
-  }).catch(function(){});
+// ─── Clock ───
+function updateClock() {
+  const now = new Date();
+  document.getElementById('clock').textContent = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+updateClock();
+setInterval(updateClock, 10000);
+
+// ─── View switching ───
+function switchView(view) {
+  currentView = view;
+  document.querySelectorAll('.topbar-menu a').forEach(a => a.classList.toggle('active', a.dataset.view === view));
+  document.getElementById('sessionView').style.display = view === 'sessions' ? 'flex' : 'none';
+  document.getElementById('liveView').classList.toggle('open', view === 'live');
+  document.getElementById('desktopView').classList.toggle('open', view === 'desktop');
+  document.getElementById('spawnView').classList.toggle('open', view === 'spawn');
+  document.getElementById('sidebar').style.display = view === 'desktop' ? 'none' : '';
+  if (view === 'spawn' && !projectsLoaded) loadProjects();
+  if (view === 'desktop') initDesktop();
 }
 
-function updateTopStats() {
-  document.getElementById('topIdle').textContent = sessions.filter(function(s){ return s.status==='idle'; }).length;
-  document.getElementById('topWork').textContent = sessions.filter(function(s){ return s.status==='working'; }).length;
-  document.getElementById('topPerm').textContent = sessions.filter(function(s){ return s.status==='permission'; }).length;
+// ─── SSE Live Feed ───
+const feedEvents = [];
+let sse = null;
+let notifTimeout = null;
+
+function connectSSE() {
+  if (sse) sse.close();
+  sse = new EventSource(API + '/api/events');
+  sse.onmessage = (e) => {
+    try {
+      const event = JSON.parse(e.data);
+      feedEvents.unshift(event); // newest first
+      if (feedEvents.length > 100) feedEvents.pop();
+      renderFeed();
+
+      // Browser notification
+      if (event.type === 'completed' || event.type === 'permission') {
+        showNotification(event);
+        playNotifSound(event.type);
+      }
+
+      // Auto-refresh sessions
+      refresh();
+    } catch {}
+  };
+  sse.onerror = () => {
+    setTimeout(connectSSE, 5000); // reconnect
+  };
 }
 
-// ─── Window management ───
-function syncWindows() {
-  var desktop = document.getElementById('desktop');
-  var dw = desktop.offsetWidth;
-  var dh = desktop.offsetHeight;
-  var existingIds = {};
+function renderFeed() {
+  const el = document.getElementById('feedList');
+  if (!feedEvents.length) {
+    el.innerHTML = '<div class="feed-empty">Waiting for events...</div>';
+    return;
+  }
+  el.innerHTML = feedEvents.map((ev, i) => {
+    const time = new Date(ev.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const output = ev.output ? stripAnsi(ev.output) : '';
 
-  sessions.forEach(function(s, i) {
-    existingIds[s.pane_id] = true;
-    if (!windows[s.pane_id]) {
-      // Create new window
-      var cols = Math.ceil(Math.sqrt(sessions.length));
-      var ww = Math.max(400, Math.floor(dw / cols) - 20);
-      var wh = Math.max(280, Math.floor(dh / Math.ceil(sessions.length / cols)) - 20);
-      var col = i % cols;
-      var row = Math.floor(i / cols);
-      windows[s.pane_id] = {
-        x: 10 + col * (ww + 10), y: 10 + row * (wh + 10),
-        w: ww, h: wh, maximized: false, minimized: false, zIndex: topZ++
-      };
-      createWindowEl(s);
+    let badge = ev.type;
+    let message = '';
+    switch (ev.type) {
+      case 'completed':
+        message = 'Task finished';
+        break;
+      case 'permission':
+        message = 'Needs approval';
+        break;
+      case 'started':
+        message = 'Started working';
+        break;
+      case 'status_change':
+        message = ev.from + ' → ' + ev.to;
+        badge = ev.to;
+        break;
+      case 'removed':
+        message = 'Session ended';
+        break;
     }
-    updateWindowContent(s);
-  });
 
-  // Remove windows for gone sessions
-  Object.keys(windows).forEach(function(id) {
-    if (!existingIds[id]) {
-      var el = document.getElementById('win-' + id);
-      if (el) el.remove();
-      delete windows[id];
+    var html = '<div class="feed-event ' + ev.type + '">' +
+      '<div class="feed-head">' +
+        '<span class="feed-badge ' + ev.type + '">' + esc(badge) + '</span>' +
+        '<span class="feed-project">' + esc(ev.project || 'pane ' + ev.pane_id) + '</span>' +
+        '<span style="font-size:12px;color:var(--text-secondary)">' + esc(message) + '</span>' +
+        '<span class="feed-time">' + time + '</span>' +
+      '</div>';
+    if (output) html += '<div class="feed-output">' + esc(output) + '</div>';
+    if (ev.type === 'completed') {
+      html += '<div class="feed-reply">' +
+        '<input class="prompt-input" placeholder="Reply to ' + esc(ev.project) + '..." onkeydown="if(event.key===\'Enter\')feedReply(' + ev.pane_id + ',this)">' +
+        '<button class="btn btn-accent btn-sm" onclick="feedReply(' + ev.pane_id + ',this.previousElementSibling)">Send</button>' +
+      '</div>';
     }
-  });
+    if (ev.type === 'permission') {
+      html += '<div class="feed-reply">' +
+        '<button class="btn btn-green btn-sm" onclick="sendKeyFeed(' + ev.pane_id + ',\'y\')">Approve (y)</button>' +
+        '<button class="btn btn-red btn-sm" onclick="sendKeyFeed(' + ev.pane_id + ',\'n\')">Deny (n)</button>' +
+      '</div>';
+    }
+    html += '</div>';
+    return html;
+  }).join('');
 }
 
-function createWindowEl(s) {
-  var desktop = document.getElementById('desktop');
-  var win = windows[s.pane_id];
-  var el = document.createElement('div');
-  el.className = 'window';
-  el.id = 'win-' + s.pane_id;
-  el.style.left = win.x + 'px';
-  el.style.top = win.y + 'px';
-  el.style.width = win.w + 'px';
-  el.style.height = win.h + 'px';
-  el.style.zIndex = win.zIndex;
-
-  el.innerHTML =
-    '<div class="win-header" data-pane="' + s.pane_id + '">' +
-      '<div class="win-dots">' +
-        '<span class="wd-close" onclick="closeWindow(' + s.pane_id + ')"></span>' +
-        '<span class="wd-min" onclick="minimizeWindow(' + s.pane_id + ')"></span>' +
-        '<span class="wd-max" onclick="maximizeWindow(' + s.pane_id + ')"></span>' +
-      '</div>' +
-      '<span class="win-title">' + esc(s.project_name || 'pane ' + s.pane_id) + '</span>' +
-      '<span class="win-status ' + s.status + '" id="wst-' + s.pane_id + '">' + s.status + '</span>' +
-    '</div>' +
-    '<div class="win-body" id="wbody-' + s.pane_id + '">Loading...</div>' +
-    '<div class="win-prompt" id="wprompt-' + s.pane_id + '">' +
-      '<input placeholder="Send prompt..." onkeydown="if(event.key===\'Enter\')sendWinPrompt(' + s.pane_id + ',this)">' +
-      '<button onclick="sendWinPrompt(' + s.pane_id + ',this.previousElementSibling)">Send</button>' +
-    '</div>' +
-    '<div class="win-resize n" data-dir="n"></div>' +
-    '<div class="win-resize s" data-dir="s"></div>' +
-    '<div class="win-resize e" data-dir="e"></div>' +
-    '<div class="win-resize w" data-dir="w"></div>' +
-    '<div class="win-resize ne" data-dir="ne"></div>' +
-    '<div class="win-resize nw" data-dir="nw"></div>' +
-    '<div class="win-resize se" data-dir="se"></div>' +
-    '<div class="win-resize sw" data-dir="sw"></div>';
-
-  el.addEventListener('mousedown', function(e) {
-    if (!e.target.classList.contains('win-resize')) focusWindow(s.pane_id);
-  });
-
-  // Drag
-  var header = el.querySelector('.win-header');
-  header.addEventListener('mousedown', function(e) {
-    if (e.target.closest('.win-dots')) return;
-    startDrag(s.pane_id, e);
-  });
-
-  // Resize
-  el.querySelectorAll('.win-resize').forEach(function(handle) {
-    handle.addEventListener('mousedown', function(e) {
-      startResize(s.pane_id, e, handle.dataset.dir);
-    });
-  });
-
-  desktop.appendChild(el);
-  loadWindowOutput(s.pane_id);
-}
-
-function updateWindowContent(s) {
-  var st = document.getElementById('wst-' + s.pane_id);
-  if (st) { st.textContent = s.status; st.className = 'win-status ' + s.status; }
-
-  // Update prompt bar based on status
-  var prompt = document.getElementById('wprompt-' + s.pane_id);
-  if (prompt && s.status === 'permission') {
-    prompt.innerHTML =
-      '<button class="btn-yes" onclick="sendWinKey(' + s.pane_id + ',\'y\')">Approve (y)</button>' +
-      '<button class="btn-no" onclick="sendWinKey(' + s.pane_id + ',\'n\')">Deny (n)</button>' +
-      '<input placeholder="Send prompt..." style="flex:1" onkeydown="if(event.key===\'Enter\')sendWinPrompt(' + s.pane_id + ',this)">' +
-      '<button onclick="sendWinPrompt(' + s.pane_id + ',this.previousElementSibling)">Send</button>';
-  }
-}
-
-function loadWindowOutput(paneId) {
-  fetch(API + '/api/sessions/' + paneId + '/output?lines=100').then(function(r){ return r.json(); }).then(function(data) {
-    var body = document.getElementById('wbody-' + paneId);
-    if (!body) return;
-    var text = stripAnsi(data.output || '(empty)');
-    var wasBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 50;
-    body.textContent = text;
-    if (wasBottom) body.scrollTop = body.scrollHeight;
-  }).catch(function(){});
-}
-
-// Refresh all outputs every 3s
-setInterval(function() {
-  Object.keys(windows).forEach(function(id) { loadWindowOutput(parseInt(id)); });
-}, 3000);
-
-// ─── Window actions ───
-function focusWindow(paneId) {
-  activeWinId = paneId;
-  windows[paneId].zIndex = ++topZ;
-  var el = document.getElementById('win-' + paneId);
-  if (el) { el.style.zIndex = topZ; el.classList.add('active'); }
-  document.querySelectorAll('.window').forEach(function(w) {
-    if (w.id !== 'win-' + paneId) w.classList.remove('active');
-  });
-}
-
-function closeWindow(paneId) {
-  var el = document.getElementById('win-' + paneId);
-  if (el) { el.classList.add('minimized'); windows[paneId].minimized = true; }
-}
-
-function minimizeWindow(paneId) {
-  var el = document.getElementById('win-' + paneId);
-  if (el) { el.classList.add('minimized'); windows[paneId].minimized = true; }
-}
-
-function maximizeWindow(paneId) {
-  var win = windows[paneId];
-  var el = document.getElementById('win-' + paneId);
-  if (!el) return;
-  var desktop = document.getElementById('desktop');
-  if (win.maximized) {
-    el.style.left = win._restoreX + 'px'; el.style.top = win._restoreY + 'px';
-    el.style.width = win._restoreW + 'px'; el.style.height = win._restoreH + 'px';
-    el.classList.remove('maximized');
-    win.maximized = false;
-  } else {
-    win._restoreX = win.x; win._restoreY = win.y; win._restoreW = win.w; win._restoreH = win.h;
-    el.style.left = '0'; el.style.top = '0';
-    el.style.width = desktop.offsetWidth + 'px'; el.style.height = desktop.offsetHeight + 'px';
-    el.classList.add('maximized');
-    win.maximized = true;
-  }
-  focusWindow(paneId);
-}
-
-function restoreWindow(paneId) {
-  var el = document.getElementById('win-' + paneId);
-  if (el) { el.classList.remove('minimized'); windows[paneId].minimized = false; focusWindow(paneId); }
-}
-
-// ─── Drag ───
-function startDrag(paneId, e) {
-  if (windows[paneId].maximized) return;
-  e.preventDefault();
-  var win = windows[paneId];
-  var el = document.getElementById('win-' + paneId);
-  var sx = e.clientX - win.x, sy = e.clientY - win.y;
-  focusWindow(paneId);
-
-  function onMove(e2) {
-    win.x = e2.clientX - sx; win.y = e2.clientY - sy;
-    el.style.left = win.x + 'px'; el.style.top = win.y + 'px';
-  }
-  function onUp() { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); }
-  document.addEventListener('mousemove', onMove);
-  document.addEventListener('mouseup', onUp);
-}
-
-// ─── Resize ───
-function startResize(paneId, e, dir) {
-  if (windows[paneId].maximized) return;
-  e.preventDefault(); e.stopPropagation();
-  var win = windows[paneId];
-  var el = document.getElementById('win-' + paneId);
-  var sx = e.clientX, sy = e.clientY;
-  var ow = win.w, oh = win.h, ox = win.x, oy = win.y;
-  focusWindow(paneId);
-
-  function onMove(e2) {
-    var dx = e2.clientX - sx, dy = e2.clientY - sy;
-    var nw = ow, nh = oh, nx = ox, ny = oy;
-    if (dir.includes('e')) nw = Math.max(380, ow + dx);
-    if (dir.includes('w')) { nw = Math.max(380, ow - dx); nx = ox + (ow - nw); }
-    if (dir.includes('s')) nh = Math.max(250, oh + dy);
-    if (dir.includes('n')) { nh = Math.max(250, oh - dy); ny = oy + (oh - nh); }
-    win.w = nw; win.h = nh; win.x = nx; win.y = ny;
-    el.style.width = nw + 'px'; el.style.height = nh + 'px';
-    el.style.left = nx + 'px'; el.style.top = ny + 'px';
-  }
-  function onUp() { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); }
-  document.addEventListener('mousemove', onMove);
-  document.addEventListener('mouseup', onUp);
-}
-
-// ─── Layout modes ───
-function tileWindows() {
-  var desktop = document.getElementById('desktop');
-  var dw = desktop.offsetWidth, dh = desktop.offsetHeight;
-  var visible = Object.keys(windows).filter(function(id) { return !windows[id].minimized; });
-  if (!visible.length) return;
-  var cols = Math.ceil(Math.sqrt(visible.length));
-  var rows = Math.ceil(visible.length / cols);
-  var ww = Math.floor(dw / cols) - 8;
-  var wh = Math.floor(dh / rows) - 8;
-  visible.forEach(function(id, i) {
-    var win = windows[id];
-    var el = document.getElementById('win-' + id);
-    var col = i % cols, row = Math.floor(i / cols);
-    win.x = 4 + col * (ww + 8); win.y = 4 + row * (wh + 8); win.w = ww; win.h = wh;
-    win.maximized = false;
-    el.classList.remove('maximized');
-    el.style.left = win.x + 'px'; el.style.top = win.y + 'px';
-    el.style.width = win.w + 'px'; el.style.height = win.h + 'px';
-  });
-}
-
-function cascadeWindows() {
-  var visible = Object.keys(windows).filter(function(id) { return !windows[id].minimized; });
-  visible.forEach(function(id, i) {
-    var win = windows[id];
-    var el = document.getElementById('win-' + id);
-    win.x = 30 + i * 30; win.y = 10 + i * 30; win.w = 600; win.h = 400;
-    win.maximized = false; win.zIndex = 10 + i;
-    el.classList.remove('maximized');
-    el.style.left = win.x + 'px'; el.style.top = win.y + 'px';
-    el.style.width = win.w + 'px'; el.style.height = win.h + 'px';
-    el.style.zIndex = win.zIndex;
-  });
-  topZ = 10 + visible.length;
-}
-
-function stackWindows() {
-  var desktop = document.getElementById('desktop');
-  var dw = desktop.offsetWidth, dh = desktop.offsetHeight;
-  var visible = Object.keys(windows).filter(function(id) { return !windows[id].minimized; });
-  var ww = Math.min(700, dw - 40), wh = Math.min(500, dh - 40);
-  var cx = (dw - ww) / 2, cy = (dh - wh) / 2;
-  visible.forEach(function(id, i) {
-    var win = windows[id];
-    var el = document.getElementById('win-' + id);
-    win.x = cx; win.y = cy; win.w = ww; win.h = wh;
-    win.maximized = false; win.zIndex = 10 + i;
-    el.classList.remove('maximized');
-    el.style.left = win.x + 'px'; el.style.top = win.y + 'px';
-    el.style.width = win.w + 'px'; el.style.height = win.h + 'px';
-    el.style.zIndex = win.zIndex;
-  });
-  topZ = 10 + visible.length;
-}
-
-// ─── Dock ───
-function renderDock() {
-  var dock = document.getElementById('dock');
-  var html = '';
-  sessions.forEach(function(s) {
-    var initials = (s.project_name || 'P').slice(0, 2).toUpperCase();
-    var isOpen = windows[s.pane_id] && !windows[s.pane_id].minimized;
-    html += '<div class="dock-item ' + s.status + '" onclick="' + (isOpen ? 'focusWindow(' + s.pane_id + ')' : 'restoreWindow(' + s.pane_id + ')') + '">' +
-      initials +
-      (isOpen ? '<span class="dock-dot"></span>' : '') +
-      '<span class="dock-label">' + esc(s.project_name || 'pane ' + s.pane_id) + '</span>' +
-    '</div>';
-  });
-  html += '<div class="dock-item dock-add" onclick="openSpawnPrompt()">+</div>';
-  dock.innerHTML = html;
-}
-
-// ─── Actions ───
-function sendWinPrompt(paneId, input) {
-  var text = input.value.trim();
+async function feedReply(paneId, input) {
+  const text = input.value.trim();
   if (!text) return;
   input.value = '';
-  fetch(API + '/api/sessions/' + paneId + '/prompt', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({text: text})
-  }).then(function() { toast('Sent to pane ' + paneId); setTimeout(function(){ loadWindowOutput(paneId); }, 1000); });
+  await fetch(API + '/api/sessions/' + paneId + '/prompt', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  });
+  toast('Sent to pane ' + paneId);
 }
 
-function sendWinKey(paneId, key) {
-  fetch(API + '/api/sessions/' + paneId + '/key', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({key: key})
-  }).then(function() { toast(key + ' sent'); });
+async function sendKeyFeed(paneId, key) {
+  await fetch(API + '/api/sessions/' + paneId + '/key', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key }),
+  });
+  toast(key + ' sent to pane ' + paneId);
 }
 
-function openSpawnPrompt() {
-  var path = prompt('Project path to spawn Claude in:');
-  if (!path) return;
-  fetch(API + '/api/spawn', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({cwd: path})
-  }).then(function() { toast('Spawning...'); setTimeout(refresh, 4000); });
+function clearFeed() {
+  feedEvents.length = 0;
+  renderFeed();
 }
 
-// ─── SSE for live notifications ───
-function connectSSE() {
-  var sse = new EventSource(API + '/api/events');
-  sse.onmessage = function(e) {
-    try {
-      var event = JSON.parse(e.data);
-      if (event.type === 'completed' || event.type === 'permission') {
-        showNotif(event);
-        playSound(event.type);
-      }
-      refresh();
-    } catch(ex) {}
+function showNotification(event) {
+  // In-page notification
+  const existing = document.querySelector('.feed-notification');
+  if (existing) existing.remove();
+
+  const el = document.createElement('div');
+  el.className = 'feed-notification' + (event.type === 'permission' ? ' permission-notif' : '');
+  const title = event.type === 'completed'
+    ? event.project + ' finished'
+    : event.project + ' needs permission';
+  const body = event.output ? stripAnsi(event.output).split('\n').slice(-3).join('\n') : '';
+  el.innerHTML = '<div class="notif-title">' + esc(title) + '</div><div class="notif-body">' + esc(body).slice(0, 150) + '</div>';
+  el.onclick = () => {
+    el.remove();
+    selectSession(event.pane_id);
+    switchView('sessions');
   };
-  sse.onerror = function() { setTimeout(connectSSE, 5000); };
-}
-
-function showNotif(event) {
-  var old = document.querySelector('.feed-notif');
-  if (old) old.remove();
-  var el = document.createElement('div');
-  el.className = 'feed-notif' + (event.type === 'permission' ? ' perm' : '');
-  var title = event.type === 'completed' ? event.project + ' finished' : event.project + ' needs permission';
-  var body = event.output ? stripAnsi(event.output).split('\n').slice(-3).join('\n') : '';
-  el.innerHTML = '<div class="feed-notif-title">' + esc(title) + '</div><div class="feed-notif-body">' + esc(body).slice(0, 200) + '</div>';
-  el.onclick = function() { el.remove(); if (windows[event.pane_id]) { restoreWindow(event.pane_id); focusWindow(event.pane_id); } };
   document.body.appendChild(el);
-  setTimeout(function() { if (el.parentNode) el.remove(); }, 8000);
+  if (notifTimeout) clearTimeout(notifTimeout);
+  notifTimeout = setTimeout(() => el.remove(), 8000);
 
+  // Browser Notification API
   if (Notification.permission === 'granted') {
-    new Notification('WezBridge: ' + title, {body: body.slice(0, 100)});
+    new Notification('WezBridge: ' + title, { body: body.slice(0, 100), silent: false });
   } else if (Notification.permission !== 'denied') {
     Notification.requestPermission();
   }
 }
 
-function playSound(type) {
+function playNotifSound(type) {
   try {
-    var ctx = new (window.AudioContext || window.webkitAudioContext)();
-    var osc = ctx.createOscillator();
-    var gain = ctx.createGain();
-    osc.connect(gain); gain.connect(ctx.destination);
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
     osc.frequency.value = type === 'completed' ? 880 : 440;
-    gain.gain.value = 0.08;
-    osc.start(); osc.stop(ctx.currentTime + 0.12);
-  } catch(ex) {}
+    gain.gain.value = 0.1;
+    osc.start();
+    osc.stop(ctx.currentTime + 0.15);
+  } catch {}
 }
 
+// ─── Fetch sessions ───
+async function refresh() {
+  try {
+    const r = await fetch(API + '/api/sessions');
+    const data = await r.json();
+    sessions = (data.sessions || []).filter(s => s.is_claude);
+    renderSidebar();
+    updateTopStats();
+    if (activePane !== null) updateTerminal();
+  } catch {}
+}
+
+function updateTopStats() {
+  document.getElementById('topIdle').textContent = sessions.filter(s => s.status === 'idle').length;
+  document.getElementById('topWorking').textContent = sessions.filter(s => s.status === 'working').length;
+  document.getElementById('topPerm').textContent = sessions.filter(s => s.status === 'permission').length;
+}
+
+function renderSidebar() {
+  const el = document.getElementById('sidebarList');
+  if (!sessions.length) {
+    el.innerHTML = '<div style="padding:16px 8px;color:var(--text-tertiary);font-size:12px;text-align:center">No sessions detected</div>';
+    return;
+  }
+  el.innerHTML = sessions.map(s => `
+    <div class="sidebar-item ${activePane === s.pane_id ? 'active' : ''}" onclick="selectSession(${s.pane_id})">
+      <div class="dot ${s.status}"></div>
+      <span class="sidebar-item-name">${esc(s.project_name || 'pane ' + s.pane_id)}</span>
+      <span class="sidebar-item-pane">${s.pane_id}</span>
+    </div>
+  `).join('');
+}
+
+// ─── Select session ───
+function selectSession(paneId) {
+  activePane = paneId;
+  if (currentView !== 'sessions') switchView('sessions');
+  renderSidebar();
+  document.getElementById('noSession').style.display = 'none';
+  document.getElementById('terminalCard').style.display = 'flex';
+  updateTerminal();
+  loadOutput();
+  // Auto-refresh output every 3s while selected
+  if (outputRefreshTimer) clearInterval(outputRefreshTimer);
+  outputRefreshTimer = setInterval(loadOutput, 3000);
+}
+
+function updateTerminal() {
+  const s = sessions.find(s => s.pane_id === activePane);
+  if (!s) return;
+  document.getElementById('panelTitle').textContent = s.project_name || 'pane ' + s.pane_id;
+  document.getElementById('panelMeta').innerHTML = `
+    <span>pane ${s.pane_id}</span>
+    <span>confidence ${s.confidence}%</span>
+    <span>${esc(s.workspace)}</span>
+  `;
+  document.getElementById('termTitle').textContent = s.project_name || 'Terminal';
+  const ts = document.getElementById('termStatus');
+  ts.textContent = s.status;
+  ts.className = 'terminal-status ' + s.status;
+
+  // Actions based on status
+  let actions = '';
+  if (s.status === 'permission') {
+    actions += '<button class="btn btn-green" onclick="sendKey(\'y\')">Approve (y)</button>';
+    actions += '<button class="btn btn-red" onclick="sendKey(\'n\')">Deny (n)</button>';
+  }
+  if (s.status === 'working') {
+    actions += '<button class="btn btn-ghost" onclick="sendKey(\'ctrl+c\')">Cancel (Ctrl+C)</button>';
+  }
+  if (s.status === 'continuation') {
+    actions += '<button class="btn btn-ghost" onclick="sendKey(\'enter\')">Continue (Enter)</button>';
+  }
+  actions += '<button class="btn btn-ghost" onclick="refreshOutput()">Refresh</button>';
+  actions += '<button class="btn btn-red" onclick="killActive()">Kill</button>';
+  document.getElementById('actionsBar').innerHTML = actions;
+
+  // Enable/disable prompt based on status
+  const input = document.getElementById('promptInput');
+  input.disabled = s.status === 'working';
+  input.placeholder = s.status === 'idle' ? 'Send a prompt...' : s.status === 'working' ? 'Session is working...' : 'Send text...';
+}
+
+// ─── Terminal output ───
+async function loadOutput() {
+  if (activePane === null) return;
+  const body = document.getElementById('termBody');
+  try {
+    const r = await fetch(API + '/api/sessions/' + activePane + '/output?lines=150');
+    const data = await r.json();
+    const text = stripAnsi(data.output || '(empty)');
+    const wasAtBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 50;
+    body.textContent = text;
+    if (wasAtBottom) body.scrollTop = body.scrollHeight;
+  } catch {
+    body.textContent = '(failed to load output)';
+  }
+}
+
+function refreshOutput() { loadOutput(); }
+
+// ─── Actions ───
+async function sendPromptActive() {
+  if (activePane === null) return;
+  const input = document.getElementById('promptInput');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  try {
+    await fetch(API + '/api/sessions/' + activePane + '/prompt', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    toast('Prompt sent');
+    setTimeout(loadOutput, 1000);
+    setTimeout(refresh, 2000);
+  } catch { toast('Failed to send'); }
+}
+
+async function sendKey(key) {
+  if (activePane === null) return;
+  try {
+    await fetch(API + '/api/sessions/' + activePane + '/key', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key }),
+    });
+    toast(key + ' sent');
+    setTimeout(loadOutput, 500);
+    setTimeout(refresh, 1000);
+  } catch { toast('Failed'); }
+}
+
+async function killActive() {
+  if (activePane === null) return;
+  if (!confirm('Kill pane ' + activePane + '?')) return;
+  try {
+    await fetch(API + '/api/sessions/' + activePane + '/kill', { method: 'POST' });
+    toast('Killed pane ' + activePane);
+    activePane = null;
+    if (outputRefreshTimer) clearInterval(outputRefreshTimer);
+    document.getElementById('terminalCard').style.display = 'none';
+    document.getElementById('noSession').style.display = 'block';
+    setTimeout(refresh, 500);
+  } catch { toast('Failed'); }
+}
+
+// ─── Spawn ───
+async function loadProjects() {
+  const el = document.getElementById('projGrid');
+  try {
+    const r = await fetch(API + '/api/projects');
+    const projects = await r.json();
+    projectsLoaded = true;
+    const activePaths = new Set(sessions.map(s => s.project).filter(Boolean));
+
+    if (!projects.length) {
+      el.innerHTML = '<div class="empty-state">No projects found</div>';
+      return;
+    }
+
+    el.innerHTML = projects.map(p => {
+      const isActive = activePaths.has(p.path) || activePaths.has(p.path.replace(/\//g, '\\'));
+      return `
+        <div class="proj-card ${isActive ? 'has-session' : ''}" onclick="spawnProject('${esc(p.path)}')">
+          <div class="proj-card-name">${esc(p.name)}</div>
+          <div class="proj-card-path">${esc(p.path)}</div>
+          ${isActive ? '<div class="proj-card-badge">Session active</div>' : ''}
+        </div>
+      `;
+    }).join('');
+  } catch {
+    el.innerHTML = '<div class="empty-state">Failed to load projects</div>';
+  }
+}
+
+async function spawnProject(cwd) {
+  toast('Spawning session in ' + cwd.split(/[/\\]/).pop() + '...');
+  try {
+    const r = await fetch(API + '/api/spawn', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cwd }),
+    });
+    const data = await r.json();
+    if (data.pane_id !== undefined) {
+      setTimeout(() => { refresh().then(() => selectSession(data.pane_id)); }, 4000);
+    }
+  } catch { toast('Spawn failed'); }
+}
+
+function spawnCustom() {
+  const input = document.getElementById('customPath');
+  const cwd = input.value.trim();
+  if (!cwd) return;
+  spawnProject(cwd);
+  input.value = '';
+}
+
+// ─── Toast ───
 function toast(msg) {
-  var el = document.createElement('div'); el.className = 'toast'; el.textContent = msg;
-  document.body.appendChild(el); setTimeout(function() { el.remove(); }, 3000);
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+
+// ─── Desktop OS View ───
+var dtWins = {}; // paneId -> {x,y,w,h,z,minimized}
+var dtTopZ = 10;
+var dtInited = false;
+
+function initDesktop() {
+  if (dtInited && Object.keys(dtWins).length > 0) return;
+  dtInited = true;
+  dtSyncWindows();
+}
+
+function dtSyncWindows() {
+  var area = document.getElementById('desktopArea');
+  if (!area) return;
+  var aw = area.offsetWidth, ah = area.offsetHeight;
+  var existing = {};
+
+  sessions.forEach(function(s, i) {
+    existing[s.pane_id] = true;
+    if (!dtWins[s.pane_id]) {
+      var cols = Math.ceil(Math.sqrt(sessions.length));
+      var ww = Math.max(380, Math.floor(aw / cols) - 12);
+      var wh = Math.max(250, Math.floor(ah / Math.ceil(sessions.length / cols)) - 12);
+      dtWins[s.pane_id] = { x: 6 + (i % cols) * (ww + 12), y: 6 + Math.floor(i / cols) * (wh + 12), w: ww, h: wh, z: dtTopZ++, minimized: false };
+      dtCreateWin(s);
+    }
+    dtUpdateWin(s);
+  });
+
+  Object.keys(dtWins).forEach(function(id) {
+    if (!existing[id]) { var el = document.getElementById('dw-' + id); if (el) el.remove(); delete dtWins[id]; }
+  });
+}
+
+function dtCreateWin(s) {
+  var area = document.getElementById('desktopArea');
+  var w = dtWins[s.pane_id];
+  var el = document.createElement('div');
+  el.className = 'dwin';
+  el.id = 'dw-' + s.pane_id;
+  el.style.cssText = 'left:' + w.x + 'px;top:' + w.y + 'px;width:' + w.w + 'px;height:' + w.h + 'px;z-index:' + w.z;
+
+  el.innerHTML =
+    '<div class="dwin-header" data-pane="' + s.pane_id + '">' +
+      '<div class="dwin-dots">' +
+        '<span class="dc" onclick="dtMinWin(' + s.pane_id + ')"></span>' +
+        '<span class="dm" onclick="dtMinWin(' + s.pane_id + ')"></span>' +
+        '<span class="dx" onclick="dtMaxWin(' + s.pane_id + ')"></span>' +
+      '</div>' +
+      '<span class="dwin-name">' + esc(s.project_name || 'pane ' + s.pane_id) + '</span>' +
+      '<span class="dwin-st ' + s.status + '" id="dst-' + s.pane_id + '">' + s.status + '</span>' +
+    '</div>' +
+    '<div class="dwin-body" id="dbody-' + s.pane_id + '">Loading...</div>' +
+    '<div class="dwin-prompt">' +
+      '<input placeholder="Prompt..." onkeydown="if(event.key===\'Enter\')dtSend(' + s.pane_id + ',this)">' +
+      '<button onclick="dtSend(' + s.pane_id + ',this.previousElementSibling)">Send</button>' +
+    '</div>' +
+    '<div class="dwin-resize rs"></div>' +
+    '<div class="dwin-resize re"></div>' +
+    '<div class="dwin-resize rb"></div>';
+
+  el.addEventListener('mousedown', function() { dtFocus(s.pane_id); });
+
+  // Drag
+  var hdr = el.querySelector('.dwin-header');
+  hdr.addEventListener('mousedown', function(e) {
+    if (e.target.closest('.dwin-dots')) return;
+    e.preventDefault();
+    var wn = dtWins[s.pane_id], sx = e.clientX - wn.x, sy = e.clientY - wn.y;
+    function mv(e2) { wn.x = e2.clientX - sx; wn.y = e2.clientY - sy; el.style.left = wn.x + 'px'; el.style.top = wn.y + 'px'; }
+    function up() { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); }
+    document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+  });
+
+  // Resize (SE corner + E edge + S edge)
+  el.querySelectorAll('.dwin-resize').forEach(function(h) {
+    h.addEventListener('mousedown', function(e) {
+      e.preventDefault(); e.stopPropagation();
+      var wn = dtWins[s.pane_id], ow = wn.w, oh = wn.h, sx = e.clientX, sy = e.clientY;
+      var isE = h.classList.contains('re') || h.classList.contains('rs');
+      var isS = h.classList.contains('rb') || h.classList.contains('rs');
+      function mv(e2) {
+        if (isE) wn.w = Math.max(360, ow + (e2.clientX - sx));
+        if (isS) wn.h = Math.max(220, oh + (e2.clientY - sy));
+        el.style.width = wn.w + 'px'; el.style.height = wn.h + 'px';
+      }
+      function up() { document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', up); }
+      document.addEventListener('mousemove', mv); document.addEventListener('mouseup', up);
+    });
+  });
+
+  area.appendChild(el);
+  dtLoadOutput(s.pane_id);
+}
+
+function dtUpdateWin(s) {
+  var st = document.getElementById('dst-' + s.pane_id);
+  if (st) { st.textContent = s.status; st.className = 'dwin-st ' + s.status; }
+}
+
+function dtLoadOutput(pid) {
+  fetch(API + '/api/sessions/' + pid + '/output?lines=80').then(function(r) { return r.json(); }).then(function(d) {
+    var b = document.getElementById('dbody-' + pid);
+    if (!b) return;
+    var atBottom = b.scrollHeight - b.scrollTop - b.clientHeight < 40;
+    b.textContent = stripAnsi(d.output || '');
+    if (atBottom) b.scrollTop = b.scrollHeight;
+  }).catch(function() {});
+}
+
+function dtFocus(pid) {
+  dtWins[pid].z = ++dtTopZ;
+  var el = document.getElementById('dw-' + pid);
+  if (el) { el.style.zIndex = dtTopZ; }
+  document.querySelectorAll('.dwin').forEach(function(w) { w.classList.toggle('active', w.id === 'dw-' + pid); });
+}
+
+function dtMinWin(pid) { var el = document.getElementById('dw-' + pid); if (el) { el.classList.add('minimized'); dtWins[pid].minimized = true; } }
+function dtMaxWin(pid) {
+  var wn = dtWins[pid], el = document.getElementById('dw-' + pid), area = document.getElementById('desktopArea');
+  if (!el) return;
+  if (wn._max) {
+    wn.x = wn._rx; wn.y = wn._ry; wn.w = wn._rw; wn.h = wn._rh; wn._max = false;
+  } else {
+    wn._rx = wn.x; wn._ry = wn.y; wn._rw = wn.w; wn._rh = wn.h;
+    wn.x = 0; wn.y = 0; wn.w = area.offsetWidth; wn.h = area.offsetHeight; wn._max = true;
+  }
+  el.style.left = wn.x + 'px'; el.style.top = wn.y + 'px'; el.style.width = wn.w + 'px'; el.style.height = wn.h + 'px';
+  dtFocus(pid);
+}
+
+function dtShowAll() { Object.keys(dtWins).forEach(function(id) { var el = document.getElementById('dw-' + id); if (el) { el.classList.remove('minimized'); dtWins[id].minimized = false; } }); }
+
+function dtSend(pid, input) {
+  var text = input.value.trim(); if (!text) return; input.value = '';
+  fetch(API + '/api/sessions/' + pid + '/prompt', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:text}) })
+    .then(function() { toast('Sent to pane ' + pid); setTimeout(function(){ dtLoadOutput(pid); }, 1000); });
+}
+
+function dtTile() {
+  var area = document.getElementById('desktopArea');
+  var aw = area.offsetWidth, ah = area.offsetHeight;
+  var vis = Object.keys(dtWins).filter(function(id) { return !dtWins[id].minimized; });
+  if (!vis.length) return;
+  var cols = Math.ceil(Math.sqrt(vis.length)), rows = Math.ceil(vis.length / cols);
+  var ww = Math.floor(aw / cols) - 6, wh = Math.floor(ah / rows) - 6;
+  vis.forEach(function(id, i) {
+    var w = dtWins[id], el = document.getElementById('dw-' + id);
+    w.x = 3 + (i % cols) * (ww + 6); w.y = 3 + Math.floor(i / cols) * (wh + 6); w.w = ww; w.h = wh; w._max = false;
+    el.style.left = w.x + 'px'; el.style.top = w.y + 'px'; el.style.width = w.w + 'px'; el.style.height = w.h + 'px';
+  });
+}
+
+function dtCascade() {
+  var vis = Object.keys(dtWins).filter(function(id) { return !dtWins[id].minimized; });
+  vis.forEach(function(id, i) {
+    var w = dtWins[id], el = document.getElementById('dw-' + id);
+    w.x = 20 + i * 30; w.y = 10 + i * 30; w.w = 550; w.h = 380; w.z = 10 + i; w._max = false;
+    el.style.left = w.x + 'px'; el.style.top = w.y + 'px'; el.style.width = w.w + 'px'; el.style.height = w.h + 'px'; el.style.zIndex = w.z;
+  });
+  dtTopZ = 10 + vis.length;
+}
+
+function dtStack() {
+  var area = document.getElementById('desktopArea');
+  var aw = area.offsetWidth, ah = area.offsetHeight;
+  var vis = Object.keys(dtWins).filter(function(id) { return !dtWins[id].minimized; });
+  var ww = Math.min(650, aw - 30), wh = Math.min(450, ah - 30);
+  vis.forEach(function(id, i) {
+    var w = dtWins[id], el = document.getElementById('dw-' + id);
+    w.x = (aw - ww) / 2; w.y = (ah - wh) / 2; w.w = ww; w.h = wh; w.z = 10 + i; w._max = false;
+    el.style.left = w.x + 'px'; el.style.top = w.y + 'px'; el.style.width = w.w + 'px'; el.style.height = w.h + 'px'; el.style.zIndex = w.z;
+  });
+  dtTopZ = 10 + vis.length;
+}
+
+// Refresh desktop outputs every 3s
+setInterval(function() {
+  if (currentView === 'desktop') {
+    dtSyncWindows();
+    Object.keys(dtWins).forEach(function(id) { dtLoadOutput(parseInt(id)); });
+  }
+}, 3000);
+
+// ─── Auto-select first session if none selected ───
+function autoSelect() {
+  if (activePane === null && sessions.length > 0) {
+    selectSession(sessions[0].pane_id);
+  }
 }
 
 // ─── Init ───
-refresh();
+refresh().then(autoSelect);
 setInterval(refresh, 3000);
 connectSSE();
-document.addEventListener('click', function() { if (Notification.permission === 'default') Notification.requestPermission(); }, {once:true});
 
-// Right-click context menu
-document.getElementById('desktop').addEventListener('contextmenu', function(e) {
-  e.preventDefault();
-  var menu = document.createElement('div');
-  menu.style.cssText = 'position:fixed;left:' + e.clientX + 'px;top:' + e.clientY + 'px;background:var(--bg-elevated);border:1px solid var(--glass-border);border-radius:8px;padding:4px 0;z-index:99999;min-width:140px;backdrop-filter:blur(20px);font-size:12px;';
-  ['Tile', 'Cascade', 'Stack'].forEach(function(label) {
-    var item = document.createElement('div');
-    item.textContent = label;
-    item.style.cssText = 'padding:6px 14px;cursor:pointer;color:var(--text-primary);';
-    item.onmouseenter = function() { item.style.background = 'rgba(255,255,255,0.08)'; };
-    item.onmouseleave = function() { item.style.background = 'none'; };
-    item.onclick = function() { menu.remove(); window[label.toLowerCase() + 'Windows'](); };
-    menu.appendChild(item);
-  });
-  document.body.appendChild(menu);
-  setTimeout(function() { document.addEventListener('click', function rm() { menu.remove(); document.removeEventListener('click', rm); }); }, 10);
-});
+// Request notification permission on first interaction
+document.addEventListener('click', () => {
+  if (Notification.permission === 'default') Notification.requestPermission();
+}, { once: true });
 </script>
 </body>
 </html>
