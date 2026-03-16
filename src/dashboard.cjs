@@ -397,7 +397,9 @@ function handleApi(req, res) {
     // POST /api/spawn — spawn new Claude session
     if (pathname === '/api/spawn' && req.method === 'POST') {
       return readBody().then(body => {
-        const cwd = body.cwd || body.project || process.cwd();
+        // Normalize path: backslashes → forward slashes (WezTerm needs forward slashes)
+        const rawCwd = body.cwd || body.project || process.cwd();
+        const cwd = rawCwd.replace(/\\/g, '/');
         const yolo = body.yolo || body.dangerously_skip_permissions || false;
 
         const newPaneId = wez.spawnPane({ cwd });
@@ -431,7 +433,7 @@ function handleApi(req, res) {
         .map(p => {
           const realPath = (p.projectRoot || p.path || '').replace(/\\/g, '/').replace(/\/$/, '');
           const name = realPath.split('/').filter(Boolean).pop() || p.name;
-          return { ...p, name, path: p.projectRoot || p.path };
+          return { ...p, name, path: realPath };  // always forward slashes
         });
       return json(projects);
     }
