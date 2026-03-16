@@ -489,8 +489,11 @@ function connectSSE() {
   };
 }
 
+var mainFeedLastCount = -1;
 function renderFeed() {
   const el = document.getElementById('feedList');
+  if (feedEvents.length === mainFeedLastCount) return;
+  mainFeedLastCount = feedEvents.length;
   if (!feedEvents.length) {
     el.innerHTML = '<div class="feed-empty">Waiting for events...</div>';
     return;
@@ -567,12 +570,14 @@ async function sendKeyFeed(paneId, key) {
 
 function clearFeed() {
   feedEvents.length = 0;
+  mainFeedLastCount = -1; dtFeedLastCount = -1;
   renderFeed();
   dtRenderLiveFeed();
 }
 
 function dismissFeedEvent(index) {
   feedEvents.splice(index, 1);
+  mainFeedLastCount = -1; dtFeedLastCount = -1;
   renderFeed();
   dtRenderLiveFeed();
 }
@@ -1013,9 +1018,13 @@ function dtStack() {
   dtTopZ = 10 + vis.length;
 }
 
+var dtFeedLastCount = -1;
 function dtRenderLiveFeed() {
   var el = document.getElementById('dtFeedList');
   if (!el) return;
+  // Skip re-render if no new events (preserves user resize state)
+  if (feedEvents.length === dtFeedLastCount) return;
+  dtFeedLastCount = feedEvents.length;
   if (!feedEvents.length) {
     el.innerHTML = '<div style="padding:30px 16px;text-align:center;color:var(--text-tertiary);font-size:12px">Waiting for events...</div>';
     return;
