@@ -421,7 +421,9 @@ code, pre, .mono { font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace
         <button onclick="doBroadcast()" style="background:var(--cyan);color:#000;font-size:11px;font-weight:600;padding:4px 10px;border:none;border-radius:6px;cursor:pointer">Broadcast</button>
       </div>
     </div>
-    <div id="desktopLayout" style="display:flex;flex-direction:column;flex:1;overflow:hidden">
+    <div id="desktopLayout" style="display:flex;flex:1;overflow:hidden">
+      <!-- Left: omni + dock column -->
+      <div style="flex:1;display:flex;flex-direction:column;overflow:hidden">
       <!-- Omni terminal: main area -->
       <div id="omniArea" style="flex:1;display:flex;flex-direction:column;overflow:hidden;position:relative">
         <div id="omniPlaceholder" style="flex:1;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;color:var(--text-tertiary)">
@@ -444,6 +446,7 @@ code, pre, .mono { font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace
       <div style="padding:6px 0;display:flex;justify-content:center;border-top:1px solid var(--glass-border);background:rgba(0,0,0,0.3)">
         <div id="desktopDock" style="display:flex;gap:6px;padding:4px 12px;background:rgba(0,0,0,0.4);backdrop-filter:blur(20px);border:1px solid var(--glass-border);border-radius:14px"></div>
       </div>
+      </div><!-- close left column -->
       <div id="desktopFeed" style="width:320px;flex-shrink:0;background:var(--bg-surface);display:flex;flex-direction:column;position:relative">
         <div id="feedResizeHandle" style="position:absolute;left:-3px;top:0;bottom:0;width:6px;cursor:col-resize;z-index:5"></div>
         <div style="padding:8px 10px;font-size:11px;font-weight:700;color:var(--text-secondary);border-bottom:1px solid var(--glass-border);display:flex;align-items:center;gap:6px;border-left:1px solid var(--glass-border);cursor:grab" onmousedown="if(feedPos==='float')this.style.cursor='grabbing'" onmouseup="this.style.cursor='grab'">
@@ -1302,7 +1305,6 @@ function feedPosition(pos) {
 
   // Reset all inline styles
   feed.style.cssText = 'background:var(--bg-surface);display:flex;flex-direction:column;position:relative';
-  layout.style.flexDirection = '';
 
   if (pos === 'hide') {
     feed.style.display = 'none';
@@ -1312,19 +1314,16 @@ function feedPosition(pos) {
   if (showBtn) showBtn.style.display = 'none';
 
   if (pos === 'right') {
-    layout.style.flexDirection = 'row';
     feed.style.width = feedW + 'px';
     feed.style.flexShrink = '0';
     feed.style.borderLeft = '1px solid rgba(255,255,255,0.08)';
     handle.style.cssText = 'position:absolute;left:-3px;top:0;bottom:0;width:6px;cursor:col-resize;z-index:5';
   } else if (pos === 'bottom') {
-    layout.style.flexDirection = 'column';
     feed.style.height = feedH + 'px';
     feed.style.flexShrink = '0';
     feed.style.borderTop = '1px solid rgba(255,255,255,0.08)';
     handle.style.cssText = 'position:absolute;top:-3px;left:0;right:0;height:6px;cursor:row-resize;z-index:5';
   } else if (pos === 'top') {
-    layout.style.flexDirection = 'column-reverse';
     feed.style.height = feedH + 'px';
     feed.style.flexShrink = '0';
     feed.style.borderBottom = '1px solid rgba(255,255,255,0.08)';
