@@ -477,9 +477,10 @@ function handleToolCall(name, args) {
         } catch { /* ignore */ }
 
         // Type the claude command into the shell
+        // Order matters: claude --resume "X" --dangerously-skip-permissions
         let claudeCmd = 'claude';
         if (args.resume) {
-          claudeCmd += ' --resume "' + (args.resume || '').replace(/"/g, '\\"') + '"';
+          claudeCmd += ' -r ' + (args.resume || '').replace(/"/g, '');
         } else {
           claudeCmd += ' --continue';
         }

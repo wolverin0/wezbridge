@@ -466,8 +466,8 @@ function handleApi(req, res) {
         setTimeout(() => {
           let cmd = 'claude';
           if (body.resume) {
-            // Resume a specific named session
-            cmd += ' --resume "' + body.resume.replace(/"/g, '\\"') + '"';
+            // Resume a specific session by ID or name
+            cmd += ' -r ' + body.resume.replace(/"/g, '');
           } else if (body.continue !== false) {
             cmd += ' --continue';
           }
