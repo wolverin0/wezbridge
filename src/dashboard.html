@@ -284,6 +284,32 @@ code, pre, .mono { font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace
 .git-hash { font-family:'JetBrains Mono',monospace; font-size:10px; color:var(--accent); }
 .queue-badge { font-size:9px; background:var(--cyan); color:#000; padding:1px 5px; border-radius:4px; font-weight:700; margin-left:4px; }
 
+/* ─── Notification Stack (Minority Report style) ─── */
+.notif-stack { position:absolute; top:8px; right:8px; width:380px; display:flex; flex-direction:column; gap:8px; z-index:150; pointer-events:none; max-height:calc(100% - 16px); overflow-y:auto; }
+.notif-stack::-webkit-scrollbar { width:0; }
+.notif-card {
+  pointer-events:all; background:var(--glass); backdrop-filter:blur(20px);
+  border:1px solid var(--glass-border); border-radius:10px;
+  box-shadow:0 8px 32px rgba(0,0,0,0.5); animation:notifSlide 0.4s ease-out;
+  overflow:hidden;
+}
+.notif-card.completed { border-left:3px solid var(--green); }
+.notif-card.permission { border-left:3px solid var(--red); }
+.notif-card.started { border-left:3px solid var(--yellow); }
+@keyframes notifSlide { from { opacity:0; transform:translateX(40px); } }
+.notif-card-header { display:flex; align-items:center; gap:8px; padding:8px 12px; font-size:12px; background:rgba(0,0,0,0.2); }
+.notif-card-header .badge { font-size:9px; font-weight:700; text-transform:uppercase; padding:2px 6px; border-radius:3px; }
+.notif-card-header .badge.completed { background:rgba(34,197,94,0.2); color:var(--green); }
+.notif-card-header .badge.permission { background:rgba(239,68,68,0.2); color:var(--red); }
+.notif-card-header .badge.started { background:rgba(245,158,11,0.2); color:var(--yellow); }
+.notif-card-header .project { font-weight:600; flex:1; }
+.notif-card-header .dismiss { cursor:pointer; color:var(--text-tertiary); font-size:16px; padding:0 4px; }
+.notif-card-header .dismiss:hover { color:var(--text-primary); }
+.notif-card-body { padding:8px 12px; font-family:'JetBrains Mono',monospace; font-size:10px; line-height:1.5; color:oklch(0.72 0.01 260); max-height:150px; overflow-y:auto; white-space:pre-wrap; word-break:break-word; cursor:pointer; resize:vertical; }
+.notif-card-actions { display:flex; gap:4px; padding:6px 12px; border-top:1px solid var(--glass-border); }
+.notif-card-actions input { flex:1; background:var(--bg-app); border:1px solid var(--border); border-radius:5px; padding:4px 8px; font-size:10px; color:var(--text-primary); font-family:'JetBrains Mono',monospace; outline:none; }
+.notif-card-actions button { font-size:10px; font-weight:600; padding:4px 8px; border-radius:5px; border:none; cursor:pointer; font-family:'Inter',sans-serif; }
+
 /* ─── Empty / loading ─── */
 .empty-state { text-align: center; padding: 60px 20px; color: var(--text-tertiary); }
 .empty-icon { font-size: 32px; opacity: 0.3; margin-bottom: 8px; }
@@ -395,7 +421,10 @@ code, pre, .mono { font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace
       </div>
     </div>
     <div id="desktopLayout" style="display:flex;flex:1;overflow:hidden">
-      <div class="desktop-area" id="desktopArea" style="flex:1"></div>
+      <div class="desktop-area" id="desktopArea" style="flex:1;position:relative">
+        <div class="notif-stack" id="notifStack"></div>
+        <div id="desktopDock" style="position:absolute;bottom:8px;left:50%;transform:translateX(-50%);display:flex;gap:6px;padding:6px 14px;background:rgba(0,0,0,0.5);backdrop-filter:blur(20px);border:1px solid var(--glass-border);border-radius:16px;z-index:100"></div>
+      </div>
       <div id="desktopFeed" style="width:320px;flex-shrink:0;background:var(--bg-surface);display:flex;flex-direction:column;position:relative">
         <div id="feedResizeHandle" style="position:absolute;left:-3px;top:0;bottom:0;width:6px;cursor:col-resize;z-index:5"></div>
         <div style="padding:8px 10px;font-size:11px;font-weight:700;color:var(--text-secondary);border-bottom:1px solid var(--glass-border);display:flex;align-items:center;gap:6px;border-left:1px solid var(--glass-border);cursor:grab" onmousedown="if(feedPos==='float')this.style.cursor='grabbing'" onmouseup="this.style.cursor='grab'">
@@ -480,10 +509,14 @@ function connectSSE() {
       renderFeed();
       dtRenderLiveFeed(); // also update desktop live feed window
 
-      // Browser notification
+      // Browser notification + desktop popup card
       if (event.type === 'completed' || event.type === 'permission') {
         showNotification(event);
         playNotifSound(event.type);
+        if (currentView === 'desktop') addNotifCard(event);
+      }
+      if (event.type === 'started' && currentView === 'desktop') {
+        addNotifCard(event);
       }
 
       // Auto-refresh sessions
@@ -909,6 +942,7 @@ var dtInited = false;
 function initDesktop() {
   dtSyncWindows();
   dtRenderLiveFeed();
+  dtRenderDock();
   dtInited = true;
 }
 
@@ -927,7 +961,7 @@ function dtSyncWindows() {
         var cols = Math.ceil(Math.sqrt(sessions.length));
         var ww = Math.max(380, Math.floor(aw / cols) - 12);
         var wh = Math.max(250, Math.floor(ah / Math.ceil(sessions.length / cols)) - 12);
-        dtWins[s.pane_id] = { x: 6 + (i % cols) * (ww + 12), y: 6 + Math.floor(i / cols) * (wh + 12), w: ww, h: wh, z: dtTopZ++, minimized: false };
+        dtWins[s.pane_id] = { x: 6 + (i % cols) * (ww + 12), y: 6 + Math.floor(i / cols) * (wh + 12), w: ww, h: wh, z: dtTopZ++, minimized: true };
       }
       if (elExists) elExists.remove();
       dtCreateWin(s);
@@ -1049,6 +1083,24 @@ function dtMaxWin(pid) {
 
 function dtShowAll() { Object.keys(dtWins).forEach(function(id) { var el = document.getElementById('dw-' + id); if (el) { el.classList.remove('minimized'); dtWins[id].minimized = false; } }); }
 
+function dtRenderDock() {
+  var dock = document.getElementById('desktopDock');
+  if (!dock) return;
+  dock.innerHTML = sessions.map(function(s) {
+    var initials = (s.project_name || 'P').slice(0, 2).toUpperCase();
+    var isMin = dtWins[s.pane_id] && dtWins[s.pane_id].minimized;
+    var statusColor = s.status === 'idle' ? 'var(--green)' : s.status === 'working' ? 'var(--yellow)' : s.status === 'permission' ? 'var(--red)' : 'var(--text-tertiary)';
+    var isOmni = (s.project_name || '').toLowerCase().includes('omni');
+    return '<div onclick="restoreWindow(' + s.pane_id + ');dtFocus(' + s.pane_id + ')" style="width:42px;height:42px;border-radius:10px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:11px;font-weight:700;color:var(--text-primary);transition:all 0.2s;position:relative;' +
+      'background:rgba(255,255,255,0.06);border:1px solid ' + (isOmni ? 'var(--accent)' : 'rgba(255,255,255,0.1)') + ';' +
+      (isMin ? 'opacity:0.5;' : '') + '" title="' + esc(s.project_name || '') + ' [' + s.status + ']"' +
+      ' onmouseenter="this.style.transform=\'translateY(-3px) scale(1.08)\'" onmouseleave="this.style.transform=\'\'">' +
+      initials +
+      '<span style="position:absolute;bottom:-2px;width:6px;height:6px;border-radius:50%;background:' + statusColor + '"></span>' +
+    '</div>';
+  }).join('');
+}
+
 function dtSend(pid, input) {
   var text = input.value.trim(); if (!text) return; input.value = '';
   fetch(API + '/api/sessions/' + pid + '/prompt', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:text}) })
@@ -1147,7 +1199,12 @@ function dtRenderLiveFeed() {
 setInterval(function() {
   if (currentView === 'desktop') {
     dtSyncWindows();
-    Object.keys(dtWins).forEach(function(id) { dtLoadOutput(parseInt(id)); });
+    dtRenderDock();
+    var validPanes = new Set(sessions.map(function(s){ return s.pane_id; }));
+    Object.keys(dtWins).forEach(function(id) {
+      var pid = parseInt(id);
+      if (validPanes.has(pid) && !dtWins[id].minimized) dtLoadOutput(pid);
+    });
   }
 }, 3000);
 
@@ -1322,6 +1379,64 @@ async function addMultiQueue(paneId) {
     body: JSON.stringify({ tasks: tasks }),
   });
   toast(tasks.length + ' tasks queued');
+}
+
+// ─── Notification Cards (Desktop Minority Report style) ───
+var notifCardId = 0;
+function addNotifCard(event) {
+  var stack = document.getElementById('notifStack');
+  if (!stack) return;
+  var id = 'nc-' + (notifCardId++);
+  var output = event.output ? stripAnsi(event.output) : '';
+  var time = new Date(event.timestamp).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+
+  var msg = '';
+  if (event.type === 'completed') msg = 'Task finished';
+  else if (event.type === 'permission') msg = 'Needs approval';
+  else if (event.type === 'started') msg = 'Started working';
+  else msg = event.type;
+
+  var card = document.createElement('div');
+  card.className = 'notif-card ' + event.type;
+  card.id = id;
+
+  var html = '<div class="notif-card-header">' +
+    '<span class="badge ' + event.type + '">' + event.type + '</span>' +
+    '<span class="project">' + esc(event.project || '') + '</span>' +
+    '<span style="font-size:10px;color:var(--text-tertiary)">' + time + '</span>' +
+    '<span class="dismiss" onclick="this.closest(\'.notif-card\').remove()">x</span>' +
+  '</div>';
+
+  if (output) {
+    html += '<div class="notif-card-body" onclick="restoreWindow(' + event.pane_id + ');dtFocus(' + event.pane_id + ')">' + esc(output) + '</div>';
+  }
+
+  if (event.type === 'completed') {
+    html += '<div class="notif-card-actions">' +
+      '<input placeholder="Reply to ' + esc(event.project || '') + '..." onkeydown="if(event.key===\'Enter\'){feedReply(' + event.pane_id + ',this);this.closest(\'.notif-card\').remove()}">' +
+      '<button onclick="feedReply(' + event.pane_id + ',this.previousElementSibling);this.closest(\'.notif-card\').remove()" style="background:var(--accent);color:#fff">Send</button>' +
+      '<button onclick="restoreWindow(' + event.pane_id + ');dtFocus(' + event.pane_id + ');this.closest(\'.notif-card\').remove()" style="background:var(--bg-hover);color:var(--text-secondary)">Open</button>' +
+    '</div>';
+  }
+
+  if (event.type === 'permission') {
+    html += '<div class="notif-card-actions">' +
+      '<button onclick="sendKeyFeed(' + event.pane_id + ',\'1\');this.closest(\'.notif-card\').remove()" style="background:var(--green);color:#000">1 Yes</button>' +
+      '<button onclick="sendKeyFeed(' + event.pane_id + ',\'2\');this.closest(\'.notif-card\').remove()" style="background:var(--accent);color:#fff">2 Always</button>' +
+      '<button onclick="sendKeyFeed(' + event.pane_id + ',\'3\');this.closest(\'.notif-card\').remove()" style="background:transparent;color:var(--red);border:1px solid var(--red)">3 No</button>' +
+    '</div>';
+  }
+
+  if (event.type === 'started') {
+    // Auto-dismiss started cards after 5s
+    setTimeout(function() { var el = document.getElementById(id); if (el) el.remove(); }, 5000);
+  }
+
+  card.innerHTML = html;
+  stack.prepend(card);
+
+  // Limit stack to 10 cards
+  while (stack.children.length > 10) stack.lastChild.remove();
 }
 
 // ─── Toggle Permission Mode (Alt+M) ───
