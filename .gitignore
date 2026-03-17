@@ -3,3 +3,7 @@ node_modules/
 *.log
 logs/
 .claude/
+*.db
+.claude-flow/
+local-biz-sites/
+elchori.md
