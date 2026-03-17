@@ -73,7 +73,7 @@ function jsonResult(label, data) {
 
 const server = new McpServer({
   name: "openclaw2claude",
-  version: "2.1.0",
+  version: "2.2.0",
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1142,13 +1142,215 @@ server.tool(
 );
 
 // ═══════════════════════════════════════════════════════════════════════════
+// FASE B — Factory, Audits, Settings, Learning
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Tool: factory_loops ─────────────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_factory_loops",
+  "Manage Factory loops — automated research/coding cycles that run on schedule. List, view details, or create loops.",
+  {
+    action: z.enum(["list", "get", "create"]).optional().default("list").describe("Action"),
+    loop_id: z.string().optional().describe("Loop ID (for get)"),
+    name: z.string().optional().describe("Loop name (for create)"),
+    description: z.string().optional().describe("Loop description (for create)"),
+    model: z.string().optional().describe("Model (for create)"),
+    interval_ms: z.number().optional().describe("Interval in ms between cycles (for create)"),
+  },
+  async ({ action, loop_id, name, description, model, interval_ms }) => {
+    if (action === "get" && loop_id) {
+      const result = await apiRequest(`/factory/loops/${encodeURIComponent(loop_id)}`);
+      return jsonResult(`Factory loop #${loop_id}:`, result);
+    }
+
+    if (action === "create") {
+      const body = {};
+      if (name) body.name = name;
+      if (description) body.description = description;
+      if (model) body.model = model;
+      if (interval_ms) body.interval_ms = interval_ms;
+      const result = await apiRequest("/factory/loops", {
+        method: "POST",
+        body: JSON.stringify({ factory_loop: body }),
+      });
+      return jsonResult("Created factory loop:", result);
+    }
+
+    const result = await apiRequest("/factory/loops");
+    const summary = result.map((l) => ({
+      id: l.id, name: l.name, status: l.status, model: l.model,
+      total_cycles: l.total_cycles, total_errors: l.total_errors,
+      last_cycle: l.last_cycle_at,
+    }));
+    return jsonResult(`${result.length} factory loops:`, summary);
+  }
+);
+
+// ── Tool: factory_control ───────────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_factory_control",
+  "Control Factory loop execution — play, pause, or stop a loop.",
+  {
+    loop_id: z.string().describe("Loop ID"),
+    action: z.enum(["play", "pause", "stop"]).describe("Control action"),
+  },
+  async ({ loop_id, action }) => {
+    const result = await apiRequest(`/factory/loops/${encodeURIComponent(loop_id)}/${action}`, {
+      method: "POST",
+    });
+    return jsonResult(`Factory loop #${loop_id} ${action}:`, result);
+  }
+);
+
+// ── Tool: factory_findings ──────────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_factory_findings",
+  "Get findings/results from a Factory loop's cycles — what the automated agents discovered.",
+  {
+    loop_id: z.string().describe("Loop ID"),
+  },
+  async ({ loop_id }) => {
+    const result = await apiRequest(`/factory/loops/${encodeURIComponent(loop_id)}/findings`);
+    return jsonResult(`Findings for loop #${loop_id}:`, result);
+  }
+);
+
+// ── Tool: factory_metrics ───────────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_factory_metrics",
+  "Get performance metrics for a Factory loop — cycle times, success rates, commit counts.",
+  {
+    loop_id: z.string().describe("Loop ID"),
+  },
+  async ({ loop_id }) => {
+    const result = await apiRequest(`/factory/loops/${encodeURIComponent(loop_id)}/metrics`);
+    return jsonResult(`Metrics for loop #${loop_id}:`, result);
+  }
+);
+
+// ── Tool: factory_agents ────────────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_factory_agents",
+  "List Factory agent catalog — specialized agents available for loops (Security Auditor, Code Reviewer, etc).",
+  {},
+  async () => {
+    const result = await apiRequest("/factory/agents");
+    const summary = result.map((a) => ({
+      id: a.id, name: a.name, slug: a.slug, category: a.category,
+      priority: a.priority, builtin: a.builtin,
+    }));
+    return jsonResult(`${result.length} factory agents:`, summary);
+  }
+);
+
+// ── Tool: audits ────────────────────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_audits",
+  "View and manage behavioral audits — agent quality scores tracked by ClawTrol.",
+  {
+    action: z.enum(["latest", "ingest"]).optional().default("latest").describe("latest=last audit report, ingest=submit new audit data"),
+    audit_data: z.string().optional().describe("JSON audit data (for ingest)"),
+  },
+  async ({ action, audit_data }) => {
+    if (action === "ingest" && audit_data) {
+      let parsed;
+      try { parsed = JSON.parse(audit_data); } catch { return textResult("Error: invalid JSON for audit_data"); }
+      const result = await apiRequest("/audits/ingest", {
+        method: "POST",
+        body: JSON.stringify(parsed),
+      });
+      return jsonResult("Audit ingested:", result);
+    }
+
+    const result = await apiRequest("/audits/latest");
+    return jsonResult("Latest audit:", result);
+  }
+);
+
+// ── Tool: settings ──────────────────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_settings",
+  "View ClawTrol system settings — agent config, auto-mode, email.",
+  {},
+  async () => {
+    const result = await apiRequest("/settings");
+    return jsonResult("Settings:", result);
+  }
+);
+
+// ── Tool: learning_effectiveness ────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_learning_effectiveness",
+  "View learning effectiveness tracking — how well agent learnings are being applied.",
+  {},
+  async () => {
+    const result = await apiRequest("/learning_effectiveness");
+    return jsonResult("Learning effectiveness:", result);
+  }
+);
+
+// ── Tool: agent_personas ────────────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_agent_personas",
+  "Manage agent personas — predefined agent identities with system prompts and capabilities.",
+  {
+    action: z.enum(["list", "get"]).optional().default("list").describe("Action"),
+    persona_id: z.string().optional().describe("Persona ID (for get)"),
+  },
+  async ({ action, persona_id }) => {
+    if (action === "get" && persona_id) {
+      const result = await apiRequest(`/agent_personas/${encodeURIComponent(persona_id)}`);
+      return jsonResult(`Persona #${persona_id}:`, result);
+    }
+
+    const result = await apiRequest("/agent_personas");
+    return jsonResult(`Agent personas:`, result);
+  }
+);
+
+// ── Tool: nightshift_sync ───────────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_nightshift_sync",
+  "Sync nightshift state — sync crons with gateway or report execution results.",
+  {
+    action: z.enum(["sync_crons", "sync_tonight", "report"]).describe("sync_crons=sync with gateway crons, sync_tonight=refresh tonight plan, report=report execution"),
+    execution_data: z.string().optional().describe("JSON execution report data (for report action)"),
+  },
+  async ({ action, execution_data }) => {
+    if (action === "report" && execution_data) {
+      let parsed;
+      try { parsed = JSON.parse(execution_data); } catch { return textResult("Error: invalid JSON"); }
+      const result = await apiRequest("/nightshift/report_execution", {
+        method: "POST",
+        body: JSON.stringify(parsed),
+      });
+      return jsonResult("Execution reported:", result);
+    }
+
+    const endpoint = action === "sync_crons" ? "/nightshift/sync_crons" : "/nightshift/sync_tonight";
+    const result = await apiRequest(endpoint, { method: "POST" });
+    return jsonResult(`Nightshift ${action}:`, result);
+  }
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Start
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("openclaw2claude MCP server v2.1.0 running on stdio");
+  console.error("openclaw2claude MCP server v2.2.0 running on stdio");
 }
 
 main().catch((err) => {
