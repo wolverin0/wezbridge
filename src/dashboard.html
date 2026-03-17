@@ -1178,7 +1178,11 @@ function dtRenderDock() {
 function dtSend(pid, input) {
   var text = input.value.trim(); if (!text) return; input.value = '';
   fetch(API + '/api/sessions/' + pid + '/prompt', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:text}) })
-    .then(function() { toast('Sent to pane ' + pid); setTimeout(function(){ dtLoadOutput(pid); }, 1000); });
+    .then(function() {
+      toast('Sent to pane ' + pid);
+      // Auto-minimize after sending — get out of the way
+      setTimeout(function() { dtMinWin(pid); }, 500);
+    });
 }
 
 function dtTile() {
@@ -1471,15 +1475,25 @@ function dtPopupWindow(paneId, eventType) {
   dtLoadOutput(paneId);
   dtRenderDock();
 
-  // Randomize position slightly so multiple popups don't stack exactly
-  var area = document.getElementById('desktopArea');
+  // Position popups in a grid — find the next free slot
+  var area = document.getElementById('omniArea');
   var aw = area ? area.offsetWidth : 800;
   var ah = area ? area.offsetHeight : 600;
   var w = dtWins[paneId];
-  w.x = Math.max(10, Math.min(aw - w.w - 10, w.x + (Math.random() - 0.5) * 60));
-  w.y = Math.max(10, Math.min(ah - w.h - 10, w.y + (Math.random() - 0.5) * 40));
+  // Count currently visible (non-minimized) windows to find slot
+  var visibleCount = 0;
+  Object.keys(dtWins).forEach(function(id) { if (!dtWins[id].minimized && parseInt(id) !== paneId) visibleCount++; });
+  var popW = Math.min(500, Math.floor(aw / 2) - 10);
+  var popH = Math.min(400, Math.floor(ah / 2) - 10);
+  var col = visibleCount % 2;
+  var row = Math.floor(visibleCount / 2) % 2;
+  w.w = popW; w.h = popH;
+  w.x = 10 + col * (popW + 10);
+  w.y = 10 + row * (popH + 10);
   el.style.left = w.x + 'px';
   el.style.top = w.y + 'px';
+  el.style.width = w.w + 'px';
+  el.style.height = w.h + 'px';
 
   // Flash border color based on event type
   var color = eventType === 'completed' ? 'var(--green)' : eventType === 'permission' ? 'var(--red)' : 'var(--yellow)';
