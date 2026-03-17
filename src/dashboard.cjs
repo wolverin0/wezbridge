@@ -407,7 +407,10 @@ function handleApi(req, res) {
           case 'enter': wez.sendText(paneId, ''); break;
           case 'ctrl+c': case 'ctrl-c': wez.sendTextNoEnter(paneId, '\x03'); break;
           case 'alt+m': case 'meta+m': wez.sendTextNoEnter(paneId, '\x1bm'); break; // ESC + m = Alt+M
-          case 'y': case 'n': wez.sendTextNoEnter(paneId, key); break;
+          case 'y': case 'n':
+            // Send the key + Enter to confirm. Works for both y/n prompts and selection prompts.
+            wez.sendText(paneId, key);
+            break;
           default: wez.sendTextNoEnter(paneId, body.key || ''); break;
         }
         json({ ok: true, pane_id: paneId, key });
@@ -432,13 +435,11 @@ function handleApi(req, res) {
 
         const newPaneId = wez.spawnPane({ cwd });
 
-        // Give shell time to start, then type `claude --continue`
+        // Give shell time to start, then type claude with options
         setTimeout(() => {
-          const resume = body.continue !== false; // default: resume last session
           let cmd = 'claude';
-          if (resume) cmd += ' --continue';
-          // Always add --dangerously-skip-permissions for dashboard-spawned sessions
-          cmd += ' --dangerously-skip-permissions';
+          if (body.continue !== false) cmd += ' --continue';
+          if (body.yolo !== false) cmd += ' --dangerously-skip-permissions';
           wez.sendText(newPaneId, cmd);
 
           // If initial prompt provided, wait for Claude to boot then send it

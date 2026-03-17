@@ -416,8 +416,10 @@ code, pre, .mono { font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace
     <div class="panel-header">
       <div class="panel-title">Spawn New Session</div>
     </div>
-    <div style="display:flex;gap:8px;margin-bottom:8px">
-      <input class="prompt-input" id="customPath" placeholder="Custom project path..." style="font-family:'Inter',sans-serif;font-size:13px">
+    <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;align-items:center">
+      <input class="prompt-input" id="customPath" placeholder="Custom project path..." style="font-family:'Inter',sans-serif;font-size:13px;flex:1;min-width:200px">
+      <label style="font-size:12px;display:flex;align-items:center;gap:4px;color:var(--text-secondary);cursor:pointer"><input type="checkbox" id="spawnContinue" checked> --continue</label>
+      <label style="font-size:12px;display:flex;align-items:center;gap:4px;color:var(--text-secondary);cursor:pointer"><input type="checkbox" id="spawnYolo" checked> --dangerously-skip-permissions</label>
       <button class="btn btn-accent" onclick="spawnCustom()">Spawn</button>
     </div>
     <div class="proj-grid" id="projGrid">
@@ -792,7 +794,7 @@ async function loadProjects() {
     el.innerHTML = projects.map(p => {
       const isActive = activePaths.has(p.path) || activePaths.has(p.path.replace(/\//g, '\\'));
       return `
-        <div class="proj-card ${isActive ? 'has-session' : ''}" onclick="spawnProject('${esc(p.path)}')">
+        <div class="proj-card ${isActive ? 'has-session' : ''}" onclick="loadSpawnPrefs('${esc(p.name)}'); spawnProject('${esc(p.path)}')">
           <div class="proj-card-name">${esc(p.name)}</div>
           <div class="proj-card-path">${esc(p.path)}</div>
           ${isActive ? '<div class="proj-card-badge">Session active</div>' : ''}
@@ -804,16 +806,38 @@ async function loadProjects() {
   }
 }
 
+function loadSpawnPrefs(projectName) {
+  try {
+    var saved = JSON.parse(localStorage.getItem('spawn-' + projectName) || '{}');
+    if (saved.continue_session !== undefined) document.getElementById('spawnContinue').checked = saved.continue_session;
+    if (saved.yolo !== undefined) document.getElementById('spawnYolo').checked = saved.yolo;
+  } catch {}
+}
+
+function getSpawnOpts() {
+  return {
+    continue_session: document.getElementById('spawnContinue').checked,
+    yolo: document.getElementById('spawnYolo').checked,
+  };
+}
+
 async function spawnProject(cwd) {
+  var opts = getSpawnOpts();
   toast('Spawning session in ' + cwd.split(/[/\\]/).pop() + '...');
   try {
     const r = await fetch(API + '/api/spawn', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cwd }),
+      body: JSON.stringify({
+        cwd: cwd,
+        'continue': opts.continue_session,
+        yolo: opts.yolo,
+      }),
     });
     const data = await r.json();
     if (data.pane_id !== undefined) {
-      setTimeout(() => { refresh().then(() => selectSession(data.pane_id)); }, 4000);
+      // Save preferences for this project
+      try { localStorage.setItem('spawn-' + cwd.split(/[/\\]/).pop(), JSON.stringify(opts)); } catch {}
+      setTimeout(() => { refresh().then(() => { if (currentView === 'sessions') selectSession(data.pane_id); }); }, 4000);
     }
   } catch { toast('Spawn failed'); }
 }

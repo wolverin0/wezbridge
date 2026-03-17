@@ -356,8 +356,8 @@ function handleToolCall(name, args) {
             break;
           case 'y':
           case 'n':
-            // Don't append Enter — permission prompts read the char directly
-            wez.sendTextNoEnter(paneId, key);
+            // Send key + Enter to confirm (works for both y/n and selection prompts)
+            wez.sendText(paneId, key);
             break;
           default:
             wez.sendTextNoEnter(paneId, key);
