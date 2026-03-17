@@ -418,6 +418,7 @@ code, pre, .mono { font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace
     </div>
     <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;align-items:center">
       <input class="prompt-input" id="customPath" placeholder="Custom project path..." style="font-family:'Inter',sans-serif;font-size:13px;flex:1;min-width:200px">
+      <button class="btn btn-ghost" onclick="pickFolder()" style="font-size:12px" title="Browse for folder">Browse</button>
       <label style="font-size:12px;display:flex;align-items:center;gap:4px;color:var(--text-secondary);cursor:pointer"><input type="checkbox" id="spawnContinue" checked> --continue</label>
       <label style="font-size:12px;display:flex;align-items:center;gap:4px;color:var(--text-secondary);cursor:pointer"><input type="checkbox" id="spawnYolo" checked> --dangerously-skip-permissions</label>
       <button class="btn btn-accent" onclick="spawnCustom()">Spawn</button>
@@ -542,8 +543,9 @@ function renderFeed() {
     }
     if (ev.type === 'permission') {
       html += '<div class="feed-reply">' +
-        '<button class="btn btn-green btn-sm" onclick="sendKeyFeed(' + ev.pane_id + ',\'y\')">Approve (y)</button>' +
-        '<button class="btn btn-red btn-sm" onclick="sendKeyFeed(' + ev.pane_id + ',\'n\')">Deny (n)</button>' +
+        '<button class="btn btn-green btn-sm" onclick="sendKeyFeed(' + ev.pane_id + ',\'1\')">1 Yes</button>' +
+        '<button class="btn btn-accent btn-sm" onclick="sendKeyFeed(' + ev.pane_id + ',\'2\')">2 Always</button>' +
+        '<button class="btn btn-red btn-sm" onclick="sendKeyFeed(' + ev.pane_id + ',\'3\')">3 No</button>' +
       '</div>';
     }
     html += '</div>';
@@ -804,6 +806,25 @@ async function loadProjects() {
   } catch {
     el.innerHTML = '<div class="empty-state">Failed to load projects</div>';
   }
+}
+
+function pickFolder() {
+  var input = document.createElement('input');
+  input.type = 'file';
+  input.webkitdirectory = true;
+  input.onchange = function() {
+    if (input.files.length > 0) {
+      // Extract folder path from the first file's webkitRelativePath
+      var rel = input.files[0].webkitRelativePath;
+      var folder = rel.split('/')[0];
+      // We can't get the full absolute path from browser for security,
+      // so put the folder name and let user edit
+      document.getElementById('customPath').value = folder;
+      document.getElementById('customPath').focus();
+      toast('Got folder: ' + folder + ' — edit path if needed');
+    }
+  };
+  input.click();
 }
 
 function loadSpawnPrefs(projectName) {
@@ -1085,8 +1106,9 @@ function dtRenderLiveFeed() {
     }
     if (ev.type === 'permission') {
       html += '<div class="feed-reply">' +
-        '<button class="btn btn-green" style="font-size:10px;padding:4px 8px" onclick="sendKeyFeed(' + ev.pane_id + ',\'y\')">Yes</button>' +
-        '<button class="btn btn-red" style="font-size:10px;padding:4px 8px" onclick="sendKeyFeed(' + ev.pane_id + ',\'n\')">No</button>' +
+        '<button class="btn btn-green" style="font-size:10px;padding:4px 8px" onclick="sendKeyFeed(' + ev.pane_id + ',\'1\')">1 Yes</button>' +
+        '<button class="btn btn-accent" style="font-size:10px;padding:4px 8px" onclick="sendKeyFeed(' + ev.pane_id + ',\'2\')">2 Always</button>' +
+        '<button class="btn btn-red" style="font-size:10px;padding:4px 8px" onclick="sendKeyFeed(' + ev.pane_id + ',\'3\')">3 No</button>' +
       '</div>';
     }
     html += '</div>';

@@ -49,8 +49,18 @@ const SPAWN_QUIET_MS = 15000;  // suppress started/completed for 15s after a pan
 // panes are auto-injected into the omni pane as text prompts.
 let omniPaneId = null; // set via POST /api/omni/register
 
+const lastEventByPane = new Map(); // paneId → { type, timestamp }
+const EVENT_DEDUP_MS = 30000; // suppress duplicate type+pane within 30s
+
 function emitEvent(event) {
   event.timestamp = new Date().toISOString();
+
+  // Dedup: skip if same type+pane within 30s
+  const key = event.pane_id + ':' + event.type;
+  const last = lastEventByPane.get(key);
+  if (last && (Date.now() - last) < EVENT_DEDUP_MS) return;
+  lastEventByPane.set(key, Date.now());
+
   eventLog.push(event);
   if (eventLog.length > 50) eventLog.shift();
 
@@ -407,9 +417,14 @@ function handleApi(req, res) {
           case 'enter': wez.sendText(paneId, ''); break;
           case 'ctrl+c': case 'ctrl-c': wez.sendTextNoEnter(paneId, '\x03'); break;
           case 'alt+m': case 'meta+m': wez.sendTextNoEnter(paneId, '\x1bm'); break; // ESC + m = Alt+M
-          case 'y': case 'n':
-            // Send the key + Enter to confirm. Works for both y/n prompts and selection prompts.
-            wez.sendText(paneId, key);
+          case 'y': case '1':
+            wez.sendTextNoEnter(paneId, '1'); // Select option 1 (Yes)
+            break;
+          case 'n': case '2':
+            wez.sendTextNoEnter(paneId, '2'); // Select option 2 (No / Yes always)
+            break;
+          case '3':
+            wez.sendTextNoEnter(paneId, '3'); // Select option 3
             break;
           default: wez.sendTextNoEnter(paneId, body.key || ''); break;
         }

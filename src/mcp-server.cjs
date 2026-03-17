@@ -354,10 +354,14 @@ function handleToolCall(name, args) {
             // ESC + m = Alt+M (toggle permission mode in Claude Code)
             wez.sendTextNoEnter(paneId, '\x1bm');
             break;
-          case 'y':
-          case 'n':
-            // Send key + Enter to confirm (works for both y/n and selection prompts)
-            wez.sendText(paneId, key);
+          case 'y': case '1':
+            wez.sendTextNoEnter(paneId, '1'); // Select option 1 (Yes)
+            break;
+          case 'n': case '2':
+            wez.sendTextNoEnter(paneId, '2'); // Select option 2
+            break;
+          case '3':
+            wez.sendTextNoEnter(paneId, '3'); // Select option 3
             break;
           default:
             wez.sendTextNoEnter(paneId, key);
