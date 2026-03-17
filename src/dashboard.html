@@ -245,6 +245,7 @@ code, pre, .mono { font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace
   background:var(--glass); backdrop-filter:blur(20px);
   border:1px solid var(--glass-border); border-radius:10px;
   box-shadow:0 6px 24px rgba(0,0,0,0.4); display:flex; flex-direction:column; overflow:hidden;
+  pointer-events:all;
 }
 .dwin.active { box-shadow:0 12px 48px rgba(0,0,0,0.6); border-color:rgba(255,255,255,0.12); }
 .dwin.minimized { display:none; }
@@ -420,9 +421,28 @@ code, pre, .mono { font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace
         <button onclick="doBroadcast()" style="background:var(--cyan);color:#000;font-size:11px;font-weight:600;padding:4px 10px;border:none;border-radius:6px;cursor:pointer">Broadcast</button>
       </div>
     </div>
-    <div id="desktopLayout" style="display:flex;flex:1;overflow:hidden">
-      <div class="desktop-area" id="desktopArea" style="flex:1;position:relative">
-        <div id="desktopDock" style="position:absolute;bottom:8px;left:50%;transform:translateX(-50%);display:flex;gap:6px;padding:6px 14px;background:rgba(0,0,0,0.5);backdrop-filter:blur(20px);border:1px solid var(--glass-border);border-radius:16px;z-index:100"></div>
+    <div id="desktopLayout" style="display:flex;flex-direction:column;flex:1;overflow:hidden">
+      <!-- Omni terminal: main area -->
+      <div id="omniArea" style="flex:1;display:flex;flex-direction:column;overflow:hidden;position:relative">
+        <div id="omniPlaceholder" style="flex:1;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;color:var(--text-tertiary)">
+          <div style="font-size:16px;font-weight:600">No Omni session detected</div>
+          <button class="btn btn-accent" onclick="spawnOmni()" style="font-size:13px;padding:8px 20px">Launch Omni</button>
+          <div style="font-size:11px">Or spawn a session in a folder named "omni"</div>
+        </div>
+        <div id="omniTerminal" style="display:none;flex:1;overflow:auto;padding:12px 16px;font-family:'JetBrains Mono',monospace;font-size:12px;line-height:1.6;color:oklch(0.78 0.01 260);white-space:pre-wrap;word-break:break-word;background:oklch(0.07 0.012 270)"></div>
+        <div id="omniPrompt" style="display:none;padding:8px 12px;border-top:1px solid var(--glass-border);background:rgba(0,0,0,0.15);display:none">
+          <div style="display:flex;gap:6px">
+            <input class="prompt-input" id="omniInput" placeholder="Talk to the orchestrator..." style="flex:1" onkeydown="if(event.key==='Enter')sendOmniPrompt()">
+            <button class="btn btn-accent" onclick="sendOmniPrompt()">Send</button>
+          </div>
+        </div>
+        <!-- Floating worker windows appear here -->
+        <div class="desktop-area" id="desktopArea" style="position:absolute;top:0;left:0;right:0;bottom:50px;pointer-events:none;z-index:50">
+        </div>
+      </div>
+      <!-- Dock -->
+      <div style="padding:6px 0;display:flex;justify-content:center;border-top:1px solid var(--glass-border);background:rgba(0,0,0,0.3)">
+        <div id="desktopDock" style="display:flex;gap:6px;padding:4px 12px;background:rgba(0,0,0,0.4);backdrop-filter:blur(20px);border:1px solid var(--glass-border);border-radius:14px"></div>
       </div>
       <div id="desktopFeed" style="width:320px;flex-shrink:0;background:var(--bg-surface);display:flex;flex-direction:column;position:relative">
         <div id="feedResizeHandle" style="position:absolute;left:-3px;top:0;bottom:0;width:6px;cursor:col-resize;z-index:5"></div>
@@ -938,11 +958,63 @@ var dtWins = {}; // paneId -> {x,y,w,h,z,minimized}
 var dtTopZ = 10;
 var dtInited = false;
 
+var omniPaneId = null;
+
 function initDesktop() {
+  detectOmni();
   dtSyncWindows();
   dtRenderLiveFeed();
   dtRenderDock();
   dtInited = true;
+}
+
+function detectOmni() {
+  var omni = sessions.find(function(s) { return (s.project_name || '').toLowerCase().includes('omni'); });
+  var newId = omni ? omni.pane_id : null;
+  if (newId !== omniPaneId) {
+    omniPaneId = newId;
+    if (omniPaneId !== null) {
+      document.getElementById('omniPlaceholder').style.display = 'none';
+      document.getElementById('omniTerminal').style.display = '';
+      document.getElementById('omniPrompt').style.display = '';
+      loadOmniOutput();
+    } else {
+      document.getElementById('omniPlaceholder').style.display = '';
+      document.getElementById('omniTerminal').style.display = 'none';
+      document.getElementById('omniPrompt').style.display = 'none';
+    }
+  }
+}
+
+function loadOmniOutput() {
+  if (omniPaneId === null) return;
+  fetch(API + '/api/sessions/' + omniPaneId + '/output?lines=200').then(function(r) { return r.json(); }).then(function(d) {
+    var el = document.getElementById('omniTerminal');
+    if (!el) return;
+    var atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
+    el.textContent = stripAnsi(d.output || '');
+    if (atBottom) el.scrollTop = el.scrollHeight;
+  }).catch(function() {});
+}
+
+function sendOmniPrompt() {
+  if (omniPaneId === null) return;
+  var input = document.getElementById('omniInput');
+  var text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  fetch(API + '/api/sessions/' + omniPaneId + '/prompt', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ text: text }),
+  }).then(function() { toast('Sent to omni'); setTimeout(loadOmniOutput, 1000); });
+}
+
+function spawnOmni() {
+  toast('Launching Omni orchestrator...');
+  fetch(API + '/api/spawn', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ cwd: 'G:/_OneDrive/OneDrive/Desktop/Py Apps/omniclaude', yolo: true }),
+  }).then(function() { setTimeout(function() { refresh().then(function() { detectOmni(); }); }, 5000); });
 }
 
 
@@ -954,6 +1026,8 @@ function dtSyncWindows() {
 
   sessions.forEach(function(s, i) {
     existing[s.pane_id] = true;
+    // Skip omni session — it has its own dedicated panel
+    if (s.pane_id === omniPaneId) return;
     var elExists = document.getElementById('dw-' + s.pane_id);
     if (!dtWins[s.pane_id] || !elExists) {
       if (!dtWins[s.pane_id]) {
@@ -1198,12 +1272,14 @@ function dtRenderLiveFeed() {
 // Refresh desktop outputs every 3s
 setInterval(function() {
   if (currentView === 'desktop') {
+    detectOmni();
     dtSyncWindows();
     dtRenderDock();
+    loadOmniOutput();
     var validPanes = new Set(sessions.map(function(s){ return s.pane_id; }));
     Object.keys(dtWins).forEach(function(id) {
       var pid = parseInt(id);
-      if (validPanes.has(pid) && !dtWins[id].minimized) dtLoadOutput(pid);
+      if (pid !== omniPaneId && validPanes.has(pid) && !dtWins[id].minimized) dtLoadOutput(pid);
     });
   }
 }, 3000);
