@@ -73,7 +73,7 @@ function jsonResult(label, data) {
 
 const server = new McpServer({
   name: "openclaw2claude",
-  version: "2.3.0",
+  version: "3.0.0",
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1492,13 +1492,256 @@ server.tool(
 );
 
 // ═══════════════════════════════════════════════════════════════════════════
+// FASE C — Omni Bridge: unified status, task routing, Telegram direct
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Otacon's Telegram bot (for direct messaging)
+const OTACON_BOT_TOKEN = process.env.OTACON_BOT_TOKEN || "";
+const MISSION_CONTROL_GROUP_ID = process.env.MISSION_CONTROL_GROUP_ID || "-1003748927245";
+const MISSION_CONTROL_THREAD_ID = process.env.MISSION_CONTROL_THREAD_ID || "1";
+
+// WezBridge local API (for session info)
+const WEZBRIDGE_URL = process.env.WEZBRIDGE_URL || "http://localhost:4200";
+
+// ── Tool: omni_status ───────────────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_omni_status",
+  "Super-dashboard: combined local (WezBridge sessions) + remote (ClawTrol tasks/queue/nightshift) status in one view. The full operational picture.",
+  {},
+  async () => {
+    // Parallel: local WezBridge + remote ClawTrol
+    const [local, tasks, queue, tonight, notifs, errored, settings] = await Promise.allSettled([
+      fetch(`${WEZBRIDGE_URL}/api/sessions`, { signal: AbortSignal.timeout(3000) }).then((r) => r.json()).catch(() => null),
+      apiRequest("/tasks"),
+      apiRequest("/tasks/queue_health"),
+      apiRequest("/nightshift/tonight"),
+      apiRequest("/notifications"),
+      apiRequest("/tasks/errored_count"),
+      apiRequest("/settings"),
+    ]);
+
+    // ── Local: WezBridge sessions ──
+    let localSection = "⚠️ WezBridge unreachable";
+    const localData = local.status === "fulfilled" ? local.value : null;
+    if (localData && Array.isArray(localData)) {
+      const alive = localData.filter((s) => s.status === "alive" || s.status === "active");
+      const waiting = localData.filter((s) => s.status === "waiting");
+      localSection = `${alive.length} active | ${waiting.length} waiting | ${localData.length} total`;
+      if (alive.length > 0) {
+        localSection += `\n  Sessions: ${alive.slice(0, 5).map((s) => `${s.project || s.name || "unnamed"} [${s.paneId}]`).join(", ")}`;
+      }
+    } else if (localData && typeof localData === "object") {
+      // WezBridge might return { sessions: [...] }
+      const sessions = localData.sessions || [];
+      const alive = sessions.filter((s) => s.status === "alive" || s.status === "active");
+      localSection = `${alive.length} active | ${sessions.length} total`;
+      if (alive.length > 0) {
+        localSection += `\n  Sessions: ${alive.slice(0, 5).map((s) => `${s.project || s.name || "unnamed"}`).join(", ")}`;
+      }
+    }
+
+    // ── Remote: ClawTrol tasks ──
+    let taskSection = "unavailable";
+    if (tasks.status === "fulfilled" && Array.isArray(tasks.value)) {
+      const t = tasks.value;
+      const active = t.filter((x) => x.status === "in_progress");
+      const upNext = t.filter((x) => x.status === "up_next");
+      const review = t.filter((x) => x.status === "in_review");
+      taskSection = `${t.length} total | ${active.length} running | ${upNext.length} queued | ${review.length} in review`;
+      if (active.length > 0) {
+        taskSection += `\n  Running: ${active.slice(0, 4).map((a) => `#${a.id} ${a.name.slice(0, 35)} [${a.model || "?"}]`).join("\n  Running: ")}`;
+      }
+    }
+
+    // ── Queue ──
+    let queueSection = "unavailable";
+    if (queue.status === "fulfilled" && queue.value) {
+      const q = queue.value;
+      queueSection = `${q.active_in_progress || 0}/${q.max_concurrent} slots`;
+      if (q.in_night_window) queueSection += " NIGHT";
+      const models = Object.entries(q.inflight_by_model || {});
+      if (models.length > 0) queueSection += ` [${models.map(([m, c]) => `${m}:${c}`).join(" ")}]`;
+    }
+
+    // ── Nightshift ──
+    let nightSection = "unavailable";
+    if (tonight.status === "fulfilled" && tonight.value) {
+      const n = tonight.value;
+      const due = n.due_missions || [];
+      const sel = n.selections || [];
+      nightSection = `${due.length} missions | ${sel.length} selections`;
+    }
+
+    // ── Agent status ──
+    let agentSection = "unknown";
+    if (settings.status === "fulfilled" && settings.value) {
+      const s = settings.value;
+      agentSection = `${s.agent_emoji || ""} ${s.agent_name} [${s.agent_status}] auto=${s.agent_auto_mode}`;
+    }
+
+    // ── Errors + Notifications ──
+    const errorCount = errored.status === "fulfilled" ? (errored.value?.count || 0) : "?";
+    const unreadCount = notifs.status === "fulfilled" ? (notifs.value?.unread_count || 0) : "?";
+
+    const dashboard = `╔══════════════════════════════════════╗
+║       OMNI STATUS — ${new Date().toISOString().slice(11, 19)} UTC      ║
+╠══════════════════════════════════════╣
+║ 🖥️ LOCAL (WezBridge)                ║
+║   ${localSection.split("\n")[0].padEnd(35)}║
+${localSection.split("\n").slice(1).map((l) => `║   ${l.padEnd(35)}║`).join("\n")}
+╠──────────────────────────────────────╣
+║ 🌐 REMOTE (ClawTrol)                ║
+║   ${taskSection.split("\n")[0].padEnd(35)}║
+${taskSection.split("\n").slice(1).map((l) => `║   ${l.padEnd(35)}║`).join("\n")}
+╠──────────────────────────────────────╣
+║ ⚡ Queue:  ${queueSection.padEnd(27)}║
+║ 🌙 Night:  ${nightSection.padEnd(26)}║
+║ 🤖 Agent:  ${agentSection.slice(0, 26).padEnd(26)}║
+║ 🔔 Notifs: ${String(unreadCount).padEnd(4)} unread                ║
+║ ❌ Errors: ${String(errorCount).padEnd(27)}║
+╚══════════════════════════════════════╝`;
+
+    return textResult(dashboard);
+  }
+);
+
+// ── Tool: route_task ────────────────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_route_task",
+  "Smart task router — analyzes a prompt and decides whether to execute locally (Claude Code/WezBridge) or remotely (ClawTrol/Otacon). Routes accordingly.",
+  {
+    prompt: z.string().describe("Task description/prompt"),
+    force: z.enum(["local", "remote", "auto"]).optional().default("auto").describe("Force routing: local=WezBridge, remote=ClawTrol, auto=decide"),
+    model: z.string().optional().default("gemini").describe("Model for remote execution"),
+    priority: z.enum(["low", "medium", "high", "critical"]).optional().default("medium").describe("Task priority"),
+  },
+  async ({ prompt, force, model, priority }) => {
+    // Routing heuristics
+    const lowerPrompt = prompt.toLowerCase();
+
+    const remoteSignals = [
+      "backup", "supabase", "docker", "server", "mikrotik", "infra",
+      "deploy", "n8n", "uisp", "crm", "openclaw", "gateway", "ssh",
+      "192.168", "vm", "production", "nginx", "caddy", "cloudflare",
+      "disk", "memory", "cpu", "systemctl", "service",
+    ];
+
+    const localSignals = [
+      "react", "typescript", "vite", "npm", "build", "test", "lint",
+      "component", "hook", "page", "css", "tailwind", "frontend",
+      "git commit", "git push", "refactor", "code review", "fix bug",
+      "local", "windows", "wezterm", "pane",
+    ];
+
+    let decision = force;
+    let reason = "";
+
+    if (force === "auto") {
+      const remoteScore = remoteSignals.filter((s) => lowerPrompt.includes(s)).length;
+      const localScore = localSignals.filter((s) => lowerPrompt.includes(s)).length;
+
+      if (remoteScore > localScore) {
+        decision = "remote";
+        reason = `infrastructure/server task (matched: ${remoteSignals.filter((s) => lowerPrompt.includes(s)).join(", ")})`;
+      } else if (localScore > remoteScore) {
+        decision = "local";
+        reason = `development/coding task (matched: ${localSignals.filter((s) => lowerPrompt.includes(s)).join(", ")})`;
+      } else {
+        decision = "remote";
+        reason = "ambiguous — defaulting to remote (ClawTrol has more capacity)";
+      }
+    } else {
+      reason = `forced ${force}`;
+    }
+
+    if (decision === "remote") {
+      // Route to ClawTrol via message_otacon
+      const taskName = `[OMNI] ${prompt.slice(0, 80)}`;
+      const taskDesc = `## Omni Orchestrator Directive\n\n**Source:** Claude Code via route_task (auto-routed)\n**Priority:** ${priority}\n**Routing:** remote — ${reason}\n**Timestamp:** ${new Date().toISOString()}\n\n---\n\n${prompt}`;
+
+      const task = await apiRequest("/tasks/spawn_ready", {
+        method: "POST",
+        body: JSON.stringify({
+          name: taskName,
+          description: taskDesc,
+          model,
+          tags: ["omni", "auto-routed"],
+        }),
+      });
+
+      return textResult(`🌐 ROUTED → REMOTE (ClawTrol)\n  Reason: ${reason}\n  Task #${task.id}: ${taskName}\n  Model: ${model} | Priority: ${priority}\n  Track: clawtrol_get_task(${task.id})`);
+    }
+
+    // Local — return instructions for the caller to execute
+    return textResult(`🖥️ ROUTED → LOCAL (Claude Code)\n  Reason: ${reason}\n  Priority: ${priority}\n\n  Execute this locally:\n  ${prompt}\n\n  (Use WezBridge /spawn or execute directly in this session)`);
+  }
+);
+
+// ── Tool: telegram_send ─────────────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_telegram_send",
+  "Send a direct message to the Mission Control Telegram group where Otacon listens. Synchronous communication — Otacon sees it immediately. Supports topic threads.",
+  {
+    message: z.string().describe("Message text (supports HTML formatting)"),
+    thread_id: z.string().optional().describe("Topic thread ID (omit for General). Known topics: 21-27=Various, 200=Diet, 216=Health, 1528=Alerts"),
+    parse_mode: z.enum(["HTML", "Markdown"]).optional().default("HTML").describe("Message format"),
+  },
+  async ({ message, thread_id, parse_mode }) => {
+    const botToken = OTACON_BOT_TOKEN;
+    if (!botToken) {
+      return textResult("Error: OTACON_BOT_TOKEN env var not set. Cannot send Telegram messages.");
+    }
+
+    const body = {
+      chat_id: MISSION_CONTROL_GROUP_ID,
+      text: message,
+      parse_mode,
+    };
+
+    if (thread_id) {
+      const threadNum = parseInt(thread_id);
+      if (threadNum > 0) {
+        body.message_thread_id = threadNum;
+      }
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      const result = await res.json();
+
+      if (!result.ok) {
+        return textResult(`Telegram error: ${result.description || JSON.stringify(result)}`);
+      }
+
+      return textResult(`Message sent to Mission Control (thread ${threadNum}):\n  message_id: ${result.result.message_id}\n  date: ${new Date(result.result.date * 1000).toISOString()}`);
+    } catch (err) {
+      return textResult(`Telegram send failed: ${err.message}`);
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Start
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("openclaw2claude MCP server v2.3.0 running on stdio");
+  console.error("openclaw2claude MCP server v3.0.0 running on stdio");
 }
 
 main().catch((err) => {
