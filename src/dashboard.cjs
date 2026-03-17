@@ -585,6 +585,29 @@ function handleApi(req, res) {
       return json({ ok: true });
     }
 
+    // GET /api/browse?path=... — list directories at a given path (for folder picker)
+    if (pathname === '/api/browse' && req.method === 'GET') {
+      const base = (url.searchParams.get('path') || '').replace(/\\/g, '/');
+      if (!base) {
+        // Return drive roots on Windows
+        const drives = [];
+        for (const letter of 'CDEFGHIJKLMNOPQRSTUVWXYZ'.split('')) {
+          try { if (fs.existsSync(letter + ':/')) drives.push(letter + ':/'); } catch {}
+        }
+        return json({ path: '', dirs: drives });
+      }
+      try {
+        const entries = fs.readdirSync(base.replace(/\//g, path.sep), { withFileTypes: true });
+        const dirs = entries
+          .filter(e => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules')
+          .map(e => e.name)
+          .sort();
+        return json({ path: base, dirs });
+      } catch (err) {
+        return json({ path: base, dirs: [], error: err.message });
+      }
+    }
+
     // GET /api/events — SSE stream for live events
     if (pathname === '/api/events' && req.method === 'GET') {
       res.writeHead(200, {

@@ -417,10 +417,14 @@ code, pre, .mono { font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace
       <div class="panel-title">Spawn New Session</div>
     </div>
     <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;align-items:center">
-      <input class="prompt-input" id="customPath" placeholder="Custom project path..." style="font-family:'Inter',sans-serif;font-size:13px;flex:1;min-width:200px">
+      <input class="prompt-input" id="customPath" placeholder="Type path or browse below..." style="font-family:'Inter',sans-serif;font-size:13px;flex:1;min-width:200px">
       <label style="font-size:12px;display:flex;align-items:center;gap:4px;color:var(--text-secondary);cursor:pointer"><input type="checkbox" id="spawnContinue" checked> --continue</label>
-      <label style="font-size:12px;display:flex;align-items:center;gap:4px;color:var(--text-secondary);cursor:pointer"><input type="checkbox" id="spawnYolo" checked> --dangerously-skip-permissions</label>
+      <label style="font-size:12px;display:flex;align-items:center;gap:4px;color:var(--text-secondary);cursor:pointer"><input type="checkbox" id="spawnYolo" checked> --skip-perms</label>
       <button class="btn btn-accent" onclick="spawnCustom()">Spawn</button>
+    </div>
+    <div id="folderBrowser" style="margin-bottom:10px;padding:8px 12px;background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:8px;font-size:12px">
+      <div id="browseHeader" style="display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap"></div>
+      <div id="browseDirs" style="display:flex;flex-wrap:wrap;gap:4px;max-height:120px;overflow-y:auto"></div>
     </div>
     <div class="proj-grid" id="projGrid">
       <div class="empty-state">Loading projects...</div>
@@ -807,6 +811,42 @@ async function loadProjects() {
   }
 }
 
+
+// ─── Folder Browser ───
+var browsePath = '';
+async function browseTo(dir) {
+  if (dir && !dir.endsWith('/')) dir += '/';
+  browsePath = dir;
+  document.getElementById('customPath').value = dir;
+  try {
+    var r = await fetch(API + '/api/browse?path=' + encodeURIComponent(dir));
+    var data = await r.json();
+    // Render breadcrumb
+    var header = document.getElementById('browseHeader');
+    var parts = dir.split('/').filter(Boolean);
+    var crumbs = '<span onclick="browseTo(\'\')" style="cursor:pointer;color:var(--accent);font-weight:600">Drives</span>';
+    var accumulated = '';
+    parts.forEach(function(p) {
+      accumulated += p + '/';
+      var path = accumulated;
+      crumbs += ' <span style="color:var(--text-tertiary)">/</span> <span onclick="browseTo(\'' + path.replace(/'/g, "\\'") + '\')" style="cursor:pointer;color:var(--accent)">' + p + '</span>';
+    });
+    crumbs += ' <span onclick="spawnProject(browsePath)" style="cursor:pointer;background:var(--accent);color:#fff;padding:2px 8px;border-radius:4px;margin-left:8px;font-weight:600">Spawn here</span>';
+    header.innerHTML = crumbs;
+    // Render dirs
+    var dirsEl = document.getElementById('browseDirs');
+    if (data.dirs.length === 0) {
+      dirsEl.innerHTML = '<span style="color:var(--text-tertiary)">Empty or no subdirectories</span>';
+    } else {
+      dirsEl.innerHTML = data.dirs.map(function(d) {
+        var full = dir ? dir + d : d;
+        return '<span onclick="browseTo(\'' + full.replace(/'/g, "\\'") + '\')" style="cursor:pointer;padding:3px 10px;background:var(--bg-hover);border:1px solid var(--border-subtle);border-radius:6px;font-size:11px;color:var(--text-primary);white-space:nowrap">' + d + '</span>';
+      }).join('');
+    }
+  } catch { }
+}
+// Init browser on drives
+setTimeout(function() { browseTo(''); }, 500);
 
 function loadSpawnPrefs(projectName) {
   try {
