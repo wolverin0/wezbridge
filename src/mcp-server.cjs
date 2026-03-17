@@ -163,6 +163,10 @@ const TOOLS = [
           type: 'string',
           description: 'Optional initial prompt to send after Claude starts up. The session will start, wait for the ❯ prompt, then send this text.',
         },
+        resume: {
+          type: 'string',
+          description: 'Resume a specific named session instead of --continue. Pass the session name (e.g. "fork-webdesign").',
+        },
         split_from: {
           type: 'number',
           description: 'If set, split from this pane ID instead of opening a new tab.',
@@ -472,8 +476,13 @@ function handleToolCall(name, args) {
           );
         } catch { /* ignore */ }
 
-        // Type the claude command into the shell (--continue resumes last session)
-        let claudeCmd = 'claude --continue';
+        // Type the claude command into the shell
+        let claudeCmd = 'claude';
+        if (args.resume) {
+          claudeCmd += ' --resume "' + (args.resume || '').replace(/"/g, '\\"') + '"';
+        } else {
+          claudeCmd += ' --continue';
+        }
         if (skipPerms) claudeCmd += ' --dangerously-skip-permissions';
         wez.sendText(newPaneId, claudeCmd);
 

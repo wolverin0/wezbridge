@@ -463,7 +463,12 @@ function handleApi(req, res) {
         // Give shell time to start, then type claude with options
         setTimeout(() => {
           let cmd = 'claude';
-          if (body.continue !== false) cmd += ' --continue';
+          if (body.resume) {
+            // Resume a specific named session
+            cmd += ' --resume "' + body.resume.replace(/"/g, '\\"') + '"';
+          } else if (body.continue !== false) {
+            cmd += ' --continue';
+          }
           if (body.yolo !== false) cmd += ' --dangerously-skip-permissions';
           wez.sendText(newPaneId, cmd);
 
