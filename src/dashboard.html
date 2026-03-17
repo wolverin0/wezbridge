@@ -422,7 +422,6 @@ code, pre, .mono { font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace
     </div>
     <div id="desktopLayout" style="display:flex;flex:1;overflow:hidden">
       <div class="desktop-area" id="desktopArea" style="flex:1;position:relative">
-        <div class="notif-stack" id="notifStack"></div>
         <div id="desktopDock" style="position:absolute;bottom:8px;left:50%;transform:translateX(-50%);display:flex;gap:6px;padding:6px 14px;background:rgba(0,0,0,0.5);backdrop-filter:blur(20px);border:1px solid var(--glass-border);border-radius:16px;z-index:100"></div>
       </div>
       <div id="desktopFeed" style="width:320px;flex-shrink:0;background:var(--bg-surface);display:flex;flex-direction:column;position:relative">
@@ -509,14 +508,14 @@ function connectSSE() {
       renderFeed();
       dtRenderLiveFeed(); // also update desktop live feed window
 
-      // Browser notification + desktop popup card
+      // When a session completes or needs attention, popup its window Jurassic Park style
       if (event.type === 'completed' || event.type === 'permission') {
-        showNotification(event);
         playNotifSound(event.type);
-        if (currentView === 'desktop') addNotifCard(event);
-      }
-      if (event.type === 'started' && currentView === 'desktop') {
-        addNotifCard(event);
+        if (currentView === 'desktop') {
+          dtPopupWindow(event.pane_id, event.type);
+        } else {
+          showNotification(event);
+        }
       }
 
       // Auto-refresh sessions
@@ -1380,6 +1379,59 @@ async function addMultiQueue(paneId) {
     body: JSON.stringify({ tasks: tasks }),
   });
   toast(tasks.length + ' tasks queued');
+}
+
+// ─── Jurassic Park Window Popup ───
+function dtPopupWindow(paneId, eventType) {
+  // Restore the window if minimized
+  var el = document.getElementById('dw-' + paneId);
+  if (!el || !dtWins[paneId]) return;
+
+  dtWins[paneId].minimized = false;
+  el.classList.remove('minimized');
+
+  // Bring to front
+  dtFocus(paneId);
+  dtLoadOutput(paneId);
+  dtRenderDock();
+
+  // Randomize position slightly so multiple popups don't stack exactly
+  var area = document.getElementById('desktopArea');
+  var aw = area ? area.offsetWidth : 800;
+  var ah = area ? area.offsetHeight : 600;
+  var w = dtWins[paneId];
+  w.x = Math.max(10, Math.min(aw - w.w - 10, w.x + (Math.random() - 0.5) * 60));
+  w.y = Math.max(10, Math.min(ah - w.h - 10, w.y + (Math.random() - 0.5) * 40));
+  el.style.left = w.x + 'px';
+  el.style.top = w.y + 'px';
+
+  // Flash border color based on event type
+  var color = eventType === 'completed' ? 'var(--green)' : eventType === 'permission' ? 'var(--red)' : 'var(--yellow)';
+  el.style.borderColor = color;
+  el.style.boxShadow = '0 0 30px ' + color.replace('var(--green)', 'rgba(34,197,94,0.4)').replace('var(--red)', 'rgba(239,68,68,0.4)').replace('var(--yellow)', 'rgba(245,158,11,0.4)');
+
+  // Scale-in animation
+  el.style.transition = 'none';
+  el.style.transform = 'scale(0.3)';
+  el.style.opacity = '0';
+  requestAnimationFrame(function() {
+    el.style.transition = 'transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.2s, box-shadow 0.5s';
+    el.style.transform = 'scale(1)';
+    el.style.opacity = '1';
+  });
+
+  // Reset border after 3s
+  setTimeout(function() {
+    el.style.borderColor = '';
+    el.style.boxShadow = '';
+    el.style.transition = '';
+  }, 3000);
+
+  // Scroll terminal to bottom
+  setTimeout(function() {
+    var body = document.getElementById('dbody-' + paneId);
+    if (body) body.scrollTop = body.scrollHeight;
+  }, 400);
 }
 
 // ─── Notification Cards (Desktop Minority Report style) ───
