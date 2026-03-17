@@ -245,7 +245,6 @@ code, pre, .mono { font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace
   background:var(--glass); backdrop-filter:blur(20px);
   border:1px solid var(--glass-border); border-radius:10px;
   box-shadow:0 6px 24px rgba(0,0,0,0.4); display:flex; flex-direction:column; overflow:hidden;
-  pointer-events:all;
 }
 .dwin.active { box-shadow:0 12px 48px rgba(0,0,0,0.6); border-color:rgba(255,255,255,0.12); }
 .dwin.minimized { display:none; }
@@ -310,16 +309,6 @@ code, pre, .mono { font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace
 .notif-card-actions { display:flex; gap:4px; padding:6px 12px; border-top:1px solid var(--glass-border); }
 .notif-card-actions input { flex:1; background:var(--bg-app); border:1px solid var(--border); border-radius:5px; padding:4px 8px; font-size:10px; color:var(--text-primary); font-family:'JetBrains Mono',monospace; outline:none; }
 .notif-card-actions button { font-size:10px; font-weight:600; padding:4px 8px; border-radius:5px; border:none; cursor:pointer; font-family:'Inter',sans-serif; }
-
-/* ─── Omni Chat Bubbles ─── */
-.omni-msg { margin-bottom:10px; max-width:85%; animation:fadeIn 0.2s; }
-.omni-msg.user { margin-left:auto; text-align:right; }
-.omni-msg.omni { margin-right:auto; }
-.omni-msg .bubble { display:inline-block; padding:8px 14px; border-radius:12px; font-size:13px; line-height:1.5; text-align:left; }
-.omni-msg.user .bubble { background:var(--accent); color:#fff; border-bottom-right-radius:4px; }
-.omni-msg.omni .bubble { background:var(--bg-elevated); color:var(--text-primary); border-bottom-left-radius:4px; border:1px solid var(--border-subtle); }
-.omni-msg .time { font-size:9px; color:var(--text-tertiary); margin-top:2px; }
-@keyframes fadeIn { from { opacity:0; transform:translateY(4px); } }
 
 /* ─── Empty / loading ─── */
 .empty-state { text-align: center; padding: 60px 20px; color: var(--text-tertiary); }
@@ -424,7 +413,6 @@ code, pre, .mono { font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace
         <button onclick="dtCascade()">Cascade</button>
         <button onclick="dtStack()">Stack</button>
         <button onclick="dtShowAll()">Show All</button>
-        <button onclick="dtHideAll()">Hide All</button>
         <button onclick="feedPosition('right')" id="showFeedBtn" style="display:none">Feed</button>
       </div>
       <div style="display:flex;gap:4px;flex:1;max-width:500px;margin-left:12px">
@@ -432,29 +420,9 @@ code, pre, .mono { font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace
         <button onclick="doBroadcast()" style="background:var(--cyan);color:#000;font-size:11px;font-weight:600;padding:4px 10px;border:none;border-radius:6px;cursor:pointer">Broadcast</button>
       </div>
     </div>
-    <div id="desktopLayout" style="display:flex;flex-direction:column;flex:1;overflow:hidden">
-      <!-- Omni terminal: main area -->
-      <div id="omniArea" style="flex:1;display:flex;flex-direction:column;overflow:hidden;position:relative">
-        <div id="omniPlaceholder" style="flex:1;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;color:var(--text-tertiary)">
-          <div style="font-size:16px;font-weight:600">No Omni session detected</div>
-          <button class="btn btn-accent" onclick="spawnOmni()" style="font-size:13px;padding:8px 20px">Launch Omni</button>
-          <div style="font-size:11px">Or spawn a session in a folder named "omni"</div>
-        </div>
-        <!-- Omni Chat: your messages + omni's decisions only, not raw terminal -->
-        <div id="omniChat" style="display:none;flex:1;overflow-y:auto;padding:12px 16px;background:oklch(0.08 0.012 270)"></div>
-        <div id="omniPrompt" style="display:none;padding:8px 12px;border-top:1px solid var(--glass-border);background:rgba(0,0,0,0.15)">
-          <div style="display:flex;gap:6px">
-            <input class="prompt-input" id="omniInput" placeholder="Talk to the orchestrator..." style="flex:1" onkeydown="if(event.key==='Enter')sendOmniPrompt()">
-            <button class="btn btn-accent" onclick="sendOmniPrompt()">Send</button>
-          </div>
-        </div>
-        <!-- Floating worker windows appear here -->
-        <div class="desktop-area" id="desktopArea" style="position:absolute;top:0;left:0;right:0;bottom:50px;pointer-events:none;z-index:50">
-        </div>
-      </div>
-      <!-- Dock -->
-      <div style="padding:6px 0;display:flex;justify-content:center;border-top:1px solid var(--glass-border);background:rgba(0,0,0,0.3)">
-        <div id="desktopDock" style="display:flex;gap:6px;padding:4px 12px;background:rgba(0,0,0,0.4);backdrop-filter:blur(20px);border:1px solid var(--glass-border);border-radius:14px"></div>
+    <div id="desktopLayout" style="display:flex;flex:1;overflow:hidden">
+      <div class="desktop-area" id="desktopArea" style="flex:1;position:relative">
+        <div id="desktopDock" style="position:absolute;bottom:8px;left:50%;transform:translateX(-50%);display:flex;gap:6px;padding:6px 14px;background:rgba(0,0,0,0.5);backdrop-filter:blur(20px);border:1px solid var(--glass-border);border-radius:16px;z-index:100"></div>
       </div>
       <div id="desktopFeed" style="width:320px;flex-shrink:0;background:var(--bg-surface);display:flex;flex-direction:column;position:relative">
         <div id="feedResizeHandle" style="position:absolute;left:-3px;top:0;bottom:0;width:6px;cursor:col-resize;z-index:5"></div>
@@ -970,130 +938,11 @@ var dtWins = {}; // paneId -> {x,y,w,h,z,minimized}
 var dtTopZ = 10;
 var dtInited = false;
 
-var omniPaneId = null;
-
 function initDesktop() {
-  detectOmni();
   dtSyncWindows();
   dtRenderLiveFeed();
   dtRenderDock();
   dtInited = true;
-}
-
-var omniChatMessages = []; // {type:'user'|'omni', text, time}
-var omniLastOutputHash = '';
-
-function detectOmni() {
-  var omni = sessions.find(function(s) { return (s.project_name || '').toLowerCase().includes('omni'); });
-  var newId = omni ? omni.pane_id : null;
-  if (newId !== omniPaneId) {
-    omniPaneId = newId;
-    if (omniPaneId !== null) {
-      document.getElementById('omniPlaceholder').style.display = 'none';
-      document.getElementById('omniChat').style.display = '';
-      document.getElementById('omniPrompt').style.display = '';
-      if (!omniChatMessages.length) {
-        addOmniMsg('omni', 'Omni orchestrator connected. Tell me what to do.');
-      }
-    } else {
-      document.getElementById('omniPlaceholder').style.display = '';
-      document.getElementById('omniChat').style.display = 'none';
-      document.getElementById('omniPrompt').style.display = 'none';
-    }
-  }
-}
-
-function addOmniMsg(type, text) {
-  var time = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-  omniChatMessages.push({ type: type, text: text, time: time });
-  renderOmniChat();
-}
-
-function renderOmniChat() {
-  var el = document.getElementById('omniChat');
-  if (!el) return;
-  el.innerHTML = omniChatMessages.map(function(m) {
-    return '<div class="omni-msg ' + m.type + '">' +
-      '<div class="bubble">' + esc(m.text) + '</div>' +
-      '<div class="time">' + m.time + '</div>' +
-    '</div>';
-  }).join('');
-  el.scrollTop = el.scrollHeight;
-}
-
-// Poll omni output and extract the LAST clean response
-function pollOmniResponse() {
-  if (omniPaneId === null) return;
-  fetch(API + '/api/sessions/' + omniPaneId + '/output?lines=40').then(function(r) { return r.json(); }).then(function(d) {
-    var raw = stripAnsi(d.output || '');
-    var hash = raw.length + ':' + raw.slice(-80);
-    if (hash === omniLastOutputHash) return;
-    omniLastOutputHash = hash;
-
-    // Extract last response: find text between last two ❯ prompts
-    var lines = raw.split('\n');
-    var prompts = [];
-    for (var i = 0; i < lines.length; i++) {
-      if (/^\s*[❯>]\s/.test(lines[i])) prompts.push(i);
-    }
-    if (prompts.length < 2) return;
-
-    var lastP = prompts[prompts.length - 1];
-    var prevP = prompts[prompts.length - 2];
-
-    // Response lines between the two prompts
-    var respLines = lines.slice(prevP + 1, lastP);
-
-    // Filter out noise: MCP tool calls, spinners, box-drawing, empty
-    var clean = respLines.filter(function(l) {
-      var t = l.trim();
-      if (!t) return false;
-      if (/^[●⎿✻]/.test(t)) return false; // tool markers
-      if (/wezbridge/.test(t) && /MCP/.test(t)) return false; // MCP calls
-      if (/^\s*[─┌┐└┘├┤┬┴┼│]/.test(t)) return false; // box drawing
-      if (/^\s*\|.*\|/.test(t) && /\s{2,}/.test(t)) return false; // table rows
-      if (/ctrl\+o to expand/.test(t)) return false;
-      if (/^\s*[⏵▊]/.test(t)) return false; // status bar
-      if (/bypass permissions/.test(t)) return false;
-      return true;
-    });
-
-    var response = clean.join('\n').trim();
-    if (!response || response.length < 3) return;
-
-    // Truncate if too long
-    if (response.length > 500) response = response.slice(0, 500) + '...';
-
-    // Don't duplicate
-    var lastOmni = null;
-    for (var j = omniChatMessages.length - 1; j >= 0; j--) {
-      if (omniChatMessages[j].type === 'omni') { lastOmni = omniChatMessages[j]; break; }
-    }
-    if (lastOmni && lastOmni.text === response) return;
-
-    addOmniMsg('omni', response);
-  }).catch(function() {});
-}
-
-function sendOmniPrompt() {
-  if (omniPaneId === null) return;
-  var input = document.getElementById('omniInput');
-  var text = input.value.trim();
-  if (!text) return;
-  input.value = '';
-  addOmniMsg('user', text);
-  fetch(API + '/api/sessions/' + omniPaneId + '/prompt', {
-    method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ text: text }),
-  });
-}
-
-function spawnOmni() {
-  toast('Launching Omni orchestrator...');
-  fetch(API + '/api/spawn', {
-    method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ cwd: 'G:/_OneDrive/OneDrive/Desktop/Py Apps/omniclaude', yolo: true }),
-  }).then(function() { setTimeout(function() { refresh().then(function() { detectOmni(); }); }, 5000); });
 }
 
 
@@ -1128,7 +977,7 @@ function dtCreateWin(s) {
   var area = document.getElementById('desktopArea');
   var w = dtWins[s.pane_id];
   var el = document.createElement('div');
-  el.className = 'dwin' + (w.minimized ? ' minimized' : '');
+  el.className = 'dwin';
   el.id = 'dw-' + s.pane_id;
   el.style.cssText = 'left:' + w.x + 'px;top:' + w.y + 'px;width:' + w.w + 'px;height:' + w.h + 'px;z-index:' + w.z;
 
@@ -1232,8 +1081,7 @@ function dtMaxWin(pid) {
   dtFocus(pid);
 }
 
-function dtShowAll() { Object.keys(dtWins).forEach(function(id) { var el = document.getElementById('dw-' + id); if (el) { el.classList.remove('minimized'); dtWins[id].minimized = false; } }); dtRenderDock(); }
-function dtHideAll() { Object.keys(dtWins).forEach(function(id) { var el = document.getElementById('dw-' + id); if (el) { el.classList.add('minimized'); dtWins[id].minimized = true; } }); dtRenderDock(); }
+function dtShowAll() { Object.keys(dtWins).forEach(function(id) { var el = document.getElementById('dw-' + id); if (el) { el.classList.remove('minimized'); dtWins[id].minimized = false; } }); }
 
 function dtRenderDock() {
   var dock = document.getElementById('desktopDock');
@@ -1256,11 +1104,7 @@ function dtRenderDock() {
 function dtSend(pid, input) {
   var text = input.value.trim(); if (!text) return; input.value = '';
   fetch(API + '/api/sessions/' + pid + '/prompt', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text:text}) })
-    .then(function() {
-      toast('Sent to pane ' + pid);
-      // Auto-minimize after sending — get out of the way
-      setTimeout(function() { dtMinWin(pid); }, 500);
-    });
+    .then(function() { toast('Sent to pane ' + pid); setTimeout(function(){ dtLoadOutput(pid); }, 1000); });
 }
 
 function dtTile() {
@@ -1354,14 +1198,12 @@ function dtRenderLiveFeed() {
 // Refresh desktop outputs every 3s
 setInterval(function() {
   if (currentView === 'desktop') {
-    detectOmni();
     dtSyncWindows();
     dtRenderDock();
-    pollOmniResponse();
     var validPanes = new Set(sessions.map(function(s){ return s.pane_id; }));
     Object.keys(dtWins).forEach(function(id) {
       var pid = parseInt(id);
-      if (pid !== omniPaneId && validPanes.has(pid) && !dtWins[id].minimized) dtLoadOutput(pid);
+      if (validPanes.has(pid) && !dtWins[id].minimized) dtLoadOutput(pid);
     });
   }
 }, 3000);
@@ -1553,25 +1395,15 @@ function dtPopupWindow(paneId, eventType) {
   dtLoadOutput(paneId);
   dtRenderDock();
 
-  // Position popups in a grid — find the next free slot
-  var area = document.getElementById('omniArea');
+  // Randomize position slightly so multiple popups don't stack exactly
+  var area = document.getElementById('desktopArea');
   var aw = area ? area.offsetWidth : 800;
   var ah = area ? area.offsetHeight : 600;
   var w = dtWins[paneId];
-  // Count currently visible (non-minimized) windows to find slot
-  var visibleCount = 0;
-  Object.keys(dtWins).forEach(function(id) { if (!dtWins[id].minimized && parseInt(id) !== paneId) visibleCount++; });
-  var popW = Math.min(500, Math.floor(aw / 2) - 10);
-  var popH = Math.min(400, Math.floor(ah / 2) - 10);
-  var col = visibleCount % 2;
-  var row = Math.floor(visibleCount / 2) % 2;
-  w.w = popW; w.h = popH;
-  w.x = 10 + col * (popW + 10);
-  w.y = 10 + row * (popH + 10);
+  w.x = Math.max(10, Math.min(aw - w.w - 10, w.x + (Math.random() - 0.5) * 60));
+  w.y = Math.max(10, Math.min(ah - w.h - 10, w.y + (Math.random() - 0.5) * 40));
   el.style.left = w.x + 'px';
   el.style.top = w.y + 'px';
-  el.style.width = w.w + 'px';
-  el.style.height = w.h + 'px';
 
   // Flash border color based on event type
   var color = eventType === 'completed' ? 'var(--green)' : eventType === 'permission' ? 'var(--red)' : 'var(--yellow)';
