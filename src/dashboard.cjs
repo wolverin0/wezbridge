@@ -211,11 +211,13 @@ setInterval(() => {
       });
     }
 
-    // Detect removed panes
+    // Detect removed panes — clean up prevStatus to avoid querying dead panes
+    const activePaneIds = new Set(panes.map(p => p.paneId));
     for (const [paneId] of prevStatus) {
-      if (!panes.find(p => p.paneId === paneId)) {
+      if (!activePaneIds.has(paneId)) {
         emitEvent({ type: 'removed', pane_id: paneId });
         prevStatus.delete(paneId);
+        paneCreatedAt.delete(paneId);
       }
     }
   } catch { /* ignore poll errors */ }

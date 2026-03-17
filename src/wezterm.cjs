@@ -51,8 +51,11 @@ let guiLaunched = false;
  * Returns the WEZTERM_UNIX_SOCKET path for the best GUI socket, or null to use default.
  */
 let _cachedGuiSocket = undefined; // undefined = not yet checked, null = use default
+let _socketCacheTime = 0;
+const SOCKET_CACHE_TTL = 30000; // re-check socket every 30s
 function findGuiSocket() {
-  if (_cachedGuiSocket !== undefined) return _cachedGuiSocket;
+  // Re-check after TTL expires (handles WezTerm restarts/crashes)
+  if (_cachedGuiSocket !== undefined && (Date.now() - _socketCacheTime) < SOCKET_CACHE_TTL) return _cachedGuiSocket;
 
   if (process.platform !== 'win32') {
     _cachedGuiSocket = null;
@@ -106,11 +109,13 @@ function findGuiSocket() {
 
     if (bestSocket) {
       _cachedGuiSocket = bestSocket;
+      _socketCacheTime = Date.now();
       return bestSocket;
     }
   } catch { /* tasklist or fs failed */ }
 
   _cachedGuiSocket = null;
+  _socketCacheTime = Date.now();
   return null;
 }
 
