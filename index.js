@@ -73,7 +73,7 @@ function jsonResult(label, data) {
 
 const server = new McpServer({
   name: "openclaw2claude",
-  version: "2.2.0",
+  version: "2.3.0",
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1344,13 +1344,161 @@ server.tool(
 );
 
 // ═══════════════════════════════════════════════════════════════════════════
+// OMNI BRIDGE — Cross-system orchestration tools
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Tool: message_otacon ────────────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_message_otacon",
+  "Send a directive to Otacon (OpenClaw's AI agent on the VM) via ClawTrol task. Creates a specially tagged task that Otacon will pick up and execute. This is how the Omni orchestrator communicates with the remote agent.",
+  {
+    prompt: z.string().describe("What you want Otacon to do — full instruction/prompt"),
+    priority: z.enum(["low", "medium", "high", "critical"]).optional().default("high").describe("Task priority"),
+    model: z.string().optional().default("gemini").describe("Preferred model (gemini, codex, opus, flash, glm, groq)"),
+    board_id: z.string().optional().describe("Target board ID (omit for auto-routing)"),
+    wait_for_result: z.boolean().optional().default(false).describe("If true, polls for result (slow — task must complete first)"),
+  },
+  async ({ prompt, priority, model, board_id, wait_for_result }) => {
+    const taskName = `[OMNI] ${prompt.slice(0, 80)}`;
+    const taskDesc = `## Omni Orchestrator Directive\n\n**Source:** Claude Code (Windows) via openclaw2claude MCP bridge\n**Priority:** ${priority}\n**Timestamp:** ${new Date().toISOString()}\n\n---\n\n${prompt}\n\n---\n\n_This task was created by the Omni orchestrator. Report results via completion hooks._`;
+
+    const spawnBody = {
+      name: taskName,
+      description: taskDesc,
+      model,
+      tags: ["omni", "remote-directive"],
+    };
+    if (board_id) spawnBody.board_id = parseInt(board_id);
+
+    const task = await apiRequest("/tasks/spawn_ready", {
+      method: "POST",
+      body: JSON.stringify(spawnBody),
+    });
+
+    // Also fire a runtime event so ClawTrol logs the cross-system communication
+    try {
+      await fetch(`${API_URL}/hooks/runtime_events`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Hook-Token": HOOKS_TOKEN },
+        body: JSON.stringify({
+          event_type: "omni_directive",
+          source: "claude-code",
+          timestamp: new Date().toISOString(),
+          task_id: task.id,
+          priority,
+          model,
+          prompt_preview: prompt.slice(0, 200),
+        }),
+      });
+    } catch { /* non-critical */ }
+
+    let result = `Directive sent to Otacon → Task #${task.id}\n  Name: ${taskName}\n  Model: ${model}\n  Priority: ${priority}\n  Status: ${task.status}`;
+
+    if (wait_for_result) {
+      result += `\n\nWaiting for result... Use clawtrol_get_task(${task.id}) or clawtrol_task_log(${task.id}) to check.`;
+    }
+
+    return textResult(result);
+  }
+);
+
+// ── Tool: dashboard ─────────────────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_dashboard",
+  "Get a compact all-in-one dashboard of ClawTrol state — tasks, queue, nightshift, notifications, errors. One call instead of five.",
+  {},
+  async () => {
+    const [tasks, queue, tonight, notifs, errored] = await Promise.allSettled([
+      apiRequest("/tasks"),
+      apiRequest("/tasks/queue_health"),
+      apiRequest("/nightshift/tonight"),
+      apiRequest("/notifications"),
+      apiRequest("/tasks/errored_count"),
+    ]);
+
+    // Tasks breakdown
+    let taskSummary = "unavailable";
+    if (tasks.status === "fulfilled" && Array.isArray(tasks.value)) {
+      const t = tasks.value;
+      const byStatus = {};
+      for (const task of t) {
+        const s = task.status || "unknown";
+        byStatus[s] = (byStatus[s] || 0) + 1;
+      }
+      const active = t.filter((x) => x.status === "in_progress");
+      const upNext = t.filter((x) => x.status === "up_next");
+      const review = t.filter((x) => x.status === "in_review");
+      taskSummary = `${t.length} total | ${active.length} running | ${upNext.length} queued | ${review.length} in review`;
+      if (active.length > 0) {
+        taskSummary += `\n  Running: ${active.slice(0, 5).map((a) => `#${a.id} ${a.name.slice(0, 40)} [${a.model || "?"}]`).join(", ")}`;
+      }
+      if (upNext.length > 0) {
+        taskSummary += `\n  Up next: ${upNext.slice(0, 5).map((a) => `#${a.id} ${a.name.slice(0, 40)}`).join(", ")}`;
+      }
+    }
+
+    // Queue
+    let queueSummary = "unavailable";
+    if (queue.status === "fulfilled" && queue.value) {
+      const q = queue.value;
+      queueSummary = `${q.active_in_progress || 0} active / ${q.max_concurrent} max | ${q.queue_depth} in queue | ${q.available_slots} slots free`;
+      if (q.in_night_window) queueSummary += " | NIGHT MODE";
+      const models = Object.entries(q.inflight_by_model || {});
+      if (models.length > 0) queueSummary += `\n  Models: ${models.map(([m, c]) => `${m}=${c}`).join(", ")}`;
+    }
+
+    // Nightshift
+    let nightSummary = "unavailable";
+    if (tonight.status === "fulfilled" && tonight.value) {
+      const n = tonight.value;
+      const due = n.due_missions || [];
+      const sel = n.selections || [];
+      nightSummary = `${due.length} missions due | ${sel.length} selections | ${n.date}`;
+      if (due.length > 0) {
+        const totalMin = due.reduce((s, m) => s + (m.time || 0), 0);
+        nightSummary += ` (~${totalMin}min total)`;
+      }
+    }
+
+    // Notifications
+    let notifSummary = "unavailable";
+    if (notifs.status === "fulfilled" && notifs.value) {
+      const unread = notifs.value.unread_count || 0;
+      const recent = (notifs.value.notifications || []).slice(0, 3);
+      notifSummary = `${unread} unread`;
+      if (recent.length > 0) {
+        notifSummary += `\n  Latest: ${recent.map((n) => `[${n.event_type}] ${n.message?.slice(0, 60)} (${n.time_ago})`).join("\n  Latest: ")}`;
+      }
+    }
+
+    // Errors
+    let errorSummary = "0";
+    if (errored.status === "fulfilled" && errored.value) {
+      errorSummary = String(errored.value.count || 0);
+    }
+
+    const dashboard = `═══ ClawTrol Dashboard ═══
+📋 Tasks:    ${taskSummary}
+⚡ Queue:    ${queueSummary}
+🌙 Tonight:  ${nightSummary}
+🔔 Notifs:   ${notifSummary}
+❌ Errors:   ${errorSummary}
+═══════════════════════════`;
+
+    return textResult(dashboard);
+  }
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Start
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("openclaw2claude MCP server v2.2.0 running on stdio");
+  console.error("openclaw2claude MCP server v2.3.0 running on stdio");
 }
 
 main().catch((err) => {
