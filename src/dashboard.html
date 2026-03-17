@@ -424,6 +424,7 @@ code, pre, .mono { font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace
         <button onclick="dtCascade()">Cascade</button>
         <button onclick="dtStack()">Stack</button>
         <button onclick="dtShowAll()">Show All</button>
+        <button onclick="dtHideAll()">Hide All</button>
         <button onclick="feedPosition('right')" id="showFeedBtn" style="display:none">Feed</button>
       </div>
       <div style="display:flex;gap:4px;flex:1;max-width:500px;margin-left:12px">
@@ -1020,40 +1021,57 @@ function renderOmniChat() {
   el.scrollTop = el.scrollHeight;
 }
 
-// Poll omni output and extract the LAST response (text after the last ❯ prompt)
+// Poll omni output and extract the LAST clean response
 function pollOmniResponse() {
   if (omniPaneId === null) return;
-  fetch(API + '/api/sessions/' + omniPaneId + '/output?lines=30').then(function(r) { return r.json(); }).then(function(d) {
+  fetch(API + '/api/sessions/' + omniPaneId + '/output?lines=40').then(function(r) { return r.json(); }).then(function(d) {
     var raw = stripAnsi(d.output || '');
-    var hash = raw.length + ':' + raw.slice(-100);
-    if (hash === omniLastOutputHash) return; // no change
+    var hash = raw.length + ':' + raw.slice(-80);
+    if (hash === omniLastOutputHash) return;
     omniLastOutputHash = hash;
 
-    // Extract last response: text between the last two ❯ prompts
+    // Extract last response: find text between last two ❯ prompts
     var lines = raw.split('\n');
-    var lastPromptIdx = -1;
-    var prevPromptIdx = -1;
-    for (var i = lines.length - 1; i >= 0; i--) {
-      if (/^\s*[❯>]/.test(lines[i])) {
-        if (lastPromptIdx === -1) lastPromptIdx = i;
-        else if (prevPromptIdx === -1) { prevPromptIdx = i; break; }
-      }
+    var prompts = [];
+    for (var i = 0; i < lines.length; i++) {
+      if (/^\s*[❯>]\s/.test(lines[i])) prompts.push(i);
     }
+    if (prompts.length < 2) return;
 
-    if (prevPromptIdx >= 0 && lastPromptIdx > prevPromptIdx) {
-      // Response is between prevPromptIdx+1 and lastPromptIdx-1
-      var response = lines.slice(prevPromptIdx + 1, lastPromptIdx).filter(function(l) { return l.trim(); }).join('\n').trim();
-      if (response && response.length > 5) {
-        // Check if this is a new response (not already in chat)
-        var lastOmni = null;
-        for (var j = omniChatMessages.length - 1; j >= 0; j--) {
-          if (omniChatMessages[j].type === 'omni') { lastOmni = omniChatMessages[j]; break; }
-        }
-        if (!lastOmni || lastOmni.text !== response) {
-          addOmniMsg('omni', response);
-        }
-      }
+    var lastP = prompts[prompts.length - 1];
+    var prevP = prompts[prompts.length - 2];
+
+    // Response lines between the two prompts
+    var respLines = lines.slice(prevP + 1, lastP);
+
+    // Filter out noise: MCP tool calls, spinners, box-drawing, empty
+    var clean = respLines.filter(function(l) {
+      var t = l.trim();
+      if (!t) return false;
+      if (/^[●⎿✻]/.test(t)) return false; // tool markers
+      if (/wezbridge/.test(t) && /MCP/.test(t)) return false; // MCP calls
+      if (/^\s*[─┌┐└┘├┤┬┴┼│]/.test(t)) return false; // box drawing
+      if (/^\s*\|.*\|/.test(t) && /\s{2,}/.test(t)) return false; // table rows
+      if (/ctrl\+o to expand/.test(t)) return false;
+      if (/^\s*[⏵▊]/.test(t)) return false; // status bar
+      if (/bypass permissions/.test(t)) return false;
+      return true;
+    });
+
+    var response = clean.join('\n').trim();
+    if (!response || response.length < 3) return;
+
+    // Truncate if too long
+    if (response.length > 500) response = response.slice(0, 500) + '...';
+
+    // Don't duplicate
+    var lastOmni = null;
+    for (var j = omniChatMessages.length - 1; j >= 0; j--) {
+      if (omniChatMessages[j].type === 'omni') { lastOmni = omniChatMessages[j]; break; }
     }
+    if (lastOmni && lastOmni.text === response) return;
+
+    addOmniMsg('omni', response);
   }).catch(function() {});
 }
 
@@ -1087,8 +1105,6 @@ function dtSyncWindows() {
 
   sessions.forEach(function(s, i) {
     existing[s.pane_id] = true;
-    // Skip omni session — it has its own dedicated panel
-    if (s.pane_id === omniPaneId) return;
     var elExists = document.getElementById('dw-' + s.pane_id);
     if (!dtWins[s.pane_id] || !elExists) {
       if (!dtWins[s.pane_id]) {
@@ -1216,7 +1232,8 @@ function dtMaxWin(pid) {
   dtFocus(pid);
 }
 
-function dtShowAll() { Object.keys(dtWins).forEach(function(id) { var el = document.getElementById('dw-' + id); if (el) { el.classList.remove('minimized'); dtWins[id].minimized = false; } }); }
+function dtShowAll() { Object.keys(dtWins).forEach(function(id) { var el = document.getElementById('dw-' + id); if (el) { el.classList.remove('minimized'); dtWins[id].minimized = false; } }); dtRenderDock(); }
+function dtHideAll() { Object.keys(dtWins).forEach(function(id) { var el = document.getElementById('dw-' + id); if (el) { el.classList.add('minimized'); dtWins[id].minimized = true; } }); dtRenderDock(); }
 
 function dtRenderDock() {
   var dock = document.getElementById('desktopDock');
