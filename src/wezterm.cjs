@@ -128,10 +128,8 @@ function wezCmd(args, opts = {}) {
       ? { ...process.env, WEZTERM_UNIX_SOCKET: guiSocket }
       : process.env;
 
-    // Connect to GUI if available, fall back to mux
-    const cliArgs = guiSocket
-      ? ['cli', ...args]
-      : ['cli', '--prefer-mux', ...args];
+    // Connect to GUI only — do NOT fall back to mux (prevents zombie mux-servers)
+    const cliArgs = ['cli', ...args];
 
     const result = execFileSync(WEZTERM, cliArgs, {
       encoding: 'utf-8',
