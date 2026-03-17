@@ -128,8 +128,10 @@ function wezCmd(args, opts = {}) {
       ? { ...process.env, WEZTERM_UNIX_SOCKET: guiSocket }
       : process.env;
 
-    // Connect to GUI only — do NOT fall back to mux (prevents zombie mux-servers)
-    const cliArgs = ['cli', ...args];
+    // Connect to GUI only — --no-auto-start prevents spawning zombie mux-servers
+    const cliArgs = guiSocket
+      ? ['cli', ...args]
+      : ['cli', '--no-auto-start', ...args];
 
     const result = execFileSync(WEZTERM, cliArgs, {
       encoding: 'utf-8',
@@ -168,7 +170,7 @@ function ensureGui() {
   if (guiLaunched) return;
   // Check if mux is already reachable by listing panes
   try {
-    const result = execFileSync(WEZTERM, ['cli', '--prefer-mux', 'list'], {
+    const result = execFileSync(WEZTERM, ['cli', '--no-auto-start', 'list'], {
       encoding: 'utf-8', timeout: 5000, windowsHide: true,
     });
     if (result && result.includes('PANEID')) {
@@ -243,7 +245,7 @@ function sendText(paneId, text) {
   const guiSocket = findGuiSocket();
   const cliArgs = guiSocket
     ? ['cli', 'send-text', '--pane-id', String(paneId), '--no-paste']
-    : ['cli', '--prefer-mux', 'send-text', '--pane-id', String(paneId), '--no-paste'];
+    : ['cli', '--no-auto-start', 'send-text', '--pane-id', String(paneId), '--no-paste'];
   const env = guiSocket ? { ...process.env, WEZTERM_UNIX_SOCKET: guiSocket } : process.env;
   execFileSync(WEZTERM, cliArgs, {
     input: text + '\r',
@@ -259,7 +261,7 @@ function sendTextNoEnter(paneId, text) {
   const guiSocket = findGuiSocket();
   const cliArgs = guiSocket
     ? ['cli', 'send-text', '--pane-id', String(paneId), '--no-paste']
-    : ['cli', '--prefer-mux', 'send-text', '--pane-id', String(paneId), '--no-paste'];
+    : ['cli', '--no-auto-start', 'send-text', '--pane-id', String(paneId), '--no-paste'];
   const env = guiSocket ? { ...process.env, WEZTERM_UNIX_SOCKET: guiSocket } : process.env;
   execFileSync(WEZTERM, cliArgs, {
     input: text,
