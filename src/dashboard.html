@@ -1051,7 +1051,7 @@ function dtCreateWin(s) {
   var area = document.getElementById('desktopArea');
   var w = dtWins[s.pane_id];
   var el = document.createElement('div');
-  el.className = 'dwin';
+  el.className = 'dwin' + (w.minimized ? ' minimized' : '');
   el.id = 'dw-' + s.pane_id;
   el.style.cssText = 'left:' + w.x + 'px;top:' + w.y + 'px;width:' + w.w + 'px;height:' + w.h + 'px;z-index:' + w.z;
 

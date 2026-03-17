@@ -42,7 +42,7 @@ const sseClients = new Set();
 const prevStatus = new Map(); // paneId → { status, hash, stableCount }
 const eventLog = [];          // last 50 events for new SSE clients
 const paneCreatedAt = new Map(); // paneId → timestamp (suppress events for 15s after spawn)
-const SPAWN_QUIET_MS = 15000;  // suppress started/completed for 15s after a pane appears
+const SPAWN_QUIET_MS = 30000;  // suppress started/completed for 30s after a pane appears
 
 // ─── Omni Mode ───────────────────────────────────────────────────────────────
 // When a pane is registered as "omni", completion notifications from other
