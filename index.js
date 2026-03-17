@@ -73,7 +73,7 @@ function jsonResult(label, data) {
 
 const server = new McpServer({
   name: "openclaw2claude",
-  version: "2.0.0",
+  version: "2.1.0",
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -657,12 +657,16 @@ server.tool(
   "clawtrol_model_performance",
   "Compare AI model performance — success rates, speed, cost efficiency across models.",
   {
-    summary_only: z.boolean().optional().default(false).describe("Return summary instead of full details"),
+    summary_only: z.boolean().optional().default(true).describe("Return summary instead of full details"),
   },
   async ({ summary_only }) => {
-    const endpoint = summary_only ? "/model_performance/summary" : "/model_performance";
-    const result = await apiRequest(endpoint);
-    return jsonResult("Model performance:", result);
+    try {
+      const endpoint = summary_only ? "/model_performance/summary" : "/model_performance";
+      const result = await apiRequest(endpoint);
+      return jsonResult("Model performance:", result);
+    } catch (err) {
+      return textResult(`Model performance unavailable: ${err.message}`);
+    }
   }
 );
 
@@ -773,13 +777,378 @@ server.tool(
 );
 
 // ═══════════════════════════════════════════════════════════════════════════
+// FASE A — Mega Orchestrator: Nightshift Missions, Notifications, Swarm, etc
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Tool: nightshift_missions ───────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_nightshift_missions",
+  "Manage nightshift missions (v2) — CRUD for recurring nightly tasks. List all missions with their schedule, model, and category.",
+  {
+    action: z.enum(["list", "create", "update", "delete"]).optional().default("list").describe("CRUD action"),
+    mission_id: z.string().optional().describe("Mission ID (for update/delete)"),
+    title: z.string().optional().describe("Mission title (for create/update)"),
+    desc: z.string().optional().describe("Mission description/prompt (for create/update)"),
+    model: z.string().optional().describe("Model to use (gemini, glm, codex, etc.)"),
+    time: z.number().optional().describe("Estimated time in minutes"),
+    frequency: z.enum(["always", "weekly", "manual"]).optional().describe("How often to run"),
+    category: z.string().optional().describe("Category (security, infra, code, research, general, finance)"),
+  },
+  async ({ action, mission_id, title, desc, model, time, frequency, category }) => {
+    if (action === "list") {
+      const result = await apiRequest("/nightshift/missions");
+      return jsonResult(`${result.length} nightshift missions:`, result);
+    }
+
+    if (action === "create") {
+      const body = {};
+      if (title) body.title = title;
+      if (desc) body.desc = desc;
+      if (model) body.model = model;
+      if (time) body.time = time;
+      if (frequency) body.frequency = frequency;
+      if (category) body.category = category;
+      const result = await apiRequest("/nightshift/missions", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      return jsonResult("Created mission:", result);
+    }
+
+    if (action === "update") {
+      if (!mission_id) return textResult("Error: mission_id required for update");
+      const body = {};
+      if (title) body.title = title;
+      if (desc) body.desc = desc;
+      if (model) body.model = model;
+      if (time) body.time = time;
+      if (frequency) body.frequency = frequency;
+      if (category) body.category = category;
+      const result = await apiRequest(`/nightshift/missions/${encodeURIComponent(mission_id)}`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      });
+      return jsonResult(`Updated mission #${mission_id}:`, result);
+    }
+
+    if (action === "delete") {
+      if (!mission_id) return textResult("Error: mission_id required for delete");
+      await apiRequest(`/nightshift/missions/${encodeURIComponent(mission_id)}`, {
+        method: "DELETE",
+      });
+      return textResult(`Deleted mission #${mission_id}`);
+    }
+
+    return textResult("Unknown action");
+  }
+);
+
+// ── Tool: nightshift_tonight ────────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_nightshift_tonight",
+  "See tonight's nightshift plan — which missions are due, their selections, and approve the plan.",
+  {
+    action: z.enum(["view", "approve"]).optional().default("view").describe("view=see plan, approve=approve tonight's selections"),
+  },
+  async ({ action }) => {
+    if (action === "approve") {
+      const result = await apiRequest("/nightshift/tonight/approve", { method: "POST" });
+      return jsonResult("Tonight approved:", result);
+    }
+
+    const result = await apiRequest("/nightshift/tonight");
+    const due = result.due_missions || [];
+    const selections = result.selections || [];
+    const summary = `Tonight (${result.date}): ${due.length} missions due, ${selections.length} selections\n\nDue missions:\n${due.map((m) => `  ${m.icon} #${m.id}: ${m.title} [${m.model}, ~${m.time}min, ${m.category}]`).join("\n")}`;
+    return textResult(summary);
+  }
+);
+
+// ── Tool: nightshift_selections ─────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_nightshift_selections",
+  "View nightshift execution history — which missions ran, their status (completed/failed/timeout).",
+  {},
+  async () => {
+    const result = await apiRequest("/nightshift/selections");
+    return jsonResult(`${result.length} nightshift selections:`, result);
+  }
+);
+
+// ── Tool: notifications ─────────────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_notifications",
+  "Manage ClawTrol notifications — view recent, mark read, or clear all.",
+  {
+    action: z.enum(["list", "mark_read", "mark_all_read", "clear_all"]).optional().default("list").describe("Action to perform"),
+    notification_id: z.string().optional().describe("Notification ID (for mark_read)"),
+  },
+  async ({ action, notification_id }) => {
+    if (action === "mark_read" && notification_id) {
+      const result = await apiRequest(`/notifications/${encodeURIComponent(notification_id)}/mark_read`, {
+        method: "POST",
+      });
+      return textResult(`Marked notification #${notification_id} as read`);
+    }
+
+    if (action === "mark_all_read") {
+      await apiRequest("/notifications/mark_all_read", { method: "POST" });
+      return textResult("All notifications marked as read");
+    }
+
+    if (action === "clear_all") {
+      await apiRequest("/notifications/clear_all", { method: "POST" });
+      return textResult("All notifications cleared");
+    }
+
+    // List
+    const result = await apiRequest("/notifications");
+    const notifs = result.notifications || result;
+    const unread = result.unread_count || 0;
+    const recent = (Array.isArray(notifs) ? notifs : []).slice(0, 20);
+    const summary = `${unread} unread notifications (showing last ${recent.length}):\n${recent.map((n) => `  ${n.icon || ""} [${n.event_type}] ${n.message} (${n.time_ago})`).join("\n")}`;
+    return textResult(summary);
+  }
+);
+
+// ── Tool: swarm_ideas ───────────────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_swarm_ideas",
+  "Manage swarm ideas — multi-agent task templates that can be launched as coordinated swarms.",
+  {
+    action: z.enum(["list", "create", "launch", "delete"]).optional().default("list").describe("Action"),
+    idea_id: z.string().optional().describe("Swarm idea ID (for launch/delete)"),
+    name: z.string().optional().describe("Idea name (for create)"),
+    description: z.string().optional().describe("Idea description (for create)"),
+    tasks: z.array(z.object({
+      name: z.string(),
+      model: z.string().optional(),
+      description: z.string().optional(),
+    })).optional().describe("Array of sub-tasks (for create)"),
+  },
+  async ({ action, idea_id, name, description, tasks }) => {
+    if (action === "list") {
+      const result = await apiRequest("/swarm_ideas");
+      return jsonResult(`${result.length} swarm ideas:`, result);
+    }
+
+    if (action === "create") {
+      const body = {};
+      if (name) body.name = name;
+      if (description) body.description = description;
+      if (tasks) body.tasks = tasks;
+      const result = await apiRequest("/swarm_ideas", {
+        method: "POST",
+        body: JSON.stringify({ swarm_idea: body }),
+      });
+      return jsonResult("Created swarm idea:", result);
+    }
+
+    if (action === "launch") {
+      if (!idea_id) return textResult("Error: idea_id required for launch");
+      const result = await apiRequest(`/swarm_ideas/${encodeURIComponent(idea_id)}/launch`, {
+        method: "POST",
+      });
+      return jsonResult(`Launched swarm #${idea_id}:`, result);
+    }
+
+    if (action === "delete") {
+      if (!idea_id) return textResult("Error: idea_id required for delete");
+      await apiRequest(`/swarm_ideas/${encodeURIComponent(idea_id)}`, {
+        method: "DELETE",
+      });
+      return textResult(`Deleted swarm idea #${idea_id}`);
+    }
+
+    return textResult("Unknown action");
+  }
+);
+
+// ── Tool: saved_links ───────────────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_saved_links",
+  "Manage saved links inbox — URLs saved for later processing by agents.",
+  {
+    action: z.enum(["list", "pending", "create"]).optional().default("list").describe("list=all, pending=unprocessed, create=add new"),
+    url: z.string().optional().describe("URL to save (for create)"),
+    title: z.string().optional().describe("Link title (for create)"),
+  },
+  async ({ action, url, title }) => {
+    if (action === "create") {
+      if (!url) return textResult("Error: url required");
+      const result = await apiRequest("/saved_links", {
+        method: "POST",
+        body: JSON.stringify({ saved_link: { url, title: title || url } }),
+      });
+      return jsonResult("Saved link:", result);
+    }
+
+    if (action === "pending") {
+      const result = await apiRequest("/saved_links/pending");
+      return jsonResult(`Pending links:`, result);
+    }
+
+    const result = await apiRequest("/saved_links");
+    return jsonResult(`Saved links:`, result);
+  }
+);
+
+// ── Tool: errored_count ─────────────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_errored_count",
+  "Get count of errored tasks — quick check if anything failed.",
+  {},
+  async () => {
+    const result = await apiRequest("/tasks/errored_count");
+    return textResult(`Errored tasks: ${result.count}`);
+  }
+);
+
+// ── Tool: agent_messages ────────────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_agent_messages",
+  "Get the agent message thread for a task — structured conversation between agent and system.",
+  {
+    task_id: z.string().describe("Task ID"),
+  },
+  async ({ task_id }) => {
+    try {
+      const result = await apiRequest(`/tasks/${encodeURIComponent(task_id)}/agent_messages/thread`);
+      return jsonResult(`Agent messages for #${task_id}:`, result);
+    } catch (err) {
+      return textResult(`No messages for task #${task_id}: ${err.message}`);
+    }
+  }
+);
+
+// ── Tool: runtime_events ────────────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_runtime_events",
+  "Publish runtime events to ClawTrol for cross-system coordination and logging.",
+  {
+    event_type: z.string().describe("Event type (e.g. 'session_started', 'build_failed', 'deploy_complete')"),
+    payload: z.string().describe("JSON payload as string"),
+  },
+  async ({ event_type, payload }) => {
+    let parsedPayload;
+    try {
+      parsedPayload = JSON.parse(payload);
+    } catch {
+      parsedPayload = { message: payload };
+    }
+
+    const result = await fetch(`${API_URL}/hooks/runtime_events`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Hook-Token": HOOKS_TOKEN,
+      },
+      body: JSON.stringify({
+        event_type,
+        source: "claude-code",
+        timestamp: new Date().toISOString(),
+        ...parsedPayload,
+      }),
+    });
+
+    return textResult(`Runtime event '${event_type}' published: HTTP ${result.status}`);
+  }
+);
+
+// ── Tool: task_templates ────────────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_task_templates",
+  "Manage task templates — reusable task definitions for quick creation.",
+  {
+    action: z.enum(["list", "get", "apply"]).optional().default("list").describe("list=all templates, get=single, apply=create task from template"),
+    template_id: z.string().optional().describe("Template ID (for get/apply)"),
+  },
+  async ({ action, template_id }) => {
+    if (action === "get" && template_id) {
+      const result = await apiRequest(`/task_templates/${encodeURIComponent(template_id)}`);
+      return jsonResult(`Template #${template_id}:`, result);
+    }
+
+    if (action === "apply") {
+      if (!template_id) return textResult("Error: template_id required for apply");
+      const result = await apiRequest("/task_templates/apply", {
+        method: "POST",
+        body: JSON.stringify({ template_id: parseInt(template_id) }),
+      });
+      return jsonResult(`Applied template #${template_id}:`, result);
+    }
+
+    const result = await apiRequest("/task_templates");
+    return jsonResult(`Task templates:`, result);
+  }
+);
+
+// ── Tool: learning_proposals ────────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_learning_proposals",
+  "View and manage learning proposals — agent-suggested improvements that need human approval.",
+  {
+    action: z.enum(["list", "approve", "reject"]).optional().default("list").describe("Action"),
+    proposal_id: z.string().optional().describe("Proposal ID (for approve/reject)"),
+  },
+  async ({ action, proposal_id }) => {
+    if (action === "approve" && proposal_id) {
+      const result = await apiRequest(`/learning_proposals/${encodeURIComponent(proposal_id)}/approve`, {
+        method: "POST",
+      });
+      return jsonResult(`Approved proposal #${proposal_id}:`, result);
+    }
+
+    if (action === "reject" && proposal_id) {
+      const result = await apiRequest(`/learning_proposals/${encodeURIComponent(proposal_id)}/reject`, {
+        method: "POST",
+      });
+      return jsonResult(`Rejected proposal #${proposal_id}:`, result);
+    }
+
+    const result = await apiRequest("/learning_proposals");
+    return jsonResult(`Learning proposals:`, result);
+  }
+);
+
+// ── Tool: feed_entries ──────────────────────────────────────────────────────
+
+server.tool(
+  "clawtrol_feed_entries",
+  "View RSS/feed entries pushed by n8n — tech news, alerts, and external content.",
+  {
+    action: z.enum(["list", "stats"]).optional().default("list").describe("list=recent entries, stats=feed statistics"),
+  },
+  async ({ action }) => {
+    if (action === "stats") {
+      const result = await apiRequest("/feed_entries/stats");
+      return jsonResult("Feed stats:", result);
+    }
+
+    const result = await apiRequest("/feed_entries");
+    return jsonResult(`Feed entries:`, result);
+  }
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Start
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("openclaw2claude MCP server v2.0.0 running on stdio");
+  console.error("openclaw2claude MCP server v2.1.0 running on stdio");
 }
 
 main().catch((err) => {
