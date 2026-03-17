@@ -47,7 +47,16 @@ const SPAWN_QUIET_MS = 15000;  // suppress started/completed for 15s after a pan
 // ─── Omni Mode ───────────────────────────────────────────────────────────────
 // When a pane is registered as "omni", completion notifications from other
 // panes are auto-injected into the omni pane as text prompts.
-let omniPaneId = null; // set via POST /api/omni/register
+// Auto-detected: any pane whose project path contains "omniclaude" is omni.
+let omniPaneId = null;
+
+function autoDetectOmni(panes) {
+  // If manually set and still alive, keep it
+  if (omniPaneId !== null && panes.find(p => p.paneId === omniPaneId)) return;
+  // Auto-detect from project name
+  const omni = panes.find(p => p.isClaude && (p.projectName || '').toLowerCase().includes('omni'));
+  omniPaneId = omni ? omni.paneId : null;
+}
 
 const lastEventByPane = new Map(); // paneId → { type, timestamp }
 const EVENT_DEDUP_MS = 30000; // suppress duplicate type+pane within 30s
@@ -91,6 +100,7 @@ const MIN_WORKING_MS = 2000; // must be "working" for at least 2s to count
 setInterval(() => {
   try {
     const panes = discovery.discoverPanes().filter(p => p.isClaude);
+    autoDetectOmni(panes);
 
     for (const pane of panes) {
       let contentHash = 0;
