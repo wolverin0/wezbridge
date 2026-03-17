@@ -285,26 +285,6 @@ code, pre, .mono { font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace
 .git-hash { font-family:'JetBrains Mono',monospace; font-size:10px; color:var(--accent); }
 .queue-badge { font-size:9px; background:var(--cyan); color:#000; padding:1px 5px; border-radius:4px; font-weight:700; margin-left:4px; }
 
-/* ─── Command Center Cards ─── */
-.cmd-card {
-  background:var(--bg-surface); border:1px solid var(--border-subtle); border-radius:10px;
-  overflow:hidden; transition:border-color 0.3s, box-shadow 0.3s;
-}
-.cmd-card.working { border-color:var(--yellow); }
-.cmd-card.permission { border-color:var(--red); box-shadow:0 0 12px rgba(239,68,68,0.2); }
-.cmd-card.completed-flash { border-color:var(--green); box-shadow:0 0 12px rgba(34,197,94,0.2); animation:cardFlash 2s ease-out; }
-@keyframes cardFlash { 0% { box-shadow:0 0 20px rgba(34,197,94,0.4); } 100% { box-shadow:none; } }
-.cmd-card-header { display:flex; align-items:center; gap:8px; padding:8px 12px; background:rgba(0,0,0,0.2); border-bottom:1px solid var(--border-subtle); }
-.cmd-card-header .dot { width:8px; height:8px; }
-.cmd-card-header .name { font-weight:600; font-size:13px; flex:1; }
-.cmd-card-header .status { font-size:9px; font-weight:700; text-transform:uppercase; padding:2px 6px; border-radius:3px; }
-.cmd-card-output { padding:8px 12px; font-family:'JetBrains Mono',monospace; font-size:10px; line-height:1.5; color:oklch(0.72 0.01 260); max-height:180px; overflow-y:auto; white-space:pre-wrap; word-break:break-word; background:oklch(0.07 0.012 270); resize:vertical; cursor:pointer; }
-.cmd-card-prompt { display:flex; gap:4px; padding:6px 10px; border-top:1px solid var(--border-subtle); }
-.cmd-card-prompt input { flex:1; background:var(--bg-app); border:1px solid var(--border); border-radius:6px; padding:5px 8px; font-size:11px; color:var(--text-primary); font-family:'JetBrains Mono',monospace; outline:none; }
-.cmd-card-prompt input:focus { border-color:var(--accent); }
-.cmd-card-prompt button { font-size:11px; font-weight:600; padding:5px 10px; border-radius:6px; border:none; cursor:pointer; }
-.cmd-card-perm { display:flex; gap:4px; padding:6px 10px; border-top:1px solid var(--border-subtle); }
-
 /* ─── Notification Stack (Minority Report style) ─── */
 .notif-stack { position:absolute; top:8px; right:8px; width:380px; display:flex; flex-direction:column; gap:8px; z-index:150; pointer-events:none; max-height:calc(100% - 16px); overflow-y:auto; }
 .notif-stack::-webkit-scrollbar { width:0; }
@@ -330,6 +310,16 @@ code, pre, .mono { font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace
 .notif-card-actions { display:flex; gap:4px; padding:6px 12px; border-top:1px solid var(--glass-border); }
 .notif-card-actions input { flex:1; background:var(--bg-app); border:1px solid var(--border); border-radius:5px; padding:4px 8px; font-size:10px; color:var(--text-primary); font-family:'JetBrains Mono',monospace; outline:none; }
 .notif-card-actions button { font-size:10px; font-weight:600; padding:4px 8px; border-radius:5px; border:none; cursor:pointer; font-family:'Inter',sans-serif; }
+
+/* ─── Omni Chat Bubbles ─── */
+.omni-msg { margin-bottom:10px; max-width:85%; animation:fadeIn 0.2s; }
+.omni-msg.user { margin-left:auto; text-align:right; }
+.omni-msg.omni { margin-right:auto; }
+.omni-msg .bubble { display:inline-block; padding:8px 14px; border-radius:12px; font-size:13px; line-height:1.5; text-align:left; }
+.omni-msg.user .bubble { background:var(--accent); color:#fff; border-bottom-right-radius:4px; }
+.omni-msg.omni .bubble { background:var(--bg-elevated); color:var(--text-primary); border-bottom-left-radius:4px; border:1px solid var(--border-subtle); }
+.omni-msg .time { font-size:9px; color:var(--text-tertiary); margin-top:2px; }
+@keyframes fadeIn { from { opacity:0; transform:translateY(4px); } }
 
 /* ─── Empty / loading ─── */
 .empty-state { text-align: center; padding: 60px 20px; color: var(--text-tertiary); }
@@ -426,16 +416,58 @@ code, pre, .mono { font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace
     </div>
   </div>
 
-  <!-- Main: Command Center (Desktop) -->
-  <div class="main desktop-panel" id="desktopView" style="padding:12px;overflow-y:auto">
-    <!-- Broadcast bar -->
-    <div style="display:flex;gap:8px;margin-bottom:12px">
-      <input id="broadcastInput" class="prompt-input" placeholder="Send to all sessions..." style="font-size:13px;flex:1" onkeydown="if(event.key==='Enter')doBroadcast()">
-      <button class="btn btn-accent" onclick="doBroadcast()">Broadcast</button>
-      <button class="btn btn-ghost" onclick="spawnOmni()" id="launchOmniBtn">Launch Omni</button>
+  <!-- Main: Desktop OS View -->
+  <div class="main desktop-panel" id="desktopView" style="padding:0;overflow:hidden">
+    <div class="desktop-toolbar" style="justify-content:space-between">
+      <div style="display:flex;gap:4px">
+        <button onclick="dtTile()">Tile</button>
+        <button onclick="dtCascade()">Cascade</button>
+        <button onclick="dtStack()">Stack</button>
+        <button onclick="dtShowAll()">Show All</button>
+        <button onclick="feedPosition('right')" id="showFeedBtn" style="display:none">Feed</button>
+      </div>
+      <div style="display:flex;gap:4px;flex:1;max-width:500px;margin-left:12px">
+        <input id="broadcastInput" class="prompt-input" placeholder="Broadcast to all sessions..." style="font-size:11px;padding:4px 10px;border-radius:6px" onkeydown="if(event.key==='Enter')doBroadcast()">
+        <button onclick="doBroadcast()" style="background:var(--cyan);color:#000;font-size:11px;font-weight:600;padding:4px 10px;border:none;border-radius:6px;cursor:pointer">Broadcast</button>
+      </div>
     </div>
-    <!-- Session cards grid -->
-    <div id="cmdCards" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(380px, 1fr));gap:10px"></div>
+    <div id="desktopLayout" style="display:flex;flex-direction:column;flex:1;overflow:hidden">
+      <!-- Omni terminal: main area -->
+      <div id="omniArea" style="flex:1;display:flex;flex-direction:column;overflow:hidden;position:relative">
+        <div id="omniPlaceholder" style="flex:1;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;color:var(--text-tertiary)">
+          <div style="font-size:16px;font-weight:600">No Omni session detected</div>
+          <button class="btn btn-accent" onclick="spawnOmni()" style="font-size:13px;padding:8px 20px">Launch Omni</button>
+          <div style="font-size:11px">Or spawn a session in a folder named "omni"</div>
+        </div>
+        <!-- Omni Chat: your messages + omni's decisions only, not raw terminal -->
+        <div id="omniChat" style="display:none;flex:1;overflow-y:auto;padding:12px 16px;background:oklch(0.08 0.012 270)"></div>
+        <div id="omniPrompt" style="display:none;padding:8px 12px;border-top:1px solid var(--glass-border);background:rgba(0,0,0,0.15)">
+          <div style="display:flex;gap:6px">
+            <input class="prompt-input" id="omniInput" placeholder="Talk to the orchestrator..." style="flex:1" onkeydown="if(event.key==='Enter')sendOmniPrompt()">
+            <button class="btn btn-accent" onclick="sendOmniPrompt()">Send</button>
+          </div>
+        </div>
+        <!-- Floating worker windows appear here -->
+        <div class="desktop-area" id="desktopArea" style="position:absolute;top:0;left:0;right:0;bottom:50px;pointer-events:none;z-index:50">
+        </div>
+      </div>
+      <!-- Dock -->
+      <div style="padding:6px 0;display:flex;justify-content:center;border-top:1px solid var(--glass-border);background:rgba(0,0,0,0.3)">
+        <div id="desktopDock" style="display:flex;gap:6px;padding:4px 12px;background:rgba(0,0,0,0.4);backdrop-filter:blur(20px);border:1px solid var(--glass-border);border-radius:14px"></div>
+      </div>
+      <div id="desktopFeed" style="width:320px;flex-shrink:0;background:var(--bg-surface);display:flex;flex-direction:column;position:relative">
+        <div id="feedResizeHandle" style="position:absolute;left:-3px;top:0;bottom:0;width:6px;cursor:col-resize;z-index:5"></div>
+        <div style="padding:8px 10px;font-size:11px;font-weight:700;color:var(--text-secondary);border-bottom:1px solid var(--glass-border);display:flex;align-items:center;gap:6px;border-left:1px solid var(--glass-border);cursor:grab" onmousedown="if(feedPos==='float')this.style.cursor='grabbing'" onmouseup="this.style.cursor='grab'">
+          <span style="flex:1">Live Feed</span>
+          <span onclick="feedPosition('bottom')" style="cursor:pointer;font-size:9px;padding:1px 5px;border:1px solid var(--glass-border);border-radius:3px" title="Move to bottom">B</span>
+          <span onclick="feedPosition('top')" style="cursor:pointer;font-size:9px;padding:1px 5px;border:1px solid var(--glass-border);border-radius:3px" title="Move to top">T</span>
+          <span onclick="feedPosition('right')" style="cursor:pointer;font-size:9px;padding:1px 5px;border:1px solid var(--glass-border);border-radius:3px" title="Move to right">R</span>
+          <span onclick="feedPosition('float')" style="cursor:pointer;font-size:9px;padding:1px 5px;border:1px solid var(--glass-border);border-radius:3px" title="Detach/Float">F</span>
+          <span onclick="feedPosition('hide')" style="cursor:pointer;font-size:9px;padding:1px 5px;border:1px solid var(--glass-border);border-radius:3px" title="Hide">-</span>
+        </div>
+        <div id="dtFeedList" style="flex:1;overflow-y:auto;border-left:1px solid var(--glass-border)"><div class="feed-empty" style="font-size:12px;padding:30px 12px">Waiting for events...</div></div>
+      </div>
+    </div>
   </div>
 
   <!-- Main: Spawn View -->
@@ -486,7 +518,7 @@ function switchView(view) {
   document.getElementById('liveView').classList.toggle('open', view === 'live');
   document.getElementById('desktopView').classList.toggle('open', view === 'desktop');
   document.getElementById('spawnView').classList.toggle('open', view === 'spawn');
-  document.getElementById('sidebar').style.display = '';
+  document.getElementById('sidebar').style.display = view === 'desktop' ? 'none' : '';
   if (view === 'spawn' && !projectsLoaded) loadProjects();
   if (view === 'desktop') initDesktop();
 }
@@ -507,17 +539,13 @@ function connectSSE() {
       renderFeed();
       dtRenderLiveFeed(); // also update desktop live feed window
 
+      // When a session completes or needs attention, popup its window Jurassic Park style
       if (event.type === 'completed' || event.type === 'permission') {
         playNotifSound(event.type);
-        showNotification(event);
-        // Flash the card in command center
         if (currentView === 'desktop') {
-          var card = document.getElementById('cmd-' + event.pane_id);
-          if (card && event.type === 'completed') {
-            card.classList.add('completed-flash');
-            setTimeout(function() { card.classList.remove('completed-flash'); }, 3000);
-          }
-          loadCardOutput(event.pane_id);
+          dtPopupWindow(event.pane_id, event.type);
+        } else {
+          showNotification(event);
         }
       }
 
@@ -942,100 +970,104 @@ var dtTopZ = 10;
 var dtInited = false;
 
 var omniPaneId = null;
-var cmdOutputCache = {}; // paneId -> last output text
 
 function initDesktop() {
-  omniPaneId = null;
-  sessions.forEach(function(s) {
-    if ((s.project_name || '').toLowerCase().includes('omni')) omniPaneId = s.pane_id;
-  });
-  // Hide launch button if omni exists
-  var btn = document.getElementById('launchOmniBtn');
-  if (btn) btn.style.display = omniPaneId ? 'none' : '';
-  renderCmdCards();
+  detectOmni();
+  dtSyncWindows();
+  dtRenderLiveFeed();
+  dtRenderDock();
+  dtInited = true;
 }
 
-function renderCmdCards() {
-  var el = document.getElementById('cmdCards');
-  if (!el) return;
-  // Workers only (exclude omni)
-  var workers = sessions.filter(function(s) { return s.pane_id !== omniPaneId; });
-  if (!workers.length) {
-    el.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text-tertiary)">No worker sessions. Use Spawn to launch Claude sessions.</div>';
-    return;
-  }
-  // Build cards — preserve existing DOM where possible for resize state
-  workers.forEach(function(s) {
-    var cardId = 'cmd-' + s.pane_id;
-    var existing = document.getElementById(cardId);
-    if (!existing) {
-      var card = document.createElement('div');
-      card.className = 'cmd-card';
-      card.id = cardId;
-      card.innerHTML = buildCardHTML(s);
-      el.appendChild(card);
-      loadCardOutput(s.pane_id);
+var omniChatMessages = []; // {type:'user'|'omni', text, time}
+var omniLastOutputHash = '';
+
+function detectOmni() {
+  var omni = sessions.find(function(s) { return (s.project_name || '').toLowerCase().includes('omni'); });
+  var newId = omni ? omni.pane_id : null;
+  if (newId !== omniPaneId) {
+    omniPaneId = newId;
+    if (omniPaneId !== null) {
+      document.getElementById('omniPlaceholder').style.display = 'none';
+      document.getElementById('omniChat').style.display = '';
+      document.getElementById('omniPrompt').style.display = '';
+      if (!omniChatMessages.length) {
+        addOmniMsg('omni', 'Omni orchestrator connected. Tell me what to do.');
+      }
     } else {
-      // Update status class
-      existing.className = 'cmd-card' + (s.status === 'working' ? ' working' : '') + (s.status === 'permission' ? ' permission' : '');
-      // Update header status
-      var st = existing.querySelector('.status');
-      if (st) { st.textContent = s.status; st.className = 'status ' + s.status; }
-      // Update permission buttons visibility
-      var perm = existing.querySelector('.cmd-card-perm');
-      if (perm) perm.style.display = s.status === 'permission' ? 'flex' : 'none';
+      document.getElementById('omniPlaceholder').style.display = '';
+      document.getElementById('omniChat').style.display = 'none';
+      document.getElementById('omniPrompt').style.display = 'none';
     }
-  });
-  // Remove cards for gone sessions
-  el.querySelectorAll('.cmd-card').forEach(function(card) {
-    var pid = parseInt(card.id.replace('cmd-', ''));
-    if (!workers.find(function(s) { return s.pane_id === pid; })) card.remove();
-  });
+  }
 }
 
-function buildCardHTML(s) {
-  var statusClass = s.status === 'idle' ? 'idle' : s.status === 'working' ? 'working' : s.status === 'permission' ? 'permission' : 'unknown';
-  return '<div class="cmd-card-header">' +
-    '<div class="dot ' + statusClass + '"></div>' +
-    '<span class="name">' + esc(s.project_name || 'pane ' + s.pane_id) + '</span>' +
-    '<span class="status ' + statusClass + '" style="background:rgba(255,255,255,0.06);padding:2px 6px;border-radius:3px">' + s.status + '</span>' +
-  '</div>' +
-  '<div class="cmd-card-output" id="cmdout-' + s.pane_id + '">Loading...</div>' +
-  '<div class="cmd-card-perm" style="display:' + (s.status === 'permission' ? 'flex' : 'none') + '">' +
-    '<button onclick="sendKeyFeed(' + s.pane_id + ',\'1\')" style="background:var(--green);color:#000">1 Yes</button>' +
-    '<button onclick="sendKeyFeed(' + s.pane_id + ',\'2\')" style="background:var(--accent);color:#fff">2 Always</button>' +
-    '<button onclick="sendKeyFeed(' + s.pane_id + ',\'3\')" style="background:transparent;color:var(--red);border:1px solid var(--red)">3 No</button>' +
-  '</div>' +
-  '<div class="cmd-card-prompt">' +
-    '<input placeholder="Send to ' + esc(s.project_name || '') + '..." onkeydown="if(event.key===\'Enter\')cmdSend(' + s.pane_id + ',this)">' +
-    '<button onclick="cmdSend(' + s.pane_id + ',this.previousElementSibling)" style="background:var(--accent);color:#fff">Send</button>' +
-    '<button onclick="sendAltM(' + s.pane_id + ')" style="background:var(--bg-hover);color:var(--yellow);border:1px solid rgba(245,158,11,0.3)">Mode</button>' +
-  '</div>';
+function addOmniMsg(type, text) {
+  var time = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+  omniChatMessages.push({ type: type, text: text, time: time });
+  renderOmniChat();
 }
 
-function loadCardOutput(paneId) {
-  fetch(API + '/api/sessions/' + paneId + '/output?lines=30').then(function(r) { return r.json(); }).then(function(d) {
-    var el = document.getElementById('cmdout-' + paneId);
-    if (!el) return;
-    var text = stripAnsi(d.output || '');
-    // Only update if changed (preserves scroll/resize)
-    if (cmdOutputCache[paneId] !== text) {
-      cmdOutputCache[paneId] = text;
-      var atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
-      el.textContent = text;
-      if (atBottom) el.scrollTop = el.scrollHeight;
+function renderOmniChat() {
+  var el = document.getElementById('omniChat');
+  if (!el) return;
+  el.innerHTML = omniChatMessages.map(function(m) {
+    return '<div class="omni-msg ' + m.type + '">' +
+      '<div class="bubble">' + esc(m.text) + '</div>' +
+      '<div class="time">' + m.time + '</div>' +
+    '</div>';
+  }).join('');
+  el.scrollTop = el.scrollHeight;
+}
+
+// Poll omni output and extract the LAST response (text after the last ❯ prompt)
+function pollOmniResponse() {
+  if (omniPaneId === null) return;
+  fetch(API + '/api/sessions/' + omniPaneId + '/output?lines=30').then(function(r) { return r.json(); }).then(function(d) {
+    var raw = stripAnsi(d.output || '');
+    var hash = raw.length + ':' + raw.slice(-100);
+    if (hash === omniLastOutputHash) return; // no change
+    omniLastOutputHash = hash;
+
+    // Extract last response: text between the last two ❯ prompts
+    var lines = raw.split('\n');
+    var lastPromptIdx = -1;
+    var prevPromptIdx = -1;
+    for (var i = lines.length - 1; i >= 0; i--) {
+      if (/^\s*[❯>]/.test(lines[i])) {
+        if (lastPromptIdx === -1) lastPromptIdx = i;
+        else if (prevPromptIdx === -1) { prevPromptIdx = i; break; }
+      }
+    }
+
+    if (prevPromptIdx >= 0 && lastPromptIdx > prevPromptIdx) {
+      // Response is between prevPromptIdx+1 and lastPromptIdx-1
+      var response = lines.slice(prevPromptIdx + 1, lastPromptIdx).filter(function(l) { return l.trim(); }).join('\n').trim();
+      if (response && response.length > 5) {
+        // Check if this is a new response (not already in chat)
+        var lastOmni = null;
+        for (var j = omniChatMessages.length - 1; j >= 0; j--) {
+          if (omniChatMessages[j].type === 'omni') { lastOmni = omniChatMessages[j]; break; }
+        }
+        if (!lastOmni || lastOmni.text !== response) {
+          addOmniMsg('omni', response);
+        }
+      }
     }
   }).catch(function() {});
 }
 
-function cmdSend(paneId, input) {
+function sendOmniPrompt() {
+  if (omniPaneId === null) return;
+  var input = document.getElementById('omniInput');
   var text = input.value.trim();
   if (!text) return;
   input.value = '';
-  fetch(API + '/api/sessions/' + paneId + '/prompt', {
-    method:'POST', headers:{'Content-Type':'application/json'},
+  addOmniMsg('user', text);
+  fetch(API + '/api/sessions/' + omniPaneId + '/prompt', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({ text: text }),
-  }).then(function() { toast('Sent to pane ' + paneId); });
+  });
 }
 
 function spawnOmni() {
@@ -1043,7 +1075,7 @@ function spawnOmni() {
   fetch(API + '/api/spawn', {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({ cwd: 'G:/_OneDrive/OneDrive/Desktop/Py Apps/omniclaude', yolo: true }),
-  }).then(function() { setTimeout(function() { refresh(); }, 5000); });
+  }).then(function() { setTimeout(function() { refresh().then(function() { detectOmni(); }); }, 5000); });
 }
 
 
@@ -1302,12 +1334,17 @@ function dtRenderLiveFeed() {
   el.innerHTML = html;
 }
 
-// Refresh command center every 3s
+// Refresh desktop outputs every 3s
 setInterval(function() {
   if (currentView === 'desktop') {
-    initDesktop();
-    sessions.forEach(function(s) {
-      if (s.pane_id !== omniPaneId) loadCardOutput(s.pane_id);
+    detectOmni();
+    dtSyncWindows();
+    dtRenderDock();
+    pollOmniResponse();
+    var validPanes = new Set(sessions.map(function(s){ return s.pane_id; }));
+    Object.keys(dtWins).forEach(function(id) {
+      var pid = parseInt(id);
+      if (pid !== omniPaneId && validPanes.has(pid) && !dtWins[id].minimized) dtLoadOutput(pid);
     });
   }
 }, 3000);
@@ -1326,6 +1363,7 @@ function feedPosition(pos) {
 
   // Reset all inline styles
   feed.style.cssText = 'background:var(--bg-surface);display:flex;flex-direction:column;position:relative';
+  layout.style.flexDirection = '';
 
   if (pos === 'hide') {
     feed.style.display = 'none';
@@ -1335,16 +1373,19 @@ function feedPosition(pos) {
   if (showBtn) showBtn.style.display = 'none';
 
   if (pos === 'right') {
+    layout.style.flexDirection = 'row';
     feed.style.width = feedW + 'px';
     feed.style.flexShrink = '0';
     feed.style.borderLeft = '1px solid rgba(255,255,255,0.08)';
     handle.style.cssText = 'position:absolute;left:-3px;top:0;bottom:0;width:6px;cursor:col-resize;z-index:5';
   } else if (pos === 'bottom') {
+    layout.style.flexDirection = 'column';
     feed.style.height = feedH + 'px';
     feed.style.flexShrink = '0';
     feed.style.borderTop = '1px solid rgba(255,255,255,0.08)';
     handle.style.cssText = 'position:absolute;top:-3px;left:0;right:0;height:6px;cursor:row-resize;z-index:5';
   } else if (pos === 'top') {
+    layout.style.flexDirection = 'column-reverse';
     feed.style.height = feedH + 'px';
     feed.style.flexShrink = '0';
     feed.style.borderBottom = '1px solid rgba(255,255,255,0.08)';
