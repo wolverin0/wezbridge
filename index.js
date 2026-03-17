@@ -1495,10 +1495,9 @@ server.tool(
 // FASE C — Omni Bridge: unified status, task routing, Telegram direct
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Otacon's Telegram bot (for direct messaging)
-const OTACON_BOT_TOKEN = process.env.OTACON_BOT_TOKEN || "";
+// Omni orchestrator bot (for direct Telegram messaging)
+const OMNI_BOT_TOKEN = process.env.OMNI_BOT_TOKEN || "";
 const MISSION_CONTROL_GROUP_ID = process.env.MISSION_CONTROL_GROUP_ID || "-1003748927245";
-const MISSION_CONTROL_THREAD_ID = process.env.MISSION_CONTROL_THREAD_ID || "1";
 
 // WezBridge local API (for session info)
 const WEZBRIDGE_URL = process.env.WEZBRIDGE_URL || "http://localhost:4200";
@@ -1690,9 +1689,9 @@ server.tool(
     parse_mode: z.enum(["HTML", "Markdown"]).optional().default("HTML").describe("Message format"),
   },
   async ({ message, thread_id, parse_mode }) => {
-    const botToken = OTACON_BOT_TOKEN;
+    const botToken = OMNI_BOT_TOKEN;
     if (!botToken) {
-      return textResult("Error: OTACON_BOT_TOKEN env var not set. Cannot send Telegram messages.");
+      return textResult("Error: OMNI_BOT_TOKEN env var not set. Cannot send Telegram messages.");
     }
 
     const body = {
