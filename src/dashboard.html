@@ -1067,7 +1067,8 @@ function dtFocus(pid) {
   document.querySelectorAll('.dwin').forEach(function(w) { w.classList.toggle('active', w.id === 'dw-' + pid); });
 }
 
-function dtMinWin(pid) { var el = document.getElementById('dw-' + pid); if (el) { el.classList.add('minimized'); dtWins[pid].minimized = true; } }
+function dtMinWin(pid) { var el = document.getElementById('dw-' + pid); if (el) { el.classList.add('minimized'); dtWins[pid].minimized = true; } dtRenderDock(); }
+function restoreWindow(pid) { var el = document.getElementById('dw-' + pid); if (el && dtWins[pid]) { el.classList.remove('minimized'); dtWins[pid].minimized = false; dtFocus(pid); dtLoadOutput(pid); dtRenderDock(); } }
 function dtMaxWin(pid) {
   var wn = dtWins[pid], el = document.getElementById('dw-' + pid), area = document.getElementById('desktopArea');
   if (!el) return;
