@@ -1,33 +1,27 @@
-# theorchestra v3 dashboard — DEPRECATED 2026-04-30
+# theorchestra v3 dashboard UI — DEPRECATED 2026-04-30 / scope clarified 2026-05-03
 
-**Status:** archived per debate 002 (`wezbridge/debates/002-orchestrator-cycle-stop/synthesis.md`).
+## What IS deprecated (the UI only)
 
-## What's deprecated
+- `src/dashboard.html` — single-file vanilla-JS frontend (FuturaOS look). Was vaporware: backend `/api/panes/:id/queue` and `/api/panes/:id/inject-context` ship as explicit noops; UI buttons are fakes. Don't develop new features here; don't open it in a browser expecting it to work.
 
-The v3 dashboard daemon and its orchestrator pattern. Specifically the files in this directory that implement the dashboard / orchestrator-worker pattern:
+## What is NOT deprecated (the daemon + MCP server are ACTIVE on 2.7.0)
 
-- `dashboard-server.cjs` — port-4200 HTTP/SSE server
-- `dashboard.html` — single-file vanilla-JS frontend (FuturaOS look, v2.4 features)
-- `orchestrator-executor.cjs` — action classifier and dispatcher
-- `permission-alerts.cjs`, `tasks-watcher.cjs`, `pane-discovery.cjs` (when used in the dashboard daemon's polling loop)
+The dashboard *daemon* (`src/dashboard-server.cjs` on port 4200) stays running because it BACKS the wezbridge MCP server. **You need it up.** Start it via `npm run dashboard` or `npm run dev`.
 
-## Why deprecated
+These files remain core to the 2.7.0 control surface:
 
-theorchestra v3 was iteration 2 of 3 failed attempts at an "omni orchestrator" for multi-project AI dev orchestration. The backend's `/api/panes/:id/queue` and `/api/panes/:id/inject-context` ship as explicit noops; UI buttons are fakes. See debate 002 for the full failure pattern across omniclaude → theorchestra v3 → orchestra-goose Wave 5.
+- `dashboard-server.cjs` — REST/SSE backend the wezbridge MCP server fetches against (`/api/panes`, `/api/tasks`, `/api/events`). REQUIRED for `mcp__wezbridge__discover_sessions` etc.
+- `mcp-server.cjs` — wezbridge MCP tools (spawn_session, send_prompt, send_key, read_output, discover_sessions). Primary control surface.
+- `wezterm.cjs`, `pane-discovery.cjs`, `task-parser.cjs`, `status-parser.cjs` — utility libraries the MCP server uses.
+- `tasks-watcher.cjs` — active_tasks.md parsing.
+- `telegram-streamer.cjs` — Telegram remote-control channel.
 
-## What's NOT deprecated
+## What changed 2026-05-03
 
-These files in `src/` remain active:
+After dispatching todomax W2-W11 autonomously via the orchestra-goose Tier-2 recipe, user decided the trade (lose tight-loop control + Telegram presence for fire-and-forget autonomy that wasn't actually needed) was the wrong direction. Reverted to 2.7.0 daily-driver pattern.
 
-- `mcp-server.cjs` — wezbridge MCP tools (spawn_session, send_prompt, send_key, read_output, discover_sessions). Still supported. Used by orchestra-goose's `wezbridge-compat/` shim.
-- `wezterm.cjs`, `pane-discovery.cjs`, `task-parser.cjs`, `status-parser.cjs` (when used outside the dashboard) — utility libraries for the MCP server.
-- `tasks-watcher.cjs` — read-only active_tasks.md parsing; still used by orchestra-goose recipes.
-- `telegram-streamer.cjs` — escalation channel. Wrapped by orchestra-goose `recipes/escalate-telegram.yaml`.
+orchestra-goose recipes (`tier2-build-wave.yaml`, `tier2-plan-and-build.yaml`) sit in cold storage at `Py Apps/orchestra-goose/recipes/` — invoke ONLY for genuine fire-and-forget multi-wave runs. Day-to-day work uses Claude Code as orchestrator + wezbridge MCP for control + Telegram for remote presence.
 
-## Replacement
+## History
 
-orchestra-goose at `Py Apps/orchestra-goose/` (Goose fork). Currently at `pre-stop-cycle-2026-04-30` tag with Wave 5 BLOCKED. Path forward: P3 (integration test) → P1 (peer-pane recipe via `wezterm cli spawn`, NOT goose summon Task tool).
-
-## Restoration
-
-If the orchestra-goose migration fails (Spike A + Spike B both fail to falsify the failure mode), this dashboard can be restored as a fallback by removing this DEPRECATED.md file and starting `node src/dashboard-server.cjs` on port 4200. No code was moved or deleted in P0 — files stay where they were for reversibility.
+The 2026-04-30 P0 deprecation banner was overzealous: it conflated the dashboard UI (genuinely vaporware) with the daemon (genuinely needed). Original commit `acd3460` was the deprecation; this re-scoping is part of the 2026-05-03 revert.

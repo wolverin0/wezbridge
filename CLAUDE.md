@@ -1,8 +1,8 @@
-# theorchestra / wezbridge (v2.5)
+# theorchestra / wezbridge (v2.7.0)
 
-> **🛑 STATUS 2026-04-30:** the dashboard daemon and orchestrator-worker pattern are **DEPRECATED** per [debate 002](debates/002-orchestrator-cycle-stop/synthesis.md). See `src/DEPRECATED.md` for what's archived vs still active. The MCP server (`src/mcp-server.cjs`) and pane utilities REMAIN active — they are used by orchestra-goose's `wezbridge-compat/` shim. Replacement substrate: orchestra-goose (currently at tag `pre-stop-cycle-2026-04-30`, Wave 5 BLOCKED). Do not start new work on the dashboard; do not start `dashboard-server.cjs`.
+> **STATUS 2026-05-03:** orchestra-goose Tier-2 architecture experiment (April 30 / May 3) reverted by user decision — operator-control regression outweighed autonomy gains. Back on the proven 2.7.0 control surface: Claude Code as orchestrator + wezbridge MCP (spawn/send/read/discover) + Telegram. The dashboard UI (`src/dashboard.html` + dashboard-server's HTML routes) remains archived per `src/DEPRECATED.md` — it was vaporware. The dashboard *daemon* itself (`src/dashboard-server.cjs` on :4200) stays alive because it backs the wezbridge MCP server. Start with `npm run dashboard` or `npm run dev`.
 
-A proactive orchestrator for multiple Claude Code + Codex sessions running in WezTerm panes, plus a browser dashboard to steer them. Now with **Agency Mode**: spawn persona-specialized Claude agents that coordinate via A2A.
+A proactive orchestrator for multiple Claude Code + Codex sessions running in WezTerm panes. Now with **Agency Mode**: spawn persona-specialized Claude agents that coordinate via A2A.
 
 ## What this is (current shipping surface)
 
