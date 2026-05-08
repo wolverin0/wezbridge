@@ -60,6 +60,14 @@ To verify it's running, watch a Telegram topic — the streamer posts a heartbea
 
 This is the pane that will receive your phone DMs and spawn workers.
 
+**Recommended (v3.3.2+):** use the launcher script — it kills any stale `bun.exe` channel-plugin daemons from previous sessions before spawning a clean one. Without this step you can end up with multiple bun daemons racing for `getUpdates`, dropping ~75% of inbound DMs into ghost processes.
+
+```cmd
+scripts\start-omniclaude-pane.cmd
+```
+
+Or do it manually:
+
 ```bash
 # In a fresh WezTerm pane, point it at the project root you want as the
 # orchestrator's home (any project — OmniClaude can spawn into others):
@@ -78,6 +86,21 @@ The `--channels` flag is what makes inbound DMs reach this session. Without it, 
 3. In the OmniClaude pane: `/telegram:access pair <code>` — done. Future DMs land in this session.
 
 (Pairing is one-time per allowlisted user; persisted at `~/.claude/channels/telegram/access.json`.)
+
+### Routing inbound by topic (v3.3.2+)
+
+Every group message arrives with `message_thread_id` in the channel meta. The OmniClaude pane should consult `src/telegram-router.cjs` to decide whether to handle the message inline or forward it to the matching project's pane:
+
+```javascript
+const router = require('./src/telegram-router.cjs');
+const r = router.routeInbound({ chat_id, message_thread_id });
+// r.action ∈ { 'route', 'self', 'unknown_chat', 'unknown_topic' }
+// r.project = project name to forward to (when action === 'route')
+```
+
+When `r.action === 'route'`, OmniClaude calls `mcp__wezbridge__discover_sessions` to find the pane whose `cwd` matches `r.project`, then `mcp__wezbridge__send_prompt` + `send_key('enter')` to dispatch the prompt there. If no matching pane exists, OmniClaude can spawn one.
+
+The topic→project map is `~/.omniclaude/telegram-topics.json` — same file `telegram-streamer.cjs` uses for outbound, kept in sync by hand.
 
 ## Step 3 — Spawn worker panes from OmniClaude
 

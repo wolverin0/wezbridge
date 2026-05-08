@@ -2,6 +2,17 @@
 
 All notable changes to wezbridge are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.3.2] - 2026-05-08
+
+### Three improvements after the v3.3.1 docs pass
+
+Triggered by user dogfooding the OmniClaude-via-Telegram pattern: inbound DMs were arriving but landing in the wrong pane regardless of which Telegram topic they came from, multiple stale `bun.exe` channel-plugin daemons were racing for updates, and `scripts/omniclaude-forever.sh` only worked from one specific Windows path.
+
+- **`src/telegram-router.cjs`** (new, library-only) — reads `~/.omniclaude/telegram-topics.json` and exposes `routeInbound({ chat_id, message_thread_id })` returning one of `route`, `self`, `unknown_chat`, `unknown_topic`. The OmniClaude pane uses this to decide whether to handle a DM inline or forward it via `mcp__wezbridge__send_prompt` to the matching project's pane. The Telegram channel plugin already attached `message_thread_id` (per the 2026-04-11 server.ts patch); this is the missing consumer. 12 unit tests, 196/196 total still green.
+- **`scripts/start-omniclaude-pane.cmd`** (new) — kills any stale `bun.exe` processes whose CommandLine matches `claude-plugins-official/telegram` before launching `claude --channels plugin:telegram@claude-plugins-official --dangerously-skip-permissions --continue`. Fixes the 4-bun race observed during this session where ~75% of inbound DMs were going to ghost daemons from earlier CC sessions.
+- **`scripts/omniclaude-forever.sh`** — replaced hardcoded `G:/_OneDrive/...` paths with self-resolved `$(cd "$(dirname "$0")/.." && pwd)`. `OMNI_DIR` is now overridable via env var with a sensible sibling-directory default. Script now works on any clone.
+- **`docs/SETUP-omniclaude-telegram.md`** — added pointers to `start-omniclaude-pane.cmd` and a "Routing inbound by topic" section showing how OmniClaude uses `telegram-router.cjs`.
+
 ## [3.3.1] - 2026-05-08
 
 ### Presentation pass — match the docs to the v3.3.0 reality
