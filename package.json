@@ -1,85 +1,40 @@
 {
-  "name": "theorchestra",
-  "version": "3.2.1",
-  "description": "Portable AI-orchestration substrate. PTY-backed Claude/Codex/etc. panes rendered in a browser dashboard with active omniclaude orchestration.",
+  "name": "wezbridge",
+  "version": "3.3.0",
+  "description": "MCP server bridging Claude Code / Codex sessions to WezTerm panes — daemon-only, no browser UI. Backbone of the OmniClaude-via-Telegram pattern.",
   "type": "commonjs",
   "license": "MIT",
   "author": "Pablo Pauola",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/wolverin0/theorchestra.git"
+    "url": "git+https://github.com/wolverin0/wezbridge.git"
   },
   "bugs": {
-    "url": "https://github.com/wolverin0/theorchestra/issues"
+    "url": "https://github.com/wolverin0/wezbridge/issues"
   },
-  "homepage": "https://github.com/wolverin0/theorchestra#readme",
+  "homepage": "https://github.com/wolverin0/wezbridge#readme",
   "keywords": [
     "claude-code",
     "codex",
-    "multi-agent",
-    "orchestrator",
-    "node-pty",
     "mcp",
+    "wezterm",
     "a2a",
-    "telegram"
+    "telegram",
+    "multi-agent"
   ],
   "engines": {
     "node": ">=20"
-  },
-  "bin": {
-    "theorchestra": "./bin/theorchestra.js"
   },
   "scripts": {
     "mcp": "node src/mcp-server.cjs",
     "streamer": "node src/telegram-streamer.cjs",
     "tasks-watcher": "node src/tasks-watcher.cjs",
-    "orchestrator": "bash scripts/omniclaude-forever.sh",
     "dashboard": "node src/dashboard-server.cjs",
+    "dev": "node --watch src/dashboard-server.cjs",
+    "start-streamer": "scripts/start-telegram-streamer.cmd",
     "test": "node --test --test-reporter=spec test/*.test.cjs",
-    "v3:start": "tsx scripts/theorchestra-start.ts",
-    "v3:backend": "tsx scripts/theorchestra-start.ts",
-    "v3:frontend": "vite --config src/frontend/vite.config.ts",
-    "v3:build-frontend": "vite build --config src/frontend/vite.config.ts",
-    "v3:typecheck": "tsc --noEmit && tsc --noEmit -p src/frontend/tsconfig.json",
-    "v3:mcp": "tsx src/mcp/server.ts",
-    "v3:phase2-gate": "tsx scripts/v3-phase2-gate.ts",
-    "v3:phase2-mcp-gate": "tsx scripts/v3-phase2-mcp-gate.ts",
-    "v3:phase3-gate": "tsx scripts/v3-phase3-gate.ts",
-    "v3:phase45-gate": "tsx scripts/v3-phase45-gate.ts",
-    "v3:phase6-gate": "tsx scripts/v3-phase6-gate.ts",
-    "v3:phase7-gate": "tsx scripts/v3-phase7-gate.ts",
-    "v3:phase89-gate": "tsx scripts/v3-phase89-gate.ts",
-    "v3:phase11": "tsx scripts/v3-phase11-run.ts",
-    "v3:phase11-ui": "tsx scripts/v3-phase11-playwright.ts",
-    "v3:gate": "tsx scripts/v3-plan-of-truth-gate.ts",
-    "start": "tsx scripts/theorchestra-start.ts"
+    "install-hooks": "node scripts/install-hooks.cjs"
   },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.27.1",
-    "@types/better-sqlite3": "^7.6.13",
-    "@wterm/core": "^0.1.9",
-    "@wterm/react": "^0.1.9",
-    "@xterm/addon-fit": "^0.10.0",
-    "@xterm/headless": "^6.0.0",
-    "@xterm/xterm": "^5.5.0",
-    "better-sqlite3": "^11.10.0",
-    "dotenv": "^17.3.1",
-    "node-pty": "^1.0.0",
-    "ws": "^8.18.0",
-    "zod": "^4.3.6"
-  },
-  "devDependencies": {
-    "@types/node": "^22.7.0",
-    "@types/react": "^18.3.10",
-    "@types/react-dom": "^18.3.0",
-    "@types/ws": "^8.5.12",
-    "@vitejs/plugin-react": "^4.3.1",
-    "agent-browser": "^0.26.0",
-    "playwright": "^1.59.1",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "tsx": "^4.19.0",
-    "typescript": "^5.6.2",
-    "vite": "^5.4.8"
-  }
+  "dependencies": {},
+  "devDependencies": {}
 }
