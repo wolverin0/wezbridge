@@ -139,9 +139,35 @@ The maintainer (wez) has continued committing actively but hasn't cut a release.
 
 ## Open questions for the user
 
-1. Worth building wezterm from source as a test? (~30 min Cargo)
+1. Worth building wezterm from source as a test? (~30 min Cargo) — **ATTEMPTED 2026-05-08, failed 3x in ~30 min, see "Build-from-source attempt log" below.**
 2. Worth investing in a Lua plugin layer that wraps our v3.4.0 (~half day)?
-3. Want to comment on #7527 with our repro? (~15 min, I can draft)
-4. Want to attempt the PDU-validation patch? (~few hours, includes building from source)
+3. Want to comment on #7527 with our repro? (~15 min, I can draft) — **DRAFT READY at `docs/_drafts/issue-7527-comment.md`.**
+4. Want to attempt the PDU-validation patch? (~few hours, includes building from source) — **blocked on (1) until we have a working build.**
 
-No code changes will be made until you choose a direction.
+## Build-from-source attempt log (2026-05-08)
+
+Three attempts on Windows (VS 18 Community, Rust 1.95.0, CMake 4.3.2, ~117 GB free), all failed within minutes:
+
+| # | Time | Block | Mitigation tried |
+|---|---|---|---|
+| 1 | ~3 min | `openssl-sys` 0.9.111 build calls `perl ./Configure`. MSYS/Git-Bash perl at `/usr/bin/perl` lacks `Locale::Maketext::Simple` module. | Installed Strawberry Perl (`winget install StrawberryPerl.StrawberryPerl`). |
+| 2 | ~5 min | `cl.exe -E build/expando.c` exits 2 — MSVC env vars not loaded in PowerShell. | Imported `vcvars64.bat` env into PowerShell (INCLUDE 563 chars, LIB 277 chars). |
+| 3 | ~5 min | `cl.exe -E` STILL exits 2 on the same `expando.c` despite INCLUDE/LIB being set. NMAKE 14.50 compiles the OpenSSL libs successfully, but openssl-sys's downstream probe fails. | **Stopped here** — going deeper would need vcpkg-installed OpenSSL with `OPENSSL_DIR=...`, bumping openssl-sys in wezterm's Cargo.toml, or shipping prebuilt OpenSSL binaries. Each is another 30-60 min with non-zero failure odds. |
+
+**Likely root cause for attempt 3:** wezterm pins `openssl-sys` 0.9.111, which is older than the latest crate version (0.9.103+). The probe code path in older openssl-sys + MSVC 14.50 (very recent VS 2026) appear to have a compatibility issue. A nightly wezterm with a bumped openssl-sys might build cleanly; we didn't try.
+
+**Practical implication:** building wezterm from source on a Windows dev box without prior vcpkg/OpenSSL setup is **not a 30-minute experiment**. Realistic budget is half a day for someone who hasn't done it before. The wezterm Windows install docs (https://wezterm.org/install/windows.html) recommend using prebuilt nightly binaries for exactly this reason.
+
+## Pivoted plan after the failed builds
+
+Given the build is out of reach in this session:
+
+1. **Tier A action 1 stands and is the one to ship now**: post the #7527 comment with our real-world MCP-load repro context. We don't need our own build to do that — the OP already has a fix candidate; we add value by providing a sustained-load workload that triggers the same allocation pressure. **Draft is at `docs/_drafts/issue-7527-comment.md`.**
+
+2. **Tier A action 2** (replace `captureProcessCmdline()` PowerShell with native Lua `pane:get_foreground_process_info()`) is **independent of building wezterm** — we can do it inside our own Lua config + a thin Node bridge. Doesn't need a custom wezterm binary.
+
+3. **Tier B action 3** (write `wezbridge.wezterm` Lua plugin) similarly works with stock wezterm. The mux-startup hook is in the released 2024-02-03 version.
+
+4. **Tier B action 4** (build wezterm from source) — **shelve until the openssl-sys path is solved upstream or someone with a working Windows wezterm build environment is available.** This is a >half-day commitment, not a test.
+
+Net: building from source was the highest-cost / highest-uncertainty item on the list, and it failed cheaply. The rest of the recommendations are unblocked.
