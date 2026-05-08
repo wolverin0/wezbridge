@@ -17,6 +17,10 @@
  *   send_key           — Send special keys (Enter, y, Ctrl+C) to a pane
  */
 
+// Opt-in destructive-op guard. No-op unless WEZBRIDGE_GUARD_SHIMS=1.
+require('./guard-bootstrap.cjs');
+
+const safetyPolicy = require('./safety-policy.cjs');
 const discovery = require('./pane-discovery.cjs');
 const wez = require('./wezterm.cjs');
 const os = require('os');
@@ -376,6 +380,14 @@ function handleToolCall(name, args) {
       const paneId = args.pane_id;
       const text = args.text;
 
+      const _safety = safetyPolicy.evaluate({ action: 'send_prompt', paneId, prompt: text });
+      if (!_safety.allowed) {
+        return {
+          content: [{ type: 'text', text: `safety-policy: BLOCKED send_prompt — ${_safety.reason}. Set WEZBRIDGE_SAFETY_OVERRIDE=1 to bypass.` }],
+          isError: true,
+        };
+      }
+
       if (!text || !text.trim()) {
         return {
           content: [{ type: 'text', text: 'Error: empty prompt text' }],
@@ -471,6 +483,14 @@ function handleToolCall(name, args) {
     case 'send_key': {
       const paneId = args.pane_id;
       let key = args.key;
+
+      const _safety = safetyPolicy.evaluate({ action: 'send_key', paneId, key });
+      if (!_safety.allowed) {
+        return {
+          content: [{ type: 'text', text: `safety-policy: BLOCKED send_key — ${_safety.reason}. Set WEZBRIDGE_SAFETY_OVERRIDE=1 to bypass.` }],
+          isError: true,
+        };
+      }
 
       try {
         switch (key.toLowerCase()) {
@@ -738,6 +758,14 @@ function handleToolCall(name, args) {
     case 'kill_session': {
       const paneId = args.pane_id;
 
+      const _safety = safetyPolicy.evaluate({ action: 'kill_session', paneId });
+      if (!_safety.allowed) {
+        return {
+          content: [{ type: 'text', text: `safety-policy: BLOCKED kill_session — ${_safety.reason}. Set WEZBRIDGE_SAFETY_OVERRIDE=1 to bypass.` }],
+          isError: true,
+        };
+      }
+
       try {
         // Send Ctrl+C first to gracefully stop, then kill
         try { wez.sendTextNoEnter(paneId, '\x03'); } catch { /* ignore */ }
@@ -840,6 +868,14 @@ function handleToolCall(name, args) {
     }
 
     case 'auto_handoff': {
+      const _safety = safetyPolicy.evaluate({ action: 'auto_handoff', paneId: args.pane_id });
+      if (!_safety.allowed) {
+        return {
+          content: [{ type: 'text', text: `safety-policy: BLOCKED auto_handoff — ${_safety.reason}. Set WEZBRIDGE_SAFETY_OVERRIDE=1 to bypass.` }],
+          isError: true,
+        };
+      }
+
       const dashPort = parseInt(process.env.DASHBOARD_PORT || '4200', 10);
       const reqBody = JSON.stringify({ focus: args.focus || '', force: !!args.force });
       return new Promise((resolve) => {

@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# wezbridge pre-push hook — protocol-level guard against destructive pushes.
+#
+# Complements bin/guard-shims/git.{sh,cmd} (PATH-level guard from Task #1):
+# the shim catches `git push origin main` at the command line, this hook
+# catches the same intent even when the user types the destructive push
+# differently (e.g. `git push` with HEAD=main, or via an alias). Pre-push
+# also runs after credential resolution so it's the last line of defense.
+#
+# Stdin protocol from git pre-push:
+#   <local_ref> <local_sha> <remote_ref> <remote_sha>
+# (one line per ref being pushed; remote_sha is 40 zeros for new branches)
+#
+# Bypass: WEZBRIDGE_PREPUSH_OVERRIDE=1 git push ...
+#
+# Install with: npm run wezbridge:install-hooks (or scripts/install-hooks.cjs)
+# Task #10 from docs/PLAN-managed-agents-backfill.md.
+
+set -euo pipefail
+
+if [[ "${WEZBRIDGE_PREPUSH_OVERRIDE:-}" == "1" ]]; then
+  exit 0
+fi
+
+PROTECTED='^refs/heads/(main|master)$'
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  # Skip empty lines (last line is often blank)
+  [[ -z "$remote_ref" ]] && continue
+  if [[ "$remote_ref" =~ $PROTECTED ]]; then
+    branch="${remote_ref#refs/heads/}"
+    echo "wezbridge-pre-push: BLOCKED — push to '$branch' on remote" >&2
+    echo "wezbridge-pre-push: open a feature branch + PR instead" >&2
+    echo "wezbridge-pre-push: to bypass once: WEZBRIDGE_PREPUSH_OVERRIDE=1 git push ..." >&2
+    exit 1
+  fi
+done
+
+exit 0

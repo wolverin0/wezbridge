@@ -16,6 +16,14 @@
  * Dev mode: run Vite separately on :5173 and set a proxy to this server on :4200.
  */
 
+// Opt-in destructive-op guard. No-op unless WEZBRIDGE_GUARD_SHIMS=1.
+require('./guard-bootstrap.cjs');
+
+const safetyPolicy = require('./safety-policy.cjs');
+const a2aHeartbeat = require('./a2a-heartbeat.cjs');
+const teamManifest = require('./team-manifest.cjs');
+const gradesRegistryFactory = require('./grades-registry.cjs');
+const outcomeGrader = require('../scripts/outcome-grader.cjs');
 const http = require('http');
 const https = require('https');
 const path = require('path');
@@ -203,6 +211,12 @@ function broadcastSSE(event) {
   }
 }
 
+// --- Grades registry (Task #4 — outcome-grader output, surfaced via SSE + GET /api/grades) ---
+const gradesRegistry = gradesRegistryFactory.createRegistry({
+  max: 100,
+  broadcast: (e) => broadcastSSE(e),
+});
+
 // --- Worktree registry (Phase 3 — Agency Mode) ---
 // Map<paneId, {persona, worktreePath, branchName, baseCwd}>
 const worktreeRegistry = new Map();
@@ -375,6 +389,15 @@ async function spawnAgentPane({ cwd, persona, permission_mode, worktree }) {
       branchName: worktreeInfo.branch,
       baseCwd: worktreeInfo.baseCwd,
     });
+    // Persist to teams.jsonl so the registry survives dashboard restart.
+    teamManifest.record({
+      event: 'worktree_added',
+      pane_id: paneId,
+      persona: persona || 'agent',
+      worktree_path: worktreeInfo.path,
+      branch_name: worktreeInfo.branch,
+      base_cwd: worktreeInfo.baseCwd,
+    }, { log });
   }
 
   return { paneId, worktreeInfo };
@@ -429,15 +452,18 @@ function recordA2AFromRawEvent(raw) {
     const to = parseInt(m[2], 10);
     const corr = m[3];
     const type = m[4];
+    const _now = Date.now();
     if (type === 'request') {
-      a2aTouch(corr, { from, to, status: 'active' });
+      a2aTouch(corr, { from, to, status: 'active', lastProgressAt: _now, notified_silent: false });
     } else if (type === 'result') {
-      a2aTouch(corr, { from, to, status: 'resolved' });
+      a2aTouch(corr, { from, to, status: 'resolved', lastProgressAt: _now });
     } else if (type === 'error') {
-      a2aTouch(corr, { from, to, status: 'resolved' });
+      a2aTouch(corr, { from, to, status: 'resolved', lastProgressAt: _now });
     } else {
-      // ack/progress: keep alive but don't overwrite status
-      a2aTouch(corr, { from, to });
+      // ack/progress: keep alive but don't overwrite status. Refresh
+      // lastProgressAt and reset notified_silent so the heartbeat watcher
+      // re-fires on the next silence period after a progress beat.
+      a2aTouch(corr, { from, to, lastProgressAt: _now, notified_silent: false });
     }
   }
 }
@@ -466,6 +492,34 @@ function stripAnsi(s) {
 function isoForFilename() {
   // 2026-04-14T17-46-12Z (no ms, colons → dashes)
   return new Date().toISOString().replace(/\.\d+Z$/, 'Z').replace(/:/g, '-');
+}
+
+async function handleGetGrades(req, res) {
+  try {
+    sendJson(res, 200, { grades: gradesRegistry.list(), count: gradesRegistry.size() });
+  } catch (err) {
+    sendJson(res, 500, { error: err.message });
+  }
+}
+
+async function handlePostGrade(req, res) {
+  try {
+    const body = await parseBody(req);
+    const key = body.key || body.corr || body.pane_id;
+    if (!key) return sendJson(res, 400, { error: 'missing `key` (or `corr` / `pane_id`)' });
+    if (typeof body.work !== 'string') return sendJson(res, 400, { error: 'missing `work` (string)' });
+    const grade = outcomeGrader.grade({
+      work: body.work,
+      rubric: body.rubric || '',
+      taskDesc: body.taskDesc || body.task_desc || '',
+      backend: body.backend,
+      model: body.model,
+    });
+    const entry = gradesRegistry.record(String(key), grade);
+    sendJson(res, 200, { ok: true, ...entry });
+  } catch (err) {
+    sendJson(res, 500, { error: err.message });
+  }
 }
 
 async function handlePostA2AHandoff(req, res) {
@@ -667,6 +721,10 @@ async function handlePostPrompt(req, res, paneId) {
     if (typeof text !== 'string' || !text.length) {
       return sendJson(res, 400, { error: 'missing `text` body field' });
     }
+    const _safety = safetyPolicy.evaluate({ action: 'send_prompt', paneId, prompt: text });
+    if (!_safety.allowed) {
+      return sendJson(res, 403, { error: `safety-policy blocked: ${_safety.reason}`, matched: _safety.matched });
+    }
     wez.sendText(paneId, text);
     // Auto-follow with enter per the A2A hard rule
     wez.sendTextNoEnter(paneId, '\r');
@@ -680,6 +738,10 @@ async function handlePostKey(req, res, paneId) {
   try {
     const { key } = await parseBody(req);
     if (!key) return sendJson(res, 400, { error: 'missing `key` body field' });
+    const _safety = safetyPolicy.evaluate({ action: 'send_key', paneId, key });
+    if (!_safety.allowed) {
+      return sendJson(res, 403, { error: `safety-policy blocked: ${_safety.reason}`, matched: _safety.matched });
+    }
     const mapping = {
       enter: '\r', y: 'y', n: 'n',
       'ctrl+c': '\x03',
@@ -695,6 +757,10 @@ async function handlePostKey(req, res, paneId) {
 
 async function handlePostKill(res, paneId) {
   try {
+    const _safety = safetyPolicy.evaluate({ action: 'kill_session', paneId });
+    if (!_safety.allowed) {
+      return sendJson(res, 403, { error: `safety-policy blocked: ${_safety.reason}`, matched: _safety.matched });
+    }
     wez.killPane(paneId);
     // Auto-cleanup worktree if this pane had one
     const wt = worktreeRegistry.get(paneId);
@@ -706,6 +772,7 @@ async function handlePostKill(res, paneId) {
         execSync(`git -C "${wt.baseCwd.replace(/\\/g, '/')}" branch -d "${wt.branchName}"`, { timeout: 15000, encoding: 'utf8' });
       } catch { /* branch not merged — expected, not an error */ }
       worktreeRegistry.delete(paneId);
+      teamManifest.record({ event: 'worktree_removed', pane_id: paneId }, { log });
     }
     sendJson(res, 200, { ok: true, pane_id: paneId, worktree_cleaned: !!wt });
   } catch (err) {
@@ -1016,6 +1083,14 @@ async function handlePostWorktreeCleanup(req, res, paneId) {
   try {
     const wt = worktreeRegistry.get(paneId);
     if (!wt) return sendJson(res, 404, { error: `pane ${paneId} has no registered worktree` });
+    const _safety = safetyPolicy.evaluate({
+      action: 'worktree_remove',
+      baseCwd: wt.baseCwd,
+      worktreePath: wt.worktreePath,
+    });
+    if (!_safety.allowed) {
+      return sendJson(res, 403, { error: `safety-policy blocked: ${_safety.reason}`, matched: _safety.matched });
+    }
     try {
       execSync(`git -C "${wt.baseCwd.replace(/\\/g, '/')}" worktree remove "${wt.worktreePath}" --force`, { timeout: 15000, encoding: 'utf8' });
     } catch (e) {
@@ -1027,6 +1102,7 @@ async function handlePostWorktreeCleanup(req, res, paneId) {
     const removed = wt.worktreePath;
     const branch = wt.branchName;
     worktreeRegistry.delete(paneId);
+    teamManifest.record({ event: 'worktree_removed', pane_id: paneId }, { log });
     sendJson(res, 200, { ok: true, removed, branch });
   } catch (err) {
     sendJson(res, 500, { error: err.message });
@@ -1214,6 +1290,13 @@ async function handlePostBootstrap(req, res) {
       cwd,
       roles: teamRoles,
     });
+    teamManifest.record({
+      event: 'team_added',
+      team_name: prd.name,
+      prd: prdSlug,
+      cwd,
+      roles: teamRoles,
+    }, { log });
 
     sendJson(res, 200, { ok: true, team: prd.name, agents });
   } catch (err) {
@@ -1498,6 +1581,8 @@ const server = http.createServer(async (req, res) => {
   if (pathname === '/api/browse' && method === 'GET') return handleGetBrowse(req, res, url.searchParams.get('path'));
   if (pathname === '/api/broadcast' && method === 'POST') return handlePostBroadcast(req, res);
   if (pathname === '/api/a2a/pending' && method === 'GET') return handleGetA2APending(req, res);
+  if (pathname === '/api/grades' && method === 'GET') return handleGetGrades(req, res);
+  if (pathname === '/api/grade' && method === 'POST') return handlePostGrade(req, res);
   if (pathname === '/api/a2a/handoff' && method === 'POST') return handlePostA2AHandoff(req, res);
   if (pathname === '/api/handoffs' && method === 'GET') return handleGetHandoffs(req, res, url.searchParams.get('pane'));
   if (pathname === '/api/routines/fire' && method === 'POST') return handlePostRoutinesFire(req, res);
@@ -1634,6 +1719,28 @@ server.listen(PORT, () => {
   log(`theorchestra dashboard server listening on http://localhost:${PORT}`);
   log(`API: /api/panes, /api/tasks, /api/events (SSE)`);
   log(`Static: ${fs.existsSync(STATIC_DIR) ? STATIC_DIR : '(dashboard not built yet)'}`);
+  // Task #5: A2A heartbeat SLA watcher — emits a2a_silent SSE when an
+  // active corr goes >5min without a progress/ack/result beat.
+  a2aHeartbeat.startWatcher({
+    a2aState,
+    broadcastSSE,
+    intervalMs: 60 * 1000,
+    thresholdMs: 5 * 60 * 1000,
+    log,
+  });
+  log('a2a-heartbeat watcher armed (5min silent threshold, 60s scan)');
+  // Task #6: replay teams.jsonl into in-memory registries on boot so
+  // they survive dashboard restart.
+  try {
+    const restored = teamManifest.replay();
+    for (const [name, t] of restored.teams) teamsRegistry.set(name, t);
+    for (const [paneId, wt] of restored.worktrees) worktreeRegistry.set(paneId, wt);
+    if (restored.teams.size || restored.worktrees.size) {
+      log(`team-manifest replay: ${restored.teams.size} teams, ${restored.worktrees.size} worktrees restored`);
+    }
+  } catch (e) {
+    log(`team-manifest replay failed: ${e.message}`);
+  }
 });
 
 process.on('SIGTERM', () => { log('SIGTERM'); server.close(() => process.exit(0)); });
