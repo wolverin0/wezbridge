@@ -50,6 +50,20 @@ theorchestra is for workflows where the AI sessions need to talk to each other, 
 
 ## What's new
 
+**v3.0 — Managed Agents backfill (2026-05-08)**
+- 12 new modules backfilling the useful primitives from Anthropic Managed Agents at $0 vs $0.08/session-hour hosted. All opt-in via env vars; default behavior unchanged.
+- **`command-guard.cjs` + git/gh shims** — argv-token destructive-op gate at the shell layer. Blocks `git push --force`, `git reset --hard`, `git checkout .`, `git clean -fd`, `gh pr merge`, branch-force-delete, push-to-default-branch.
+- **`safety-policy.cjs`** — wezbridge-native action gate wired into 4 MCP + 4 dashboard handlers. 5 rules: no_self_kill, no_destructive_prompt_injection, worktree_outside_dotworktrees, broadcast_too_wide, send_key_ctrl_c_to_self.
+- **`outcome-grader.cjs`** — rubric-graded verifier sidecar with backends `stub` / `claude` / `codex`. Result enum matches Managed Agents (satisfied / needs_revision / max_iterations_reached / failed).
+- **`grades-registry.cjs` + `/api/grades` + `/api/grade`** — LRU + SSE broadcast of grade events to dashboard clients.
+- **`a2a-heartbeat.cjs`** — 5-minute silence SLA watcher fires `notified_silent` events on long A2A threads where the responder went quiet.
+- **`team-manifest.cjs`** — append-only JSONL replay of teams + worktrees at `vault/_wezbridge/teams.jsonl`, rebuilt on dashboard boot so teams survive restarts.
+- **`memory-inbox.cjs`** — gated JSONL inbox (`vault/_memorymaster/inbox.jsonl`) for blocks + grades; feeds the MemoryMaster Dreams curation cycle.
+- **Pre-push hook + installer** (`bin/git-hooks/pre-push` + `scripts/install-hooks.cjs`) — protocol-level guard against pushes to `main`/`master`. Override: `WEZBRIDGE_PREPUSH_OVERRIDE=1`.
+- **`scripts/replay-merge.cjs`** — preview a merge in a throwaway git worktree and capture conflicts before touching your real branch.
+- **`src/sidecar-spawn.cjs`** — paired audit pane spawner that watches a coder mid-response (revives Layer 2 from the look-ahead context compiler design).
+- Override env vars (all default OFF): `WEZBRIDGE_GUARD_OVERRIDE`, `WEZBRIDGE_GUARD_SHIMS`, `WEZBRIDGE_SAFETY_OVERRIDE`, `WEZBRIDGE_PREPUSH_OVERRIDE`, `WEZBRIDGE_MM_INBOX`, `WEZBRIDGE_GRADER_BACKEND=stub|claude|codex`.
+
 **v2.5 — Agency Mode**
 - Spawn panes with any persona from `~/.claude/agents/` via `mcp__wezbridge__spawn_session({cwd, persona, permission_mode, prompt})` or the dashboard's Spawn tab.
 - 95+ specialised agents available (frontend-design, coder, reviewer, tester, backend-dev, security-auditor, devops-automator, etc.).
@@ -115,50 +129,142 @@ Agents reading their global instructions (`~/.claude/CLAUDE.md` or `~/.codex/AGE
 | Peer pane (same project) | medium | survives parent | long work, cross-LLM, resilience |
 | Peer pane (cross-project) | medium | survives | ask another project's specialist |
 
+## How it works
+
+theorchestra is the **dashboard + orchestrator + MCP server**. The MCP piece is called **`wezbridge`** — it's the bridge that lets any Claude Code or Codex CLI session control WezTerm panes through tool calls (`spawn_session`, `send_prompt`, `read_output`, `discover_sessions`, `kill_session`, `auto_handoff`, `split_pane`, …).
+
+Once `wezbridge` is registered as an MCP server in your AI CLI of choice, that CLI gains the ability to spawn new AI sessions in WezTerm panes, send prompts to them, read their output, and coordinate with them — all from inside your conversation. The dashboard (port 4200) is a separate process that watches the same WezTerm mux and gives you a browser UI on top.
+
+```
+        you ──▶ Claude Code / Codex CLI session
+                       │
+                       │ MCP tool call
+                       ▼
+                   wezbridge ──▶ wezterm cli ──▶ WezTerm mux
+                       │                              │
+                       │                              └─▶ pane-N (another AI session)
+                       │
+        dashboard ◀────┘  (also reads wezterm mux on :4200)
+```
+
 ## Quick start
 
-**Prerequisites:**
-- [WezTerm](https://wezfurlong.org/wezterm/) with mux server enabled
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI
-- (Optional) [Codex CLI](https://github.com/openai/codex) for cross-LLM swarms
-- Node.js 18+
-- A Telegram bot token + a group with **Topics enabled** (for the streamer)
+The full install is 6 steps: WezTerm → AI CLI → clone + npm install → register MCP on Claude → register MCP on Codex → launch dashboard.
 
-**Install:**
+### 1. Install WezTerm
+
+Download from [wezfurlong.org/wezterm](https://wezfurlong.org/wezterm/) (Windows / macOS / Linux). The mux server is built in — no extra config required. Verify with:
+
+```bash
+wezterm cli list
+```
+
+If that prints a header row (even with zero panes), the mux is reachable and `wezbridge` will be able to talk to it.
+
+### 2. Install your AI CLI(s)
+
+You need at least one of these. theorchestra works happily with both, side-by-side, in a cross-LLM swarm.
+
+**Claude Code:**
+```bash
+npm install -g @anthropic-ai/claude-code
+claude --version
+```
+Docs: [docs.anthropic.com/en/docs/claude-code](https://docs.anthropic.com/en/docs/claude-code).
+
+**Codex CLI** (optional, for cross-LLM swarms):
+```bash
+npm install -g @openai/codex
+codex --version
+```
+Docs: [github.com/openai/codex](https://github.com/openai/codex).
+
+You'll also need **Node.js 18+** for the orchestrator itself.
+
+### 3. Clone + install
+
 ```bash
 git clone https://github.com/wolverin0/theorchestra.git
 cd theorchestra
 npm install
-cp .env.example .env     # edit with your bot token + group ID
 ```
 
-**Register the MCP server** (global, so every Claude Code session can use it):
+### 4. Register `wezbridge` MCP on Claude Code
+
+Run this from inside the cloned directory:
+
 ```bash
-claude mcp add wezbridge --scope user -- node $(pwd)/src/mcp-server.cjs
+claude mcp add wezbridge --scope user -- node "$(pwd)/src/mcp-server.cjs"
 ```
 
-**Set the crash-prevention env var** (Windows):
+`--scope user` makes it global so every Claude Code session you ever start can use `mcp__wezbridge__*` tools. Verify with `claude mcp list` — you should see `wezbridge` listed.
+
+### 5. Register `wezbridge` MCP on Codex CLI
+
+Codex uses TOML config at `~/.codex/config.toml` instead of a CLI flag. Add this block (creating the file if it doesn't exist):
+
+```toml
+[mcp_servers.wezbridge]
+command = "node"
+args = ["/absolute/path/to/theorchestra/src/mcp-server.cjs"]
+```
+
+Replace `/absolute/path/to/theorchestra` with the directory you cloned into in step 3. Restart any running Codex sessions so they pick up the new MCP server.
+
+Verify with `codex mcp list` (recent versions) or by asking the running Codex session "what MCP servers do you have?" — `wezbridge` should appear with the same tool surface as on Claude.
+
+### 6. Crash-prevention env var (Windows only)
+
+WezTerm's internal 10054 mux-disconnect error category accumulates to MB-sized log files under sustained MCP load. Silence it:
+
 ```powershell
 [Environment]::SetEnvironmentVariable('WEZTERM_LOG','wezterm_mux_server_impl::local=off','User')
 ```
-Then restart WezTerm so the new instance inherits it. This silences the internal 10054 error category that otherwise accumulates to MB-sized log files under sustained MCP load.
 
-**Launch the orchestrator + streamer** (OmniClaude + live Telegram feed together):
+Restart WezTerm so the new instance inherits the env var. macOS and Linux users can skip this step.
+
+### 7. Launch the dashboard
+
 ```bash
-bash scripts/omniclaude-forever.sh
+npm run dashboard    # plain run + auto-open browser
+# or
+npm run dev          # node --watch — auto-restart on file change
 ```
 
-Or if you want just the streamer (standalone, persistent):
-```cmd
-scripts\start-telegram-streamer.cmd
-```
-Copy the same `.cmd` into `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\` for auto-launch on login (no admin required).
+Then open [http://localhost:4200](http://localhost:4200). You'll see the Sessions / Live / Desktop / Spawn tabs and the activity sidebar.
 
-**Open the dashboard:**
+### 8. (Optional) Telegram streamer
+
+If you want a Telegram feed of every pane's output (one forum topic per project, live-edited messages), you'll need a bot token and a group with **Topics enabled**. Configuration lives in `~/.omniclaude/telegram-topics.json`. Launch with:
+
+```bash
+bash scripts/omniclaude-forever.sh    # OmniClaude + streamer together
+# or, standalone persistent streamer:
+scripts/start-telegram-streamer.cmd   # Windows
 ```
-http://localhost:4200
+
+Copy `start-telegram-streamer.cmd` into `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\` for auto-launch on login (no admin required).
+
+### 9. (Optional) Opt into the v3.0 safety modules
+
+The MA-backfill modules (command-guard, safety-policy, pre-push hook, etc.) are all opt-in:
+
+```bash
+# install the pre-push hook for this repo:
+node scripts/install-hooks.cjs
+
+# activate PATH-based command guard for current shell:
+export WEZBRIDGE_GUARD_SHIMS=1
+export PATH="$(pwd)/bin/guard-shims:$PATH"
+
+# turn on memory-inbox writes (feeds MemoryMaster Dreams):
+export WEZBRIDGE_MM_INBOX=1
+
+# pick grader backend (stub|claude|codex):
+export WEZBRIDGE_GRADER_BACKEND=claude
 ```
-Sessions tab for a list view, Desktop tab for windowed view, Spawn tab to launch new panes with personas, activity sidebar for the OmniClaude + A2A + events feeds.
+
+Override env vars (all bypass-once): `WEZBRIDGE_GUARD_OVERRIDE`, `WEZBRIDGE_SAFETY_OVERRIDE`, `WEZBRIDGE_PREPUSH_OVERRIDE`. See `docs/USAGE-guard.md` for the full reference.
 
 ## Install via agent (experimental)
 
@@ -172,6 +278,7 @@ Paste this prompt into any Claude Code session to auto-install theorchestra:
 - **v2.5 Agency Mode — shipped.** Persona injection, worktree isolation, PRD team bootstrap.
 - **v2.6 Intelligent Auto-Handoff — shipped.** Ctx-aware session reset with readiness check.
 - **v2.7 Hardening + perf — shipped (2026-04-19).** Wezterm CLI call-rate reduction via TTL caches; WEZTERM_LOG env var for crash prevention; persistent streamer launcher; spawn_session PEER-PANE CONTEXT bootstrap.
+- **v3.0 Managed Agents backfill — shipped (2026-05-08).** 12 modules, ~205 unit tests: command-guard + git/gh shims, safety-policy (5 rules), outcome-grader (rubric-graded verifier), grades-registry + SSE, A2A heartbeat SLA watcher, persistent team manifest, memory-inbox, pre-push hook + installer, replay-merge, sidecar audit pane. All opt-in via env vars; default behavior unchanged.
 - **Phase 3 — remaining v3.1 features:**
   - Permission buttons in Telegram (approve/reject tool use)
   - Voice prompts (Whisper transcription)
