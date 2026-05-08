@@ -21,6 +21,7 @@ require('./guard-bootstrap.cjs');
 
 const safetyPolicy = require('./safety-policy.cjs');
 const a2aHeartbeat = require('./a2a-heartbeat.cjs');
+const sessionSnapshot = require('./session-snapshot.cjs');
 const teamManifest = require('./team-manifest.cjs');
 const gradesRegistryFactory = require('./grades-registry.cjs');
 const outcomeGrader = require('../scripts/outcome-grader.cjs');
@@ -1718,6 +1719,19 @@ server.listen(PORT, () => {
     log,
   });
   log('a2a-heartbeat watcher armed (5min silent threshold, 60s scan)');
+  // v3.4: session-snapshot watcher — captures cmdline of every AI pane
+  // every N seconds so `scripts/restore-session.cjs` can re-spawn them
+  // after a wezterm crash. Opt-in via WEZBRIDGE_SESSION_SNAPSHOT={1|<seconds>}.
+  const snapEnv = process.env.WEZBRIDGE_SESSION_SNAPSHOT;
+  if (snapEnv && snapEnv !== '0') {
+    const intervalMs = (Number(snapEnv) > 1 ? Number(snapEnv) : 60) * 1000;
+    sessionSnapshot.startWatcher({
+      listPanes: () => wez.listPanes(),
+      intervalMs,
+      log,
+    });
+    log(`session-snapshot watcher armed (${intervalMs / 1000}s tick)`);
+  }
   // Task #6: replay teams.jsonl into in-memory registries on boot so
   // they survive dashboard restart.
   try {
