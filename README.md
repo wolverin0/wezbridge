@@ -1,8 +1,27 @@
 # wezbridge
 
-**An MCP server that bridges Claude Code / Codex sessions to WezTerm panes.**
+> **MCP bridge for controlling Claude Code / Codex sessions inside WezTerm panes, with optional Telegram remote control and simple text-based A2A messaging.**
 
 Run a swarm of long-lived AI coding sessions in parallel — one per WezTerm pane — and let any of them spawn, prompt, and read the others through `mcp__wezbridge__*` tool calls. Drive the whole thing from your phone via Telegram by designating one pane as your "OmniClaude" controller. **No browser dashboard, no UI on the PC** — the daemon on `:4200` is a headless backend; the control surface is Claude Code itself.
+
+### Not included
+
+- Cloud orchestration
+- Hosted dashboard or web UI
+- Autonomous agent manager
+- Replacement for Claude Code, Codex, or WezTerm
+
+If you need any of those, this isn't the tool. wezbridge is the local plumbing that lets the AI CLIs you already use coordinate with each other.
+
+### Three layers
+
+The repo ships in three opt-in tiers — install the core, add the others if you want them:
+
+| Layer | What it gives you | Status |
+|---|---|---|
+| **Core** | `mcp__wezbridge__*` tool surface — `discover_sessions`, `read_output`, `send_prompt`, `send_key`, `spawn_session`, `split_pane`, `set_tab_title`, `kill_session`, `auto_handoff`, `spawn_ssh_domain`, plus the safety policy + command guard | **Stable.** This is the product. |
+| **Telegram remote** (optional) | Per-pane forum-topic streaming, inbound DMs to your OmniClaude pane via the official channel plugin, voice/media forwarding, ntfy backup, diff reporter | **Stable, opt-in.** Set up `~/.claude/channels/telegram/.env` + `~/.omniclaude/telegram-topics.json`. |
+| **Multi-agent layer** (experimental) | A2A envelope protocol, agency mode (persona spawning), PRD-driven team bootstrap, auto-handoff at Ctx threshold, MA-backfill modules (rubric grader, A2A heartbeat, sidecar audit pane) | **Experimental.** Useful but evolving. Default OFF. |
 
 ```
    Your phone (Telegram)

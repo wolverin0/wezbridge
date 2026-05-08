@@ -2,6 +2,19 @@
 
 All notable changes to wezbridge are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.3.1] - 2026-05-08
+
+### Presentation pass — match the docs to the v3.3.0 reality
+
+A docs-only patch reacting to external review (gpt-5 read of the full gitingest dump). The repo had a credibility gap: README declared "wezbridge MCP daemon" but `CLAUDE.md` three lines below described the abandoned theorchestra v2.7.0 dashboard with orchestrator-worker pane and JSON-tick contract. Same repo, two different products. This release makes the docs honest.
+
+- Rewrote `CLAUDE.md` from scratch to describe the actual v3.3.0 surface: zero-deps MCP server, `:4200` headless daemon, `mcp__wezbridge__*` tool list, A2A protocol rules, env vars, useful endpoints. Removed every reference to the orchestrator-worker pane convention, vault structure for escalations, "v3 gate", and the `THEORCHESTRA_LLM_ADVISOR` flag.
+- Restructured README to surface the three-layer model (Core / Optional Telegram / Experimental multi-agent) up front. Each tier is opt-in; the "core" alone is the product story.
+- Added a "Not included" section right after the tagline (no cloud orchestration, no hosted dashboard, no autonomous manager, no replacement for Claude Code/Codex). Sets expectations in two lines.
+- Adopted a tighter tagline: "MCP bridge for controlling Claude Code / Codex sessions inside WezTerm panes, with optional Telegram remote control and simple text-based A2A messaging."
+
+No code changed. 184/184 tests still pass.
+
 ## [3.3.0] - 2026-05-08
 
 ### Curation pass — wezbridge becomes its own thing
