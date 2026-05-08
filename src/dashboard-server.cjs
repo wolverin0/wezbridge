@@ -1721,10 +1721,11 @@ server.listen(PORT, () => {
   log('a2a-heartbeat watcher armed (5min silent threshold, 60s scan)');
   // v3.4: session-snapshot watcher — captures cmdline of every AI pane
   // every N seconds so `scripts/restore-session.cjs` can re-spawn them
-  // after a wezterm crash. Opt-in via WEZBRIDGE_SESSION_SNAPSHOT={1|<seconds>}.
+  // after a wezterm crash. v3.4.1: default ON. Opt OUT with
+  // WEZBRIDGE_SESSION_SNAPSHOT=0. Set to a number > 1 to override interval.
   const snapEnv = process.env.WEZBRIDGE_SESSION_SNAPSHOT;
-  if (snapEnv && snapEnv !== '0') {
-    const intervalMs = (Number(snapEnv) > 1 ? Number(snapEnv) : 60) * 1000;
+  if (snapEnv !== '0') {
+    const intervalMs = (snapEnv && Number(snapEnv) > 1 ? Number(snapEnv) : 60) * 1000;
     sessionSnapshot.startWatcher({
       listPanes: () => wez.listPanes(),
       intervalMs,

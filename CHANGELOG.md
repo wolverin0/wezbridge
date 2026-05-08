@@ -2,6 +2,20 @@
 
 All notable changes to wezbridge are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.4.1] - 2026-05-08
+
+### Session-snapshot now default-on + autostart helper
+
+v3.4.0 shipped session-snapshot as opt-in (`WEZBRIDGE_SESSION_SNAPSHOT=1`). Then wezterm actually crashed (the very upstream bug v3.4.0 was meant to mitigate against), and the user had no snapshot to restore from — because the env var was never set. **Crash-recovery features should default ON.** This release flips the default.
+
+- **`src/dashboard-server.cjs`** — session-snapshot watcher now arms by default at `server.listen()`. Opt-OUT with `WEZBRIDGE_SESSION_SNAPSHOT=0`. Setting it to a number > 1 still overrides the tick interval (seconds).
+- **`scripts/install-autostart.cmd`** (new) — drops a launcher into `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\` so `node src/dashboard-server.cjs` runs at every Windows user-login. Idempotent. No admin required. Combined with the default-on watcher, this means: **once installed, every wezterm crash is auto-recoverable via `npm run restore-session`** with zero ongoing user friction.
+- **`package.json`** — added `npm run install-autostart` script alias. Version 3.4.0 → 3.4.1.
+
+### Why this matters more than v3.4.0
+
+The whole point of session-snapshot is to be ready when wezterm crashes. If the user has to remember to enable it before each session, they won't, and the feature pays no dividends in the moment they need it. Default-on inverts the friction curve: 60s timer overhead in steady state vs hours of manual pane-rebuild after a crash.
+
 ## [3.4.0] - 2026-05-08
 
 ### Session snapshot + restore — crash recovery for the AI pane swarm

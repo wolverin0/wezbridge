@@ -152,14 +152,15 @@ export WEZBRIDGE_GRADER_BACKEND=claude           # outcome-grader backend
 
 Bypass-once override env vars: `WEZBRIDGE_GUARD_OVERRIDE`, `WEZBRIDGE_SAFETY_OVERRIDE`, `WEZBRIDGE_PREPUSH_OVERRIDE`. See [`docs/USAGE-guard.md`](docs/USAGE-guard.md).
 
-### 10. (Optional) v3.4 session snapshot — crash recovery
+### 10. v3.4.1 session snapshot — crash recovery (default ON)
 
 Captures every AI pane's launch state (cwd + cmdline + flags) on a 60s timer. After a WezTerm crash, restore the swarm with one command.
 
+**Default ON since v3.4.1.** The dashboard daemon arms the watcher automatically at boot. Opt OUT with `WEZBRIDGE_SESSION_SNAPSHOT=0`.
+
 ```bash
-# Enable snapshotting (the dashboard daemon arms the watcher on next boot)
-export WEZBRIDGE_SESSION_SNAPSHOT=1
-npm run dashboard
+npm run dashboard          # snapshot watcher arms automatically
+npm run install-autostart  # one-time: dashboard auto-launches on user login (Windows)
 
 # After a crash — open a fresh wezterm pane and run:
 npm run restore-session
@@ -167,7 +168,7 @@ npm run restore-session
 node scripts/restore-session.cjs --dry-run
 ```
 
-Only `claude.exe` and `codex.exe` panes are captured — random shells stay out. Snapshots land at `vault/_wezbridge/session-snapshot.jsonl`. See CHANGELOG v3.4.0 for limitations.
+Only `claude.exe` and `codex.exe` panes are captured — random shells stay out. Snapshots land at `vault/_wezbridge/session-snapshot.jsonl`. See CHANGELOG v3.4.0 / v3.4.1 for limitations.
 
 ## A2A protocol
 
