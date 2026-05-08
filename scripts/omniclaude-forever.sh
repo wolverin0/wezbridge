@@ -10,12 +10,19 @@
 # doesn't depend on Claude's Monitor tool launching it.
 #
 # Usage:
-#   bash "G:/_OneDrive/OneDrive/Desktop/Py Apps/wezbridge/scripts/omniclaude-forever.sh"
+#   bash scripts/omniclaude-forever.sh        # from the wezbridge repo root
+#
+# Environment overrides:
+#   OMNI_DIR   — directory the OmniClaude session runs from (default: ../omniclaude
+#                relative to this repo, override if you keep the omniclaude project
+#                somewhere else)
 
 set -e
 
-OMNI_DIR="G:/_OneDrive/OneDrive/Desktop/Py Apps/omniclaude"
-WEZBRIDGE_DIR="G:/_OneDrive/OneDrive/Desktop/Py Apps/wezbridge"
+# Resolve repo root from the script's own location so this works on any clone.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+WEZBRIDGE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+OMNI_DIR="${OMNI_DIR:-$(cd "$WEZBRIDGE_DIR/../omniclaude" 2>/dev/null && pwd || echo "$WEZBRIDGE_DIR/../omniclaude")}"
 STREAMER_SCRIPT="$WEZBRIDGE_DIR/src/telegram-streamer.cjs"
 
 echo "[omniclaude-forever] Starting supervisor loop..."

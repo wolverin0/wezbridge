@@ -1,6 +1,6 @@
 {
   "name": "wezbridge",
-  "version": "3.3.1",
+  "version": "3.3.2",
   "description": "MCP server bridging Claude Code / Codex sessions to WezTerm panes — daemon-only, no browser UI. Backbone of the OmniClaude-via-Telegram pattern.",
   "type": "commonjs",
   "license": "MIT",
