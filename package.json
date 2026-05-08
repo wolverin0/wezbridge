@@ -1,6 +1,6 @@
 {
   "name": "theorchestra",
-  "version": "3.0.0-alpha.1",
+  "version": "3.2.0",
   "description": "Portable AI-orchestration substrate. PTY-backed Claude/Codex/etc. panes rendered in a browser dashboard with active omniclaude orchestration.",
   "type": "commonjs",
   "license": "MIT",
@@ -56,9 +56,13 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
+    "@types/better-sqlite3": "^7.6.13",
     "@wterm/core": "^0.1.9",
     "@wterm/react": "^0.1.9",
+    "@xterm/addon-fit": "^0.10.0",
     "@xterm/headless": "^6.0.0",
+    "@xterm/xterm": "^5.5.0",
+    "better-sqlite3": "^11.10.0",
     "dotenv": "^17.3.1",
     "node-pty": "^1.0.0",
     "ws": "^8.18.0",
