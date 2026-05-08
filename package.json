@@ -1,6 +1,6 @@
 {
   "name": "theorchestra",
-  "version": "3.2.0",
+  "version": "3.2.1",
   "description": "Portable AI-orchestration substrate. PTY-backed Claude/Codex/etc. panes rendered in a browser dashboard with active omniclaude orchestration.",
   "type": "commonjs",
   "license": "MIT",

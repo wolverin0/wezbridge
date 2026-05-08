@@ -43,7 +43,8 @@ const { scanProjects } = (() => {
 
 const PORT = parseInt(process.env.DASHBOARD_PORT || '4200', 10);
 const STATIC_DIR = path.join(__dirname, '..', 'dashboard', 'dist');
-const DASHBOARD_HTML = path.join(__dirname, 'dashboard.html');
+// dashboard.html UI deprecated 2026-05-03 (per src/DEPRECATED.md). The daemon
+// stays alive only because mcp__wezbridge__* tools fetch /api/panes against it.
 const ACTIVE_TASKS_PATH = process.env.ACTIVE_TASKS_PATH
   || path.join(process.env.OMNICLAUDE_PATH || path.join(__dirname, '..', '..', 'omniclaude'), 'active_tasks.md');
 
@@ -1605,7 +1606,7 @@ const server = http.createServer(async (req, res) => {
     if (wtMatch[2] === 'merge') return handlePostWorktreeMerge(req, res, wtPaneId);
   }
 
-  const paneMatch = pathname.match(/^\/api\/(panes|sessions)\/(\d+)(\/(output|prompt|key|kill|queue|inject-context|auto-handoff))?$/);
+  const paneMatch = pathname.match(/^\/api\/(panes|sessions)\/(\d+)(\/(output|prompt|key|kill|auto-handoff))?$/);
   if (paneMatch) {
     const paneId = parseInt(paneMatch[2], 10);
     const sub = paneMatch[4];
@@ -1617,18 +1618,6 @@ const server = http.createServer(async (req, res) => {
     if (sub === 'key' && method === 'POST')    return handlePostKey(req, res, paneId);
     if (sub === 'kill' && method === 'POST')   return handlePostKill(res, paneId);
     if (sub === 'auto-handoff' && method === 'POST') return handlePostAutoHandoff(req, res, paneId);
-    // Graceful noops: v3.1 UI calls these; current backend doesn't support queue/inject yet.
-    if ((sub === 'queue' || sub === 'inject-context') && method === 'POST') {
-      return sendJson(res, 200, { ok: true, note: `${sub} not implemented yet — noop` });
-    }
-  }
-
-  // Serve the v3.1 HTML dashboard at root.
-  if (method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
-    if (fs.existsSync(DASHBOARD_HTML)) {
-      res.writeHead(200, { 'Content-Type': MIME['.html'] });
-      return fs.createReadStream(DASHBOARD_HTML).pipe(res);
-    }
   }
 
   // Static fallthrough (assets from dashboard/dist, if built)

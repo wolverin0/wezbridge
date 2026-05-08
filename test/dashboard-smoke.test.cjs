@@ -67,29 +67,10 @@ after(async () => {
   }
 });
 
-// ─── HTML contract ───────────────────────────────────────────────────────
-
-test('GET / serves dashboard HTML with all v2.3/v2.4 markers', async () => {
-  const r = await request('GET', '/');
-  assert.equal(r.status, 200);
-  const html = r.raw;
-  const markers = [
-    'activitySidebar',              // v2.3 right sidebar
-    'asPanelOmni',                  // v2.3 OmniClaude monitor panel
-    'asPanelA2A',                   // v2.3 A2A activity panel
-    'asPanelEvents',                // v2.3 compact events panel
-    'tasks-strip',                  // v2.3 bottom strip key
-    'handoff-btn',                  // v2.3 handoff button
-    'a2aArrows',                    // v2.4 SVG overlay element
-    'theorchestra:sidebar-panel-order:v1', // v2.4 drag-reorder persistence
-    '/api/handoffs?pane=',          // v2.4 history scan endpoint consumer
-  ];
-  for (const m of markers) {
-    assert.ok(html.includes(m), `missing HTML marker: ${m}`);
-  }
-});
-
 // ─── GET API contract ────────────────────────────────────────────────────
+// dashboard.html UI deprecated 2026-05-03 (per src/DEPRECATED.md). The HTML
+// contract test was removed in v3.2.1 cleanup — daemon now backs the
+// wezbridge MCP server only, no UI served at /.
 
 test('GET /api/panes returns {panes: array}', async () => {
   const r = await request('GET', '/api/panes');

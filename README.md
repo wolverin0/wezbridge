@@ -2,7 +2,9 @@
 
 **Multi-agent orchestrator for Claude Code and Codex sessions, with WezTerm panes as the substrate.**
 
-theorchestra lets you run many long-lived AI coding sessions in parallel — each in its own WezTerm pane — and gives them a shared protocol to talk to each other, a browser dashboard to steer them, intelligent session-reset when context fills up, domain-specialized personas, and a Telegram feed so you can read what they're doing from your phone.
+theorchestra lets you run many long-lived AI coding sessions in parallel — each in its own WezTerm pane — and gives them a shared protocol to talk to each other, intelligent session-reset when context fills up, domain-specialized personas, and a Telegram feed so you can read what they're doing from your phone.
+
+The control surface is **Claude Code itself, acting as orchestrator** (the OmniClaude pattern) — using `mcp__wezbridge__*` tools to spawn, prompt, and read other panes. There is no separate browser UI; the daemon on :4200 exists only to back the MCP server.
 
 ```
      ┌──────────────────────────────────────────────────────────────────┐
@@ -14,8 +16,8 @@ theorchestra lets you run many long-lived AI coding sessions in parallel — eac
      │        │                  └── A2A envelope ───┘                  │
      │        │             via mcp__wezbridge__send_prompt             │
      │        │                                                         │
-     │        │       dashboard @ :4200 (pane grid, 🔄 auto-handoff,    │
-     │        │       Ctx badges, A2A flow, tasks panel, Agency spawn)  │
+     │        │       dashboard-server.cjs @ :4200 (REST/SSE backend    │
+     │        │       for the wezbridge MCP — no UI, daemon only)       │
      └────────┼─────────────────────────────────────────────────────────┘
               │
               ├─ omni-watcher ─────▶ stdout events (session state + A2A)
@@ -26,13 +28,11 @@ theorchestra lets you run many long-lived AI coding sessions in parallel — eac
 
 ## What it looks like
 
-**Dashboard** (`http://localhost:4200`) — live pane grid with Ctx badges, 🔄 handoff button per pane, Agency Mode spawn, A2A event stream, tasks panel:
-
-![theorchestra dashboard](docs/screenshots/dashboard.png)
-
 **Telegram feed** — one forum topic per project, live-edited message shows the pane's current output, auto-handoff orchestration + A2A envelopes visible inline:
 
 ![Telegram feed](docs/screenshots/telegram-feed.png)
+
+> **Note on the dashboard UI:** earlier versions (v2.3–v3.1) shipped a browser dashboard at `:4200` with Sessions/Live/Desktop/Spawn tabs. After the 2026-05-03 review (see [`src/DEPRECATED.md`](src/DEPRECATED.md)) the UI was deprecated as vaporware and removed in v3.2.1 — the daemon stays alive only because the wezbridge MCP server fetches `/api/panes` etc. against it. Day-to-day control happens inside Claude Code via the MCP tools, not in a browser.
 
 ## Why theorchestra is different
 
@@ -50,7 +50,7 @@ theorchestra is for workflows where the AI sessions need to talk to each other, 
 
 ## What's new
 
-**v3.0 — Managed Agents backfill (2026-05-08)**
+**v3.2 — Managed Agents backfill (2026-05-08)**
 - 12 new modules backfilling the useful primitives from Anthropic Managed Agents at $0 vs $0.08/session-hour hosted. All opt-in via env vars; default behavior unchanged.
 - **`command-guard.cjs` + git/gh shims** — argv-token destructive-op gate at the shell layer. Blocks `git push --force`, `git reset --hard`, `git checkout .`, `git clean -fd`, `gh pr merge`, branch-force-delete, push-to-default-branch.
 - **`safety-policy.cjs`** — wezbridge-native action gate wired into 4 MCP + 4 dashboard handlers. 5 rules: no_self_kill, no_destructive_prompt_injection, worktree_outside_dotworktrees, broadcast_too_wide, send_key_ctrl_c_to_self.
@@ -65,17 +65,16 @@ theorchestra is for workflows where the AI sessions need to talk to each other, 
 - Override env vars (all default OFF): `WEZBRIDGE_GUARD_OVERRIDE`, `WEZBRIDGE_GUARD_SHIMS`, `WEZBRIDGE_SAFETY_OVERRIDE`, `WEZBRIDGE_PREPUSH_OVERRIDE`, `WEZBRIDGE_MM_INBOX`, `WEZBRIDGE_GRADER_BACKEND=stub|claude|codex`.
 
 **v2.5 — Agency Mode**
-- Spawn panes with any persona from `~/.claude/agents/` via `mcp__wezbridge__spawn_session({cwd, persona, permission_mode, prompt})` or the dashboard's Spawn tab.
+- Spawn panes with any persona from `~/.claude/agents/` via `mcp__wezbridge__spawn_session({cwd, persona, permission_mode, prompt})`.
 - 95+ specialised agents available (frontend-design, coder, reviewer, tester, backend-dev, security-auditor, devops-automator, etc.).
-- Persona detection from tab titles — the dashboard shows a badge for each persona-spawned pane.
+- Persona detection from tab titles — the daemon emits a `persona` field on every discovered pane.
 - Per-persona worktree isolation (`git worktree add`) so parallel agents don't collide.
-- PRD-driven team bootstrap: one YAML file defines roles + tasks, and the dashboard spawns the whole team.
+- PRD-driven team bootstrap: one YAML file defines roles + tasks, and the orchestrator spawns the whole team.
 
 **v2.6 — Intelligent Auto-Handoff**
-- Each pane's Ctx% is visible live in the dashboard (green < 30%, yellow 30–50%, red > 50%).
-- Click 🔄 on any pane to trigger a graceful handoff: the pane self-reports READY/NOT_READY (the PRE-HANDOFF READINESS CHECK pattern — idle ≠ task-complete), writes a structured handoff file via the `/handoff` skill, gets `/clear`-ed, and the fresh session resumes from the handoff file.
-- Auto-trigger mode (🤖 toggle) fires suggestions at Ctx > 30% and urgent countdowns at > 50%.
-- Dashboard broadcasts these over SSE so auto-trigger notifications reach connected clients in real time.
+- Each pane's Ctx% is tracked live by the daemon (green < 30%, yellow 30–50%, red > 50%) and emitted on the SSE event stream.
+- Trigger a graceful handoff via `mcp__wezbridge__auto_handoff` or `POST /api/auto-handoff/:id`: the pane self-reports READY/NOT_READY (the PRE-HANDOFF READINESS CHECK pattern — idle ≠ task-complete), writes a structured handoff file via the `/handoff` skill, gets `/clear`-ed, and the fresh session resumes from the handoff file.
+- Auto-trigger daemon fires suggestions at Ctx > 30% and urgent countdowns at > 50%.
 
 **v2.7 — Hardening + performance (2026-04-19)**
 - `WEZTERM_LOG=wezterm_mux_server_impl::local=off` env var silences wezterm's internal 10054 mux-disconnect error category (root cause of periodic crashes under sustained MCP load).
@@ -95,8 +94,7 @@ theorchestra is for workflows where the AI sessions need to talk to each other, 
 | `src/omni-watcher.cjs` | Event stream over `Monitor`: session state changes, metrics, A2A envelope tracking, `peer_orphaned` emission on crash |
 | `src/tasks-watcher.cjs` + `src/task-parser.cjs` | Watches `active_tasks.md` for follow-ups, stuck tasks, status transitions |
 | `src/telegram-streamer.cjs` | Streams each pane's live output to a Telegram forum topic. Three modes (`raw` default, `card`, `events`) via `STREAMER_MODE` env var |
-| `src/dashboard-server.cjs` | HTTP server on :4200 — serves the single-file dashboard, handles `/api/panes`, `/api/auto-handoff/:id`, SSE events stream, Agency Mode endpoints |
-| `src/dashboard.html` | Single-file vanilla-JS dashboard: Sessions / Live / Desktop / Spawn tabs, activity sidebar, Ctx badges, 🔄 handoff button + modal, auto-handoff mode toggle |
+| `src/dashboard-server.cjs` | Headless REST/SSE backend on :4200 — `/api/panes`, `/api/auto-handoff/:id`, `/api/grades`, `/api/grade`, SSE events stream, Agency Mode endpoints. Required by the wezbridge MCP server. No UI is served. |
 | `scripts/commit-guard.js` | PreToolUse + git pre-commit hook that blocks risky commits on `main` |
 | `scripts/omniclaude-forever.sh` | Launches OmniClaude + streamer together with auto-restart on timeout |
 | `scripts/start-telegram-streamer.cmd` | Standalone persistent streamer launcher — register in Windows Startup folder for auto-start at user logon |
@@ -223,15 +221,15 @@ WezTerm's internal 10054 mux-disconnect error category accumulates to MB-sized l
 
 Restart WezTerm so the new instance inherits the env var. macOS and Linux users can skip this step.
 
-### 7. Launch the dashboard
+### 7. Launch the dashboard daemon
 
 ```bash
-npm run dashboard    # plain run + auto-open browser
+npm run dashboard    # plain run
 # or
 npm run dev          # node --watch — auto-restart on file change
 ```
 
-Then open [http://localhost:4200](http://localhost:4200). You'll see the Sessions / Live / Desktop / Spawn tabs and the activity sidebar.
+This is a **headless backend**, not a UI — it serves `/api/panes`, `/api/events` (SSE), `/api/grades`, etc. that the wezbridge MCP server depends on. You don't need to open `:4200` in a browser; if you do, you'll get a 404. Verify it's up with `curl http://localhost:4200/api/panes`.
 
 ### 8. (Optional) Telegram streamer
 
@@ -270,27 +268,16 @@ Override env vars (all bypass-once): `WEZBRIDGE_GUARD_OVERRIDE`, `WEZBRIDGE_SAFE
 
 Paste this prompt into any Claude Code session to auto-install theorchestra:
 
-> You are being installed as a theorchestra orchestrator. Clone https://github.com/wolverin0/theorchestra to `~/theorchestra/`, run `npm install`, copy `.env.example` to `.env`, register the `wezbridge` MCP server with `claude mcp add wezbridge --scope user -- node ~/theorchestra/src/mcp-server.cjs`, set the `WEZTERM_LOG=wezterm_mux_server_impl::local=off` user env var, create `~/.omniclaude/telegram-topics.json` from the template in the repo, launch `Monitor` with `node ~/theorchestra/src/omni-watcher.cjs`, and greet the user on Telegram with a one-liner. Report done.
+> You are being installed as a theorchestra orchestrator. Clone https://github.com/wolverin0/theorchestra to `~/theorchestra/`, run `npm install`, register the `wezbridge` MCP server with `claude mcp add wezbridge --scope user -- node ~/theorchestra/src/mcp-server.cjs`, set the `WEZTERM_LOG=wezterm_mux_server_impl::local=off` user env var, create `~/.omniclaude/telegram-topics.json` from the template in the repo, launch the dashboard daemon with `npm run dashboard` (headless backend for the MCP), and greet the user on Telegram with a one-liner. Report done.
 
 ## Roadmap
 
-- **Phase 2 — desktop dashboard** (single-file HTML + vanilla JS) — **shipped in v1.1**. Pane grid + SSE events stream + tasks panel. A2A flow panel and Agency Spawn tab shipped in v2.5.
+- **v2.3–v2.4 desktop dashboard UI** — shipped, then **deprecated 2026-05-03 / removed in v3.2.1.** The browser dashboard turned out to be vaporware (fake buttons, noop endpoints). The 2.7.0 control surface (Claude Code as orchestrator + wezbridge MCP + Telegram) replaced it. The daemon at `:4200` stays alive as a headless backend for the MCP server.
 - **v2.5 Agency Mode — shipped.** Persona injection, worktree isolation, PRD team bootstrap.
 - **v2.6 Intelligent Auto-Handoff — shipped.** Ctx-aware session reset with readiness check.
 - **v2.7 Hardening + perf — shipped (2026-04-19).** Wezterm CLI call-rate reduction via TTL caches; WEZTERM_LOG env var for crash prevention; persistent streamer launcher; spawn_session PEER-PANE CONTEXT bootstrap.
-- **v3.0 Managed Agents backfill — shipped (2026-05-08).** 12 modules, ~205 unit tests: command-guard + git/gh shims, safety-policy (5 rules), outcome-grader (rubric-graded verifier), grades-registry + SSE, A2A heartbeat SLA watcher, persistent team manifest, memory-inbox, pre-push hook + installer, replay-merge, sidecar audit pane. All opt-in via env vars; default behavior unchanged.
-- **Phase 3 — remaining v3.1 features:**
-  - Permission buttons in Telegram (approve/reject tool use)
-  - Voice prompts (Whisper transcription)
-  - Project scanner (spawn any Claude project from chat)
-  - Photo/document support
-  - Plugin system (`plugins/*.cjs` with context API)
-  - `/split`, `/workspace`, `/remote` (SSH)
-  - Code diffs post-response
-  - GitHub webhooks → topic notifications
-  - ntfy.sh backup channel
-  - Inline mode (`@theorchestra_bot`)
-- **Phase 4 — Telegram Mini App dashboard** (port of v3.1's 4-tab mobile UI, adapted to agent-centric model).
+- **v3.2 Managed Agents backfill — shipped (2026-05-08).** 12 modules, ~205 unit tests: command-guard + git/gh shims, safety-policy (5 rules), outcome-grader (rubric-graded verifier), grades-registry + SSE, A2A heartbeat SLA watcher, persistent team manifest, memory-inbox, pre-push hook + installer, replay-merge, sidecar audit pane. All opt-in via env vars; default behavior unchanged.
+- **v3.2.1 dashboard UI cleanup — shipped (2026-05-08).** Removed `src/dashboard.html` (vaporware), the GET / handler that served it, the noop `queue` + `inject-context` POST handlers, and the deprecated dashboard screenshot. Daemon-only surface from here on.
 - **Future — persistent wezterm mux connection.** Replace per-call `wezterm cli` spawns with one long-lived connection (either via the Rust `wezterm-client` crate or direct mux protocol) to eliminate the 10054 error category at the source. Only needed if v2.7 rate-reduction + WEZTERM_LOG env var prove insufficient.
 
 ## History
