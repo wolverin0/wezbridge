@@ -1,6 +1,6 @@
 {
   "name": "wezbridge",
-  "version": "3.4.0",
+  "version": "3.4.1",
   "description": "MCP server bridging Claude Code / Codex sessions to WezTerm panes — daemon-only, no browser UI. Backbone of the OmniClaude-via-Telegram pattern.",
   "type": "commonjs",
   "license": "MIT",
@@ -34,6 +34,7 @@
     "start-streamer": "scripts/start-telegram-streamer.cmd",
     "test": "node --test --test-reporter=spec test/*.test.cjs",
     "install-hooks": "node scripts/install-hooks.cjs",
+    "install-autostart": "scripts\\install-autostart.cmd",
     "restore-session": "node scripts/restore-session.cjs"
   },
   "dependencies": {},
