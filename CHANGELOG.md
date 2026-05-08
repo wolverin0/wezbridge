@@ -1,6 +1,33 @@
 # Changelog
 
-All notable changes to theorchestra are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+All notable changes to wezbridge are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+## [3.3.0] - 2026-05-08
+
+### Curation pass — wezbridge becomes its own thing
+
+The repo had been carrying the abandoned theorchestra-v3 attempt (React/Vite + TypeScript backend + browser dashboard) alongside the actual shipping wezbridge MCP. This release rips it out so wezbridge is a focused MCP server and nothing else.
+
+**Removed (~250 files, ~36,000 lines)**
+- `src/backend/`, `src/frontend/`, `src/mcp/` — the theorchestra-v3 React/Vite + TypeScript MCP rewrite (32 + 10 + 5 .ts files)
+- `scripts/v3-*-gate.ts`, `scripts/v3-phase11-*.ts`, `scripts/v3-*-unit.ts`, `scripts/theorchestra-start.ts`, `scripts/fire-ctx-threshold.ts` (29 tsx-driven phase gates)
+- `tests/testpane*` + `tests/testproject-*` (sandbox PRDs for unrelated dogfood projects)
+- `debates/002-orchestrator-cycle-stop/` (debate process artifacts)
+- `handoffs/` (session-local handoff files)
+- `docs/_archive/`, `docs/adrs/v3.0-*`, `docs/features/*`, `docs/screenshots/v3.0/`, `docs/screenshots/tests/`, `docs/soak-reports/`, `docs/PLAN-OF-TRUTH.md`, `docs/architecture.md`, `docs/futureroadmap.md`, `docs/v3.0-*.md`, `docs/SESSION-HANDOFF-*`, `docs/ROLLBACK-*` (theorchestra-v3 documentation tree, ~103 files)
+- `tsconfig.json`, `package-lock.json` (no longer needed — zero npm deps)
+
+**Repackaged**
+- `package.json`: name `theorchestra` → `wezbridge`, version `3.2.1` → `3.3.0`, description rewritten, all v3:* npm scripts removed, `dependencies: {}` (was 12 packages), `devDependencies: {}` (was 12 packages). wezbridge .cjs core uses only Node built-ins.
+- `README.md`: rewritten to lead with the wezbridge value prop (multi-pane MCP + OmniClaude-via-Telegram pattern). Old roadmap and "install via agent" sections dropped. Pointer to `docs/SETUP-omniclaude-telegram.md` for the daily-driver pattern.
+
+**Preserved**
+- `omniclaude-pre-rollback` git tag at commit `acd3460` — frozen pre-revert state for anyone wanting to revive the dashboard / orchestra-goose ambition.
+- `legacy-v2-bot` branch — original v2.x Telegram bot history.
+
+**Verified**
+- 184/184 unit tests still pass.
+- `mcp__wezbridge__*` tool surface unchanged.
 
 ## [2.5.0] - 2026-04-16
 
