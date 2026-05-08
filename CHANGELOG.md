@@ -2,6 +2,34 @@
 
 All notable changes to wezbridge are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.4.0] - 2026-05-08
+
+### Session snapshot + restore — crash recovery for the AI pane swarm
+
+When WezTerm crashes (mux dies, OS reboot, manual close), every running pane is lost. Re-spawning each one by hand is tedious because each pane has different launch flags (Claude vs Codex, `--channels`, `--dangerously-skip-permissions`, `--continue`, persona, cwd). v3.4.0 adds automatic snapshotting + a one-command restore.
+
+- **`src/session-snapshot.cjs`** (new library, 25 unit tests) — captures `{ cwd, pid, title, tab_title, cmdline, ai }` for every pane running `claude.exe` or `codex.exe`. Appends batches to `vault/_wezbridge/session-snapshot.jsonl`. Also exports `startWatcher({ listPanes, intervalMs })` and `snapshotOnce(...)`. Filter is intentionally narrow: only AI panes get snapshotted, so random shells / debugging panes / the dashboard daemon itself stay out.
+- **`scripts/restore-session.cjs`** (new CLI, 11 unit tests) — reads the latest snapshot batch and re-spawns each entry via `wezterm cli spawn --cwd <cwd> -- <cmdline parts>` with stagger (default 2000ms — keeps the telegram channel-plugin race in check). Flags: `--dry-run`, `--stagger-ms N`, `--filter <regex>`. Exit code 0 if all entries spawned, 1 if any failed.
+- **Dashboard daemon integration** — when env var `WEZBRIDGE_SESSION_SNAPSHOT={1|<seconds>}` is set, `dashboard-server.cjs` arms a periodic watcher on boot. Default off; opt-in like the other v3.2 modules.
+- **`package.json`** — added `npm run restore-session` script alias.
+
+Total: 232 unit tests (was 196 in v3.3.2; +36 from the new modules + their integration tests).
+
+**Usage after a crash:**
+```bash
+# 1. Reopen WezTerm (mux comes back, no panes inside)
+# 2. From any new wezterm pane:
+npm run restore-session
+# OR
+node scripts/restore-session.cjs --dry-run    # preview first
+node scripts/restore-session.cjs --filter wezbridge   # only restore wezbridge-cwd panes
+```
+
+**Limitations:**
+- Only AI panes (claude.exe / codex.exe) — by design. Non-AI shells aren't restored.
+- Requires WezTerm mux to be alive (start a fresh wezterm window first).
+- Plugin daemons (telegram channel plugin's bun.exe instances) need to come up cleanly. If the snapshot includes panes with `--channels`, the `--stagger-ms` default of 2000ms gives the channel plugin time to settle between spawns.
+
 ## [3.3.2] - 2026-05-08
 
 ### Three improvements after the v3.3.1 docs pass
