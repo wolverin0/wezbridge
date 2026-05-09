@@ -2,6 +2,47 @@
 
 All notable changes to wezbridge are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.4.2] - 2026-05-09
+
+### `wezbridge.wezterm` Lua plugin — zero-click crash recovery + AI launcher
+
+v3.4.1 made snapshot-watching default-on. v3.4.2 makes the *recovery side* equally automatic — no `npm run restore-session` to remember after a crash. Plus a launcher menu for AI sessions so you don't memorize flag combos.
+
+**Why now:** the user crashed twice in 24 hours (upstream issue #7527 not yet fixed in main HEAD), and the friction of remembering a CLI command at the moment of crash defeats the whole point of the v3.4.x snapshot work. Wezterm's Lua plugin system gives us native UX inside wezterm itself.
+
+- **`wezterm/wezbridge.lua`** (new, ~250 lines) — Lua plugin exposing `wezbridge.apply(config, opts)`. Three features:
+  1. **Auto-restore on `mux-startup`** — after any wezterm crash or cold boot, reads the latest snapshot and silently re-spawns AI panes if (a) snapshot is < 30 min old AND (b) has ≥ 2 entries. Skips otherwise. Zero clicks.
+  2. **`LEADER+R` fuzzy picker** — opens wezterm's native `InputSelector` over all snapshots, lets you pick which one to restore (Chrome-style "recent sessions").
+  3. **`LEADER+L` launcher menu** — preset AI launches (claude --continue, claude --channels, codex resume --last, etc.) bound to a fuzzy picker. Override via `launch_presets = { ... }` in opts.
+- **`wezterm/example-wezterm.lua`** (new) — the user-facing snippet to drop into `~/.wezterm.lua`. Sets `package.path`, defines a leader key, calls `wezbridge.apply()`.
+- **`scripts/install-restore-shortcut.cmd`** (TODO this release) / desktop shortcut — for users who don't want to edit their wezterm.lua, the `Restore wezbridge` desktop shortcut runs `node scripts/restore-session.cjs` from a one-click pinned-to-taskbar icon.
+
+**Install in your wezterm.lua (one block):**
+
+```lua
+local wezterm = require 'wezterm'
+local config = wezterm.config_builder()
+
+local wezbridge_dir = '/abs/path/to/wezbridge'
+package.path = package.path .. ';' .. wezbridge_dir .. '/wezterm/?.lua'
+
+config.leader = { key = 'a', mods = 'CTRL', timeout_milliseconds = 2000 }
+local wezbridge = require 'wezbridge'
+wezbridge.apply(config, {
+  wezbridge_dir = wezbridge_dir,
+  auto_restore = true,
+  restore_keybind = { mods = 'LEADER', key = 'r' },
+  launcher_keybind = { mods = 'LEADER', key = 'l' },
+})
+
+return config
+```
+
+**Limitations:**
+- The Lua plugin needs the wezbridge repo cloned + `wezbridge_dir` pointed at it.
+- `auto_restore = true` runs on EVERY wezterm cold boot — if you intentionally want a fresh wezterm without your old AI panes, set the env var that disables snapshot capture (`WEZBRIDGE_SESSION_SNAPSHOT=0`) or hold-Esc-during-boot... actually, just don't set `auto_restore = true` if you'd rather always pick manually via `LEADER+R`.
+- No Lua unit tests in this repo (Lua testing harness not set up). Plugin is exercised via integration when wezterm loads it. Logs visible via `wezterm cli get-text` or the wezterm GUI's "Show Debug Overlay" (`CTRL+SHIFT+L`).
+
 ## [3.4.1] - 2026-05-08
 
 ### Session-snapshot now default-on + autostart helper
