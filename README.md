@@ -152,23 +152,50 @@ export WEZBRIDGE_GRADER_BACKEND=claude           # outcome-grader backend
 
 Bypass-once override env vars: `WEZBRIDGE_GUARD_OVERRIDE`, `WEZBRIDGE_SAFETY_OVERRIDE`, `WEZBRIDGE_PREPUSH_OVERRIDE`. See [`docs/USAGE-guard.md`](docs/USAGE-guard.md).
 
-### 10. v3.4.1 session snapshot — crash recovery (default ON)
+### 10. Session snapshot + crash recovery (default ON)
 
-Captures every AI pane's launch state (cwd + cmdline + flags) on a 60s timer. After a WezTerm crash, restore the swarm with one command.
+Captures every AI pane's launch state (cwd + cmdline + flags) on a 60s timer. After a WezTerm crash, recover with **zero clicks** — see step 11 for the wezterm-native UX.
 
-**Default ON since v3.4.1.** The dashboard daemon arms the watcher automatically at boot. Opt OUT with `WEZBRIDGE_SESSION_SNAPSHOT=0`.
+**Default ON since v3.4.1.** Dashboard daemon arms the watcher automatically. Opt OUT with `WEZBRIDGE_SESSION_SNAPSHOT=0`.
 
 ```bash
 npm run dashboard          # snapshot watcher arms automatically
 npm run install-autostart  # one-time: dashboard auto-launches on user login (Windows)
 
-# After a crash — open a fresh wezterm pane and run:
+# Manual restore from CLI (fallback if you skip step 11):
 npm run restore-session
-# Or preview first:
-node scripts/restore-session.cjs --dry-run
 ```
 
-Only `claude.exe` and `codex.exe` panes are captured — random shells stay out. Snapshots land at `vault/_wezbridge/session-snapshot.jsonl`. See CHANGELOG v3.4.0 / v3.4.1 for limitations.
+Only `claude.exe` and `codex.exe` panes are captured. Snapshots land at `vault/_wezbridge/session-snapshot.jsonl`.
+
+### 11. (Recommended) Wezterm Lua plugin — zero-click recovery + launcher
+
+Add the `wezbridge.wezterm` Lua plugin to your wezterm config for **automatic crash recovery** (no commands, no clicks) plus a **fuzzy launcher menu** for AI sessions with preset flag combos.
+
+After a crash: just reopen wezterm. AI panes come back automatically if the snapshot is < 30 min old. Done.
+
+Drop this into your `~/.wezterm.lua` (`C:\Users\<you>\.wezterm.lua` on Windows):
+
+```lua
+local wezterm = require 'wezterm'
+local config = wezterm.config_builder()
+
+local wezbridge_dir = '/abs/path/to/your/wezbridge/clone'
+package.path = package.path .. ';' .. wezbridge_dir .. '/wezterm/?.lua'
+
+config.leader = { key = 'a', mods = 'CTRL', timeout_milliseconds = 2000 }
+local wezbridge = require 'wezbridge'
+wezbridge.apply(config, {
+  wezbridge_dir = wezbridge_dir,
+  auto_restore = true,                              -- silent auto-restore on cold boot
+  restore_keybind = { mods = 'LEADER', key = 'r' }, -- LEADER+R: pick a snapshot manually
+  launcher_keybind = { mods = 'LEADER', key = 'l' },-- LEADER+L: launcher menu (preset AI launches)
+})
+
+return config
+```
+
+See `wezterm/example-wezterm.lua` in this repo for a fuller example.
 
 ## A2A protocol
 
