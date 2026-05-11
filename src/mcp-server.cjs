@@ -874,6 +874,12 @@ function handleToolCall(name, args) {
       }
 
       try {
+        log(JSON.stringify({
+          op: 'kill_session',
+          pane_id: paneId,
+          caller_meta: args.caller_meta || null,
+          timestamp: new Date().toISOString(),
+        }));
         // Send Ctrl+C first to gracefully stop, then kill
         try { wez.sendTextNoEnter(paneId, '\x03'); } catch { /* ignore */ }
         wez.killPane(paneId);
