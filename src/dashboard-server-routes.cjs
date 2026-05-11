@@ -56,25 +56,42 @@ function sendError(res, err) {
 }
 
 function parseBody(req) {
+  // AXIS-5: slow-loris defence — abort if the body stream does not complete
+  // within 10 seconds, preventing a client from hanging the server indefinitely.
   return new Promise((resolve, reject) => {
     let buf = '';
-    let rejected = false;
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      const err = Object.assign(new Error('Request timeout'), { statusCode: 408 });
+      req.destroy(err);
+      reject(err);
+    }, 10_000);
     req.on('data', chunk => {
       buf += chunk;
-      if (!rejected && buf.length > 1e6) {
-        rejected = true;
+      if (!settled && buf.length > 1e6) {
+        settled = true;
+        clearTimeout(timer);
         const err = Object.assign(new Error('Request body too large'), { statusCode: 413 });
         reject(err);
         req.destroy(err);
       }
     });
     req.on('end', () => {
-      if (rejected) return;
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
       if (!buf) return resolve({});
       try { resolve(JSON.parse(buf)); }
       catch (e) { reject(new Error('invalid JSON body')); }
     });
-    req.on('error', reject);
+    req.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(err);
+    });
   });
 }
 
