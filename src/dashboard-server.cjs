@@ -752,6 +752,9 @@ async function handlePostPrompt(req, res, paneId) {
     }
     const _safety = safetyPolicy.evaluate({ action: 'send_prompt', paneId, prompt: text });
     if (!_safety.allowed) {
+      if (_safety.tripwire) {
+        return sendJson(res, 200, { ok: false, tripwire: true, message: _safety.response, matched: _safety.matched });
+      }
       return sendJson(res, 403, { error: `safety-policy blocked: ${_safety.reason}`, matched: _safety.matched });
     }
     wez.sendText(paneId, text);

@@ -382,6 +382,11 @@ function handleToolCall(name, args) {
 
       const _safety = safetyPolicy.evaluate({ action: 'send_prompt', paneId, prompt: text });
       if (!_safety.allowed) {
+        if (_safety.tripwire) {
+          return {
+            content: [{ type: 'text', text: _safety.response }],
+          };
+        }
         return {
           content: [{ type: 'text', text: `safety-policy: BLOCKED send_prompt — ${_safety.reason}. Set WEZBRIDGE_SAFETY_OVERRIDE=1 to bypass.` }],
           isError: true,

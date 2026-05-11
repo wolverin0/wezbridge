@@ -26,20 +26,73 @@
 
 const path = require('node:path');
 
+const SAFETY_TRIPWIRE_RESPONSE = [
+  'Safety tripwire triggered.',
+  'This request looks destructive and was not sent to the pane.',
+  'Confirm the exact action via the dashboard side channel before retrying.',
+].join(' ');
+
 // Destructive-shell text that must NEVER be injected into a pane via
-// send_prompt. Tight allowlist — false positives are worse than false
-// negatives here (we just block, user can rephrase).
+// send_prompt. These catch known bypass forms before the command allowlist.
 const DESTRUCTIVE_TEXT_PATTERNS = [
-  /\brm\s+-rf\s+\//,                          // rm -rf / or rm -rf /home/...
+  /\brm\s+-[^\s]*r[^\s]*f[^\s]*\s+(?:--\s*)?\//i, // rm -rf / or rm -rf /home/...
+  /\bsudo\s+rm\b/i,
+  /\bRemove-Item\b(?=.*\b-(?:Recurse|r)\b)(?=.*\b-(?:Force|f)\b)/i,
   /\bDROP\s+(TABLE|DATABASE|SCHEMA)\b/i,
   /\bTRUNCATE\s+TABLE\b/i,
+  /\btruncate\s+(?:[^\n;]*\s)?--size\s*=\s*0\b/i,
+  /(^|[;&|\s]):>\s*\S+/,                      // shell truncation: :> file
   /\bformat\s+[A-Z]:/i,                       // Windows format C:
   /\bgit\s+push\s+(--force|-f)\s+origin\s+(main|master)\b/i,
+  /\bgit\s+push\b[^\n;]*--force-with-lease\b/i,
   /\bgit\s+reset\s+--hard\b/,
+  /\bgh\s+repo\s+delete\b/i,
+  /\bdd\b(?=.*\bif=\/dev\/zero\b)/i,
   /\bdd\s+if=.*of=\/dev\/(sd|nvme|hd)/,       // dd to a raw block device
   /\bmkfs(\.\w+)?\s+\/dev\//,                 // mkfs on a device
+  /\bshred\b/i,
+  /\bwipefs\b/i,
   /:\(\)\s*\{\s*:\|:&\s*\}\s*;:/,             // classic fork bomb
 ];
+
+const SHELL_INTENT_RE = /^\s*(?:\$|>|(?:please\s+)?(?:run|execute|type|paste)\s+)(.+)$/i;
+const SHELL_COMMAND_RE = /^(?:git|gh|rm|sudo|truncate|dd|mkfs(?:\.\w+)?|shred|wipefs|Remove-Item|format|npm|pnpm|yarn|node|ls|dir|pwd|echo|cat|type|rg|grep)\b/i;
+const ALLOWED_SHELL_TEXT_PATTERNS = [
+  /^git\s+(?:status|diff|log|show|branch)\b/i,
+  /^git\s+checkout\s+-b\s+[\w./-]+$/i,
+  /^git\s+push\s+(?:-u\s+)?origin\s+(?!main\b|master\b)[\w./-]+$/i,
+  /^(?:npm|pnpm|yarn)\s+(?:test|run\s+[\w:-]+)\b/i,
+  /^node\s+(?:--test|--check)\b/i,
+  /^(?:ls|dir|pwd|echo|cat|type|rg|grep)\b/i,
+];
+
+function _shellCommandFromLine(line) {
+  const match = String(line || '').match(SHELL_INTENT_RE);
+  return (match ? match[1] : line).trim();
+}
+
+function _hasUnallowlistedShellIntent(prompt) {
+  return String(prompt || '').split(/\r?\n/).some((line) => {
+    const command = _shellCommandFromLine(line);
+    if (!SHELL_COMMAND_RE.test(command)) return false;
+    return !ALLOWED_SHELL_TEXT_PATTERNS.some((re) => re.test(command));
+  });
+}
+
+function _promptIsUnsafe(prompt) {
+  const text = String(prompt || '');
+  return DESTRUCTIVE_TEXT_PATTERNS.some((re) => re.test(text)) || _hasUnallowlistedShellIntent(text);
+}
+
+function _blocked(rule) {
+  const result = { allowed: false, reason: rule.reason, matched: rule.name };
+  if (process.env.WEZBRIDGE_SAFETY_TRIPWIRE === 'true') {
+    process.stderr.write(`[safety-policy] tripwire ${rule.name}: ${rule.reason}\n`);
+    result.tripwire = true;
+    result.response = SAFETY_TRIPWIRE_RESPONSE;
+  }
+  return result;
+}
 
 // Self-pane registry — populated by host at startup. The orchestrator
 // MUST NOT target its own pane(s) for kill / hard send_key sequences.
@@ -72,7 +125,7 @@ const RULES = [
     test: ({ action, prompt }) =>
       action === 'send_prompt' &&
       typeof prompt === 'string' &&
-      DESTRUCTIVE_TEXT_PATTERNS.some((re) => re.test(prompt)),
+      _promptIsUnsafe(prompt),
     reason: 'send_prompt contains destructive shell content',
   },
   {
@@ -135,7 +188,7 @@ function evaluate(ctx) {
       hit = false;
     }
     if (hit) {
-      return { allowed: false, reason: rule.reason, matched: rule.name };
+      return _blocked(rule);
     }
   }
   return { allowed: true, reason: 'no destructive rule matched' };
@@ -146,4 +199,6 @@ module.exports = {
   setSelfPaneIds,
   RULES,
   DESTRUCTIVE_TEXT_PATTERNS,
+  ALLOWED_SHELL_TEXT_PATTERNS,
+  SAFETY_TRIPWIRE_RESPONSE,
 };
