@@ -899,11 +899,25 @@ function handleToolCall(name, args) {
       try {
         const direction = args.direction === 'vertical' ? 'vertical' : 'horizontal';
         const opts = {};
+        const programLimitError = validateByteLength('program', args.program, INPUT_BYTE_LIMITS.name);
+        if (programLimitError) return programLimitError;
         const argsLimitError = validateJsonArgsByteLength(args.args);
         if (argsLimitError) return argsLimitError;
         if (args.cwd) opts.cwd = args.cwd;
         if (args.program) opts.program = args.program;
         if (args.args) opts.args = args.args;
+        log(JSON.stringify({
+          op: 'split_pane',
+          caller: args.caller_meta || null,
+          args_summary: {
+            pane_id: args.pane_id,
+            direction,
+            has_cwd: !!args.cwd,
+            program: args.program || null,
+            args_count: Array.isArray(args.args) ? args.args.length : 0,
+          },
+          timestamp: new Date().toISOString(),
+        }));
         const newId = direction === 'vertical'
           ? wez.splitVertical(args.pane_id, opts)
           : wez.splitHorizontal(args.pane_id, opts);
@@ -927,11 +941,24 @@ function handleToolCall(name, args) {
     case 'spawn_ssh_domain': {
       try {
         const opts = {};
+        const programLimitError = validateByteLength('program', args.program, INPUT_BYTE_LIMITS.name);
+        if (programLimitError) return programLimitError;
         const argsLimitError = validateJsonArgsByteLength(args.args);
         if (argsLimitError) return argsLimitError;
         if (args.cwd) opts.cwd = args.cwd;
         if (args.program) opts.program = args.program;
         if (args.args) opts.args = args.args;
+        log(JSON.stringify({
+          op: 'spawn_ssh_domain',
+          caller: args.caller_meta || null,
+          args_summary: {
+            domain: args.domain,
+            has_cwd: !!args.cwd,
+            program: args.program || null,
+            args_count: Array.isArray(args.args) ? args.args.length : 0,
+          },
+          timestamp: new Date().toISOString(),
+        }));
         const newId = wez.spawnSshDomain(args.domain, opts);
         return {
           content: [{ type: 'text', text: JSON.stringify({ pane_id: newId, domain: args.domain, cwd: args.cwd || '(remote home)' }, null, 2) }],
@@ -974,11 +1001,24 @@ function handleToolCall(name, args) {
     case 'spawn_in_workspace': {
       try {
         const opts = {};
+        const programLimitError = validateByteLength('program', args.program, INPUT_BYTE_LIMITS.name);
+        if (programLimitError) return programLimitError;
         const argsLimitError = validateJsonArgsByteLength(args.args);
         if (argsLimitError) return argsLimitError;
         if (args.cwd) opts.cwd = args.cwd;
         if (args.program) opts.program = args.program;
         if (args.args) opts.args = args.args;
+        log(JSON.stringify({
+          op: 'spawn_in_workspace',
+          caller: args.caller_meta || null,
+          args_summary: {
+            workspace: args.workspace,
+            has_cwd: !!args.cwd,
+            program: args.program || null,
+            args_count: Array.isArray(args.args) ? args.args.length : 0,
+          },
+          timestamp: new Date().toISOString(),
+        }));
         const newId = wez.spawnInWorkspace(String(args.workspace), opts);
         return {
           content: [{ type: 'text', text: JSON.stringify({ pane_id: newId, workspace: args.workspace }, null, 2) }],
