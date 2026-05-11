@@ -11,6 +11,7 @@ function msysToWin(p) {
 }
 
 function findWezterm() {
+  if (process.env.WEZBRIDGE_WEZTERM_BIN) return process.env.WEZBRIDGE_WEZTERM_BIN;
   if (process.env.WEZTERM_PATH) return process.env.WEZTERM_PATH;
   const fs = require('fs');
   // Check all known locations: Windows native, Git Bash (/c/), WSL (/mnt/c/)
