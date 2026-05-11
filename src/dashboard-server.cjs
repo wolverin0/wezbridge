@@ -397,7 +397,9 @@ async function spawnAgentPane({ cwd, persona, permission_mode, worktree }) {
   } else {
     claudeCmd += ' --continue';
   }
-  claudeCmd += ' --dangerously-skip-permissions';
+  if (process.env.WEZBRIDGE_ALLOW_SKIP_PERMISSIONS === 'true') {
+    claudeCmd += ' --dangerously-skip-permissions';
+  }
   if (permission_mode && validModes.includes(permission_mode)) {
     claudeCmd += ' --permission-mode ' + permission_mode;
   }
