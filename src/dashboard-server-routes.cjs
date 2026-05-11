@@ -14,9 +14,10 @@ const PORT = parseInt(process.env.DASHBOARD_PORT || '4200', 10);
 const STATIC_DIR = path.join(__dirname, '..', 'dashboard', 'dist');
 
 function getCorsOrigin(req) {
+  // AXIS-3: use ALLOWED_ORIGINS (same set as CSRF) so CORS and CSRF never diverge.
   const origin = req.headers.origin;
   if (!origin) return null;
-  return /^http:\/\/localhost(?::\d+)?$/i.test(origin) ? origin : null;
+  return ALLOWED_ORIGINS.has(origin.toLowerCase()) ? origin : null;
 }
 
 function corsHeaders(res) {
