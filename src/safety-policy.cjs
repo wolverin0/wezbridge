@@ -37,7 +37,9 @@ const SAFETY_TRIPWIRE_RESPONSE = [
 const DESTRUCTIVE_TEXT_PATTERNS = [
   /\brm\s+-[^\s]*r[^\s]*f[^\s]*\s+(?:--\s*)?\//i, // rm -rf / or rm -rf /home/...
   /\bsudo\s+rm\b/i,
-  /\bRemove-Item\b(?=.*\b-(?:Recurse|r)\b)(?=.*\b-(?:Force|f)\b)/i,
+  // Retired the previous Remove-Item lookahead because a word boundary before
+  // "-" never fires; these replacements match explicit PowerShell flags.
+  /\bRemove-Item\b(?=.*(?:^|\s)-(?:Recurse|Rec|r)\b)(?=.*(?:^|\s)-(?:Force|Fo|f)\b)/i,
   // AXIS-1: PowerShell abbreviated recursive/force params (Remove-Item -Rec -Fo)
   /\bRemove-Item\b.*-(?:Rec|Fo)/i,
   // AXIS-1: PowerShell built-in aliases ri/del/erase with recursive or force flags
@@ -181,6 +183,11 @@ function evaluate(ctx) {
     return { allowed: true, reason: 'empty context' };
   }
   if (process.env.WEZBRIDGE_SAFETY_OVERRIDE === '1') {
+    if (process.env.NODE_ENV === 'production' || process.env.WEZBRIDGE_ENV === 'production') {
+      throw Object.assign(new Error('WEZBRIDGE_SAFETY_OVERRIDE is not allowed in production'), { statusCode: 403 });
+    }
+    const stack = new Error('WEZBRIDGE_SAFETY_OVERRIDE bypass stack').stack || '';
+    process.stderr.write(`[safety-policy] CRITICAL: WEZBRIDGE_SAFETY_OVERRIDE=1 bypassed safety rules\n${stack}\n`);
     return { allowed: true, reason: 'WEZBRIDGE_SAFETY_OVERRIDE=1' };
   }
   for (const rule of RULES) {
@@ -198,8 +205,19 @@ function evaluate(ctx) {
   return { allowed: true, reason: 'no destructive rule matched' };
 }
 
+function assertBypassPermissionsAllowed(req) {
+  if (req?.body?.permission_mode === 'bypassPermissions' &&
+      process.env.WEZBRIDGE_ALLOW_SKIP_PERMISSIONS !== 'true') {
+    throw Object.assign(new Error('permission_mode=bypassPermissions requires WEZBRIDGE_ALLOW_SKIP_PERMISSIONS=true'), {
+      statusCode: 403,
+    });
+  }
+  return null;
+}
+
 module.exports = {
   evaluate,
+  assertBypassPermissionsAllowed,
   setSelfPaneIds,
   RULES,
   DESTRUCTIVE_TEXT_PATTERNS,

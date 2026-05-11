@@ -55,9 +55,11 @@ function sendError(res, err) {
   sendJson(res, err.statusCode || 500, { error: err.message });
 }
 
-function parseBody(req) {
+function parseBody(req, opts = { timeoutMs: 10_000, maxBytes: 1_048_576 }) {
   // AXIS-5: slow-loris defence — abort if the body stream does not complete
-  // within 10 seconds, preventing a client from hanging the server indefinitely.
+  // within the configured timeout, preventing a client from hanging the server indefinitely.
+  const timeoutMs = opts.timeoutMs ?? 10_000;
+  const maxBytes = opts.maxBytes ?? 1_048_576;
   return new Promise((resolve, reject) => {
     let buf = '';
     let settled = false;
@@ -67,10 +69,10 @@ function parseBody(req) {
       const err = Object.assign(new Error('Request timeout'), { statusCode: 408 });
       req.destroy(err);
       reject(err);
-    }, 10_000);
+    }, timeoutMs);
     req.on('data', chunk => {
       buf += chunk;
-      if (!settled && buf.length > 1e6) {
+      if (!settled && buf.length > maxBytes) {
         settled = true;
         clearTimeout(timer);
         const err = Object.assign(new Error('Request body too large'), { statusCode: 413 });

@@ -55,6 +55,8 @@ function createAgentHandlers(ctx) {
   async function handlePostSpawn(req, res) {
     try {
       const body = await parseBody(req);
+      req.body = body;
+      safetyPolicy.assertBypassPermissionsAllowed(req);
       const { cwd, program } = body;
       if (!cwd) return sendJson(res, 400, { error: 'missing `cwd` body field' });
 
@@ -212,7 +214,7 @@ function createAgentHandlers(ctx) {
 
   async function handlePostBootstrap(req, res) {
     try {
-      const body = await parseBody(req);
+      const body = await parseBody(req, { timeoutMs: 30_000, maxBytes: 2_097_152 });
       const prdSlug = typeof body.prd === 'string' ? body.prd.trim() : '';
       if (!prdSlug) return sendJson(res, 400, { error: 'missing `prd` field' });
 
@@ -238,6 +240,7 @@ function createAgentHandlers(ctx) {
 
         let paneId = null;
         let wtInfo = null;
+        safetyPolicy.assertBypassPermissionsAllowed({ body: { permission_mode: role.permission_mode || null } });
         try {
           const result = await spawnAgentPane({
             cwd,

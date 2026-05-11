@@ -183,6 +183,7 @@ function parsePersonaFrontmatter(filePath) {
 }
 
 async function spawnAgentPane({ cwd, persona, permission_mode, worktree }, log) {
+  safetyPolicy.assertBypassPermissionsAllowed({ body: { permission_mode } });
   return ipc.spawnAgentPane(
     { cwd, persona, permission_mode, worktree },
     { resolvePersona, worktreeRegistry, teamManifest, log }

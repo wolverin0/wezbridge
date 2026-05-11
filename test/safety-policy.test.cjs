@@ -5,7 +5,14 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 
 const policy = require(path.resolve(__dirname, '..', 'src', 'safety-policy.cjs'));
-const { evaluate, setSelfPaneIds, RULES, DESTRUCTIVE_TEXT_PATTERNS, SAFETY_TRIPWIRE_RESPONSE } = policy;
+const {
+  evaluate,
+  assertBypassPermissionsAllowed,
+  setSelfPaneIds,
+  RULES,
+  DESTRUCTIVE_TEXT_PATTERNS,
+  SAFETY_TRIPWIRE_RESPONSE,
+} = policy;
 
 function withEnv(key, value, fn) {
   const prev = process.env[key];
@@ -74,6 +81,8 @@ test('blocks: send_prompt with mkfs /dev/sda', () => {
 test('blocks: send_prompt destructive bypass variants', () => {
   const prompts = [
     'Remove-Item C:\\temp -Recurse -Force',
+    'Remove-Item C:\\temp -r -f',
+    'Remove-Item C:\\temp -Rec -Fo',
     'gh repo delete owner/repo --yes',
     'git push --force-with-lease origin main',
     'rm -rf /',
@@ -183,6 +192,36 @@ test('override: WEZBRIDGE_SAFETY_OVERRIDE=1 bypasses block', () => {
     const r = evaluate({ action: 'kill_session', paneId: 0 });
     assert.equal(r.allowed, true);
     assert.match(r.reason, /WEZBRIDGE_SAFETY_OVERRIDE/);
+  });
+});
+
+test('override: WEZBRIDGE_SAFETY_OVERRIDE=1 is refused in production', () => {
+  setSelfPaneIds([0]);
+  withEnv('WEZBRIDGE_SAFETY_OVERRIDE', '1', () => {
+    withEnv('NODE_ENV', 'production', () => {
+      assert.throws(
+        () => evaluate({ action: 'kill_session', paneId: 0 }),
+        /not allowed in production/
+      );
+    });
+  });
+});
+
+test('assertBypassPermissionsAllowed blocks bypassPermissions without env gate', () => {
+  withEnv('WEZBRIDGE_ALLOW_SKIP_PERMISSIONS', undefined, () => {
+    assert.throws(
+      () => assertBypassPermissionsAllowed({ body: { permission_mode: 'bypassPermissions' } }),
+      /WEZBRIDGE_ALLOW_SKIP_PERMISSIONS/
+    );
+  });
+});
+
+test('assertBypassPermissionsAllowed allows bypassPermissions with env gate', () => {
+  withEnv('WEZBRIDGE_ALLOW_SKIP_PERMISSIONS', 'true', () => {
+    assert.equal(
+      assertBypassPermissionsAllowed({ body: { permission_mode: 'bypassPermissions' } }),
+      null
+    );
   });
 });
 
