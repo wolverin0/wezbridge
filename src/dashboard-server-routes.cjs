@@ -31,7 +31,8 @@ function corsHeaders(res) {
 
 function hasValidBearerToken(req) {
   const token = process.env.WEZBRIDGE_API_TOKEN;
-  if (!token) return true;
+  // AXIS-4: fail-closed — deny-all when token is unset (see startup abort in production)
+  if (!token) return false;
   const expected = `Bearer ${token}`;
   const actual = req.headers.authorization || '';
   const expectedBuf = Buffer.from(expected);
@@ -247,6 +248,14 @@ const server = http.createServer(async (req, res) => {
 
 
 function startServer() {
+  // AXIS-4: abort startup in production if WEZBRIDGE_API_TOKEN is unset.
+  // hasValidBearerToken already returns false when token is absent, but
+  // an explicit startup abort prevents silent misconfiguration in production.
+  if (process.env.NODE_ENV === 'production' && !process.env.WEZBRIDGE_API_TOKEN) {
+    process.stderr.write('[dashboard] FATAL: WEZBRIDGE_API_TOKEN must be set in production. Aborting.
+');
+    process.exit(1);
+  }
   log(`allowed origins (CSRF): ${Array.from(ALLOWED_ORIGINS).join(', ')}`);
   handlers.startAutoHandoffMonitor();
   server.listen(PORT, () => {
