@@ -32,8 +32,8 @@ function corsHeaders(res) {
 
 function hasValidBearerToken(req) {
   const token = process.env.WEZBRIDGE_API_TOKEN;
-  // AXIS-4: fail-closed — deny-all when token is unset (see startup abort in production)
-  if (!token) return false;
+  // AXIS-4: require token in production (startup aborts if unset); allow-all in dev/test
+  if (!token) return process.env.NODE_ENV !== 'production'; // AXIS-4: allow-in-dev, require-in-production
   const expected = `Bearer ${token}`;
   const actual = req.headers.authorization || '';
   const expectedBuf = Buffer.from(expected);
