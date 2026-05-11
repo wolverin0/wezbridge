@@ -612,7 +612,11 @@ function handleToolCall(name, args) {
 
     case 'spawn_session': {
       const cwd = args.cwd || process.cwd();
-      const skipPerms = args.dangerously_skip_permissions || false;
+      // F-SEC-2b: --dangerously-skip-permissions is only honored when the operator
+      // has explicitly opted in via env. Any caller request for it is ignored otherwise.
+      const skipPerms =
+        (args.dangerously_skip_permissions || false) &&
+        process.env.WEZBRIDGE_ALLOW_SKIP_PERMISSIONS === 'true';
 
       // Resolve persona if provided
       let personaPath = null;
