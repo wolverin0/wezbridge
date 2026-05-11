@@ -71,6 +71,7 @@ const INPUT_BYTE_LIMITS = {
   name: 256,
   args: 4096,
 };
+const MIN_SWITCH_WORKSPACE_WEZTERM_VERSION = 20230408;
 
 function isValidResumeSession(resume) {
   return resume === 'last' || RESUME_SESSION_RE.test(String(resume || ''));
@@ -138,6 +139,29 @@ function formatLastText(text, verbose) {
   const value = String(text || '');
   return verbose || value.length <= 500 ? value : `${value.slice(0, 500)}...`;
 }
+
+function detectSwitchWorkspaceSupport() {
+  try {
+    const output = require('child_process').execFileSync(wez.WEZTERM, ['--version'], {
+      encoding: 'utf-8',
+      timeout: 3000,
+      windowsHide: true,
+    }).trim();
+    const match = output.match(/(\d{8})/);
+    if (!match) {
+      return { supported: false, reason: `unable to parse WezTerm version from "${output}"` };
+    }
+    const version = Number(match[1]);
+    if (version < MIN_SWITCH_WORKSPACE_WEZTERM_VERSION) {
+      return { supported: false, version, reason: `WezTerm ${version} is older than ${MIN_SWITCH_WORKSPACE_WEZTERM_VERSION}` };
+    }
+    return { supported: true, version };
+  } catch (err) {
+    return { supported: false, reason: `unable to probe WezTerm version: ${err.message}` };
+  }
+}
+
+const SWITCH_WORKSPACE_SUPPORT = detectSwitchWorkspaceSupport();
 
 // ─── Tool Definitions ─────────────────────────────────────────────────────
 
@@ -401,7 +425,7 @@ const TOOLS = [
       required: ['pane_id'],
     },
   },
-];
+].filter(tool => tool.name !== 'switch_workspace' || SWITCH_WORKSPACE_SUPPORT.supported);
 
 // ─── Tool Implementations ─────────────────────────────────────────────────
 
@@ -1027,6 +1051,9 @@ function handleToolCall(name, args) {
 
     case 'switch_workspace': {
       try {
+        if (!SWITCH_WORKSPACE_SUPPORT.supported) {
+          return mcpError(`Error: switch_workspace unsupported: ${SWITCH_WORKSPACE_SUPPORT.reason}`);
+        }
         const nameLimitError = validateByteLength('name', args.name, INPUT_BYTE_LIMITS.name);
         if (nameLimitError) return nameLimitError;
         wez.switchWorkspace(String(args.name));
