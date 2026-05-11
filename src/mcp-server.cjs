@@ -63,6 +63,7 @@ function log(...args) {
 }
 
 const RESUME_SESSION_RE = /^[0-9a-f-]{8,}$/i;
+const VALID_PERMISSION_MODES = new Set(['default', 'plan', 'acceptEdits', 'bypassPermissions']);
 
 function isValidResumeSession(resume) {
   return resume === 'last' || RESUME_SESSION_RE.test(String(resume || ''));
@@ -629,6 +630,27 @@ function handleToolCall(name, args) {
       const skipPerms =
         (args.dangerously_skip_permissions || false) &&
         process.env.WEZBRIDGE_ALLOW_SKIP_PERMISSIONS === 'true';
+      const permissionMode = args.permission_mode === undefined || args.permission_mode === null
+        ? null
+        : String(args.permission_mode);
+
+      if (permissionMode && !VALID_PERMISSION_MODES.has(permissionMode)) {
+        return {
+          content: [{ type: 'text', text: `Error: invalid permission_mode "${permissionMode}"` }],
+          isError: true,
+        };
+      }
+
+      if (permissionMode) {
+        try {
+          safetyPolicy.assertBypassPermissionsAllowed({ body: { permission_mode: permissionMode } });
+        } catch (err) {
+          return {
+            content: [{ type: 'text', text: err.message }],
+            isError: true,
+          };
+        }
+      }
 
       if (args.resume && !isValidResumeSession(args.resume)) {
         return {
@@ -685,7 +707,7 @@ function handleToolCall(name, args) {
           claudeArgv.push('--continue');
         }
         if (skipPerms) claudeArgv.push('--dangerously-skip-permissions');
-        if (args.permission_mode) claudeArgv.push('--permission-mode', String(args.permission_mode));
+        if (permissionMode) claudeArgv.push('--permission-mode', permissionMode);
         const claudeCmd = claudeArgv.map(shellQuoteArg).join(' ');
         wez.sendText(newPaneId, claudeCmd);
 
