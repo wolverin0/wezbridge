@@ -11,6 +11,7 @@ function msysToWin(p) {
 }
 
 function findWezterm() {
+  if (process.env.WEZBRIDGE_WEZTERM_BIN) return process.env.WEZBRIDGE_WEZTERM_BIN;
   if (process.env.WEZTERM_PATH) return process.env.WEZTERM_PATH;
   const fs = require('fs');
   // Check all known locations: Windows native, Git Bash (/c/), WSL (/mnt/c/)
@@ -240,16 +241,16 @@ function ensureGui() {
 /** Spawn a new pane. Returns the pane ID (number). */
 function spawnPane({ cwd, program, args: spawnArgs, splitFrom, splitDirection } = {}) {
   ensureGui();
-  const cmdArgs = ['spawn'];
+  const cmdArgs = splitFrom !== undefined ? ['split-pane'] : ['spawn'];
 
   // Reference an existing pane so the mux knows the context
   const panes = listPanes();
   if (splitFrom !== undefined) {
     cmdArgs.push('--pane-id', String(splitFrom));
     if (splitDirection === 'horizontal') {
-      cmdArgs.push('--horizontal');
+      cmdArgs.push('--right');
     } else if (splitDirection === 'vertical') {
-      cmdArgs.push('--vertical');  // not actually a flag, splits default vertical
+      cmdArgs.push('--bottom');
     }
   } else if (panes.length > 0) {
     // Spawn as a new tab in the same window (not a new window)
@@ -380,7 +381,7 @@ function setTabTitle(paneId, title) {
 
 /** Split an existing pane horizontally (side by side). Returns new pane ID. */
 function splitHorizontal(paneId, { cwd, program, args: spawnArgs } = {}) {
-  const cmdArgs = ['split-pane', '--pane-id', String(paneId), '--horizontal'];
+  const cmdArgs = ['split-pane', '--pane-id', String(paneId), '--right'];
   if (cwd) cmdArgs.push('--cwd', cwd);
   if (program) {
     cmdArgs.push('--');
@@ -394,8 +395,7 @@ function splitHorizontal(paneId, { cwd, program, args: spawnArgs } = {}) {
 
 /** Split an existing pane vertically (top/bottom). Returns new pane ID. */
 function splitVertical(paneId, { cwd, program, args: spawnArgs } = {}) {
-  const cmdArgs = ['split-pane', '--pane-id', String(paneId)];
-  // No --horizontal flag = vertical split (default)
+  const cmdArgs = ['split-pane', '--pane-id', String(paneId), '--bottom'];
   if (cwd) cmdArgs.push('--cwd', cwd);
   if (program) {
     cmdArgs.push('--');

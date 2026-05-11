@@ -62,6 +62,107 @@ function log(...args) {
   process.stderr.write(`[wezbridge-mcp] ${args.join(' ')}\n`);
 }
 
+const RESUME_SESSION_RE = /^[0-9a-f-]{8,}$/i;
+const VALID_PERMISSION_MODES = new Set(['default', 'plan', 'acceptEdits', 'bypassPermissions']);
+const INPUT_BYTE_LIMITS = {
+  prompt: 16 * 1024,
+  key: 64,
+  focus: 256,
+  name: 256,
+  args: 4096,
+};
+const MIN_SWITCH_WORKSPACE_WEZTERM_VERSION = 20230408;
+
+function isValidResumeSession(resume) {
+  return resume === 'last' || RESUME_SESSION_RE.test(String(resume || ''));
+}
+
+function shellQuoteArg(arg) {
+  const text = String(arg);
+  if (/^[a-zA-Z0-9_./:=@+-]+$/.test(text)) return text;
+  return `"${text.replace(/(["\\$`])/g, '\\$1')}"`;
+}
+
+function isValidPersonaName(name) {
+  const text = String(name || '');
+  return /^[a-zA-Z0-9._-]+$/.test(text) &&
+    !text.includes('..') &&
+    !text.includes('/') &&
+    !text.includes('\\') &&
+    !path.isAbsolute(text) &&
+    !/^[a-zA-Z]:[\\/]/.test(text);
+}
+
+function mcpError(message) {
+  return {
+    content: [{ type: 'text', text: message }],
+    isError: true,
+  };
+}
+
+function validateByteLength(field, value, limit) {
+  if (value === undefined || value === null) return null;
+  const length = Buffer.byteLength(String(value), 'utf8');
+  if (length <= limit) return null;
+  return mcpError(`Error: ${field} exceeds ${limit} byte limit`);
+}
+
+function validateJsonArgsByteLength(value) {
+  if (value === undefined || value === null) return null;
+  let serialized;
+  try {
+    serialized = JSON.stringify(value);
+  } catch (_err) {
+    return mcpError('Error: args must be JSON serializable');
+  }
+  const length = Buffer.byteLength(serialized || '', 'utf8');
+  if (length <= INPUT_BYTE_LIMITS.args) return null;
+  return mcpError(`Error: args exceeds ${INPUT_BYTE_LIMITS.args} byte limit`);
+}
+
+function redactHomePath(value) {
+  if (typeof value !== 'string' || !value) return value;
+  const home = os.homedir();
+  if (!home) return value;
+  const normalizedValue = value.replace(/\\/g, '/');
+  const normalizedHome = home.replace(/\\/g, '/').replace(/\/$/, '');
+  const valueForCompare = process.platform === 'win32' ? normalizedValue.toLowerCase() : normalizedValue;
+  const homeForCompare = process.platform === 'win32' ? normalizedHome.toLowerCase() : normalizedHome;
+  if (valueForCompare === homeForCompare) return '~';
+  if (valueForCompare.startsWith(`${homeForCompare}/`)) {
+    return `~${normalizedValue.slice(normalizedHome.length)}`;
+  }
+  return value;
+}
+
+function formatLastText(text, verbose) {
+  const value = String(text || '');
+  return verbose || value.length <= 500 ? value : `${value.slice(0, 500)}...`;
+}
+
+function detectSwitchWorkspaceSupport() {
+  try {
+    const output = require('child_process').execFileSync(wez.WEZTERM, ['--version'], {
+      encoding: 'utf-8',
+      timeout: 3000,
+      windowsHide: true,
+    }).trim();
+    const match = output.match(/(\d{8})/);
+    if (!match) {
+      return { supported: false, reason: `unable to parse WezTerm version from "${output}"` };
+    }
+    const version = Number(match[1]);
+    if (version < MIN_SWITCH_WORKSPACE_WEZTERM_VERSION) {
+      return { supported: false, version, reason: `WezTerm ${version} is older than ${MIN_SWITCH_WORKSPACE_WEZTERM_VERSION}` };
+    }
+    return { supported: true, version };
+  } catch (err) {
+    return { supported: false, reason: `unable to probe WezTerm version: ${err.message}` };
+  }
+}
+
+const SWITCH_WORKSPACE_SUPPORT = detectSwitchWorkspaceSupport();
+
 // ─── Tool Definitions ─────────────────────────────────────────────────────
 
 const TOOLS = [
@@ -74,6 +175,10 @@ const TOOLS = [
         only_claude: {
           type: 'boolean',
           description: 'If true, only return panes detected as Claude Code sessions. Default: true.',
+        },
+        verbose: {
+          type: 'boolean',
+          description: 'If true, return full path and output fields without redaction or truncation.',
         },
       },
     },
@@ -124,6 +229,10 @@ const TOOLS = [
           type: 'number',
           description: 'The WezTerm pane ID to check.',
         },
+        verbose: {
+          type: 'boolean',
+          description: 'If true, return full path and output fields without redaction or truncation.',
+        },
       },
       required: ['pane_id'],
     },
@@ -166,7 +275,7 @@ const TOOLS = [
         },
         max_wait: {
           type: 'number',
-          description: 'Maximum seconds to wait before giving up. Default: 120. Max: 600.',
+          description: 'Maximum seconds to wait before giving up. Default: 60. Max: 300.',
         },
         poll_interval: {
           type: 'number',
@@ -316,7 +425,7 @@ const TOOLS = [
       required: ['pane_id'],
     },
   },
-];
+].filter(tool => tool.name !== 'switch_workspace' || SWITCH_WORKSPACE_SUPPORT.supported);
 
 // ─── Tool Implementations ─────────────────────────────────────────────────
 
@@ -324,6 +433,7 @@ function handleToolCall(name, args) {
   switch (name) {
     case 'discover_sessions': {
       const onlyClaude = args.only_claude !== false; // default true
+      const verbose = args.verbose === true;
       const panes = discovery.discoverPanes();
       const filtered = onlyClaude ? panes.filter(p => p.isClaude) : panes;
 
@@ -332,12 +442,15 @@ function handleToolCall(name, args) {
         pane_id: p.paneId,
         is_claude: p.isClaude,
         status: p.status,
-        project: p.project,
+        project: verbose ? p.project : redactHomePath(p.project),
         project_name: p.projectName,
         title: p.title,
         workspace: p.workspace,
         confidence: p.confidence,
-        last_line: p.lastLines.split('\n').filter(l => l.trim()).slice(-3).join('\n'),
+        last_line: formatLastText(
+          verbose ? p.lastLines : p.lastLines.split('\n').filter(l => l.trim()).slice(-3).join('\n'),
+          verbose
+        ),
       }));
 
       const statusCounts = {};
@@ -379,9 +492,16 @@ function handleToolCall(name, args) {
     case 'send_prompt': {
       const paneId = args.pane_id;
       const text = args.text;
+      const promptLimitError = validateByteLength('prompt', text, INPUT_BYTE_LIMITS.prompt);
+      if (promptLimitError) return promptLimitError;
 
       const _safety = safetyPolicy.evaluate({ action: 'send_prompt', paneId, prompt: text });
       if (!_safety.allowed) {
+        if (_safety.tripwire) {
+          return {
+            content: [{ type: 'text', text: _safety.response }],
+          };
+        }
         return {
           content: [{ type: 'text', text: `safety-policy: BLOCKED send_prompt — ${_safety.reason}. Set WEZBRIDGE_SAFETY_OVERRIDE=1 to bypass.` }],
           isError: true,
@@ -420,6 +540,7 @@ function handleToolCall(name, args) {
 
     case 'get_status': {
       const paneId = args.pane_id;
+      const verbose = args.verbose === true;
 
       try {
         const allPanes = discovery.discoverPanes();
@@ -439,12 +560,15 @@ function handleToolCall(name, args) {
               pane_id: pane.paneId,
               is_claude: pane.isClaude,
               status: pane.status,
-              project: pane.project,
+              project: verbose ? pane.project : redactHomePath(pane.project),
               project_name: pane.projectName,
               title: pane.title,
               workspace: pane.workspace,
               confidence: pane.confidence,
-              last_lines: pane.lastLines.split('\n').filter(l => l.trim()).slice(-10).join('\n'),
+              last_lines: formatLastText(
+                verbose ? pane.lastLines : pane.lastLines.split('\n').filter(l => l.trim()).slice(-10).join('\n'),
+                verbose
+              ),
             }, null, 2),
           }],
         };
@@ -483,6 +607,8 @@ function handleToolCall(name, args) {
     case 'send_key': {
       const paneId = args.pane_id;
       let key = args.key;
+      const keyLimitError = validateByteLength('key', key, INPUT_BYTE_LIMITS.key);
+      if (keyLimitError) return keyLimitError;
 
       const _safety = safetyPolicy.evaluate({ action: 'send_key', paneId, key });
       if (!_safety.allowed) {
@@ -534,7 +660,9 @@ function handleToolCall(name, args) {
 
     case 'wait_for_idle': {
       const paneId = args.pane_id;
-      const maxWait = Math.min(args.max_wait || 120, 600);
+      // This handler blocks the MCP server loop while polling; cap long waits
+      // to reduce head-of-line blocking for other tool calls.
+      const maxWait = Math.min(args.max_wait || 60, 300);
       const pollInterval = Math.max(args.poll_interval || 3, 1);
 
       const startTime = Date.now();
@@ -607,11 +735,51 @@ function handleToolCall(name, args) {
 
     case 'spawn_session': {
       const cwd = args.cwd || process.cwd();
-      const skipPerms = args.dangerously_skip_permissions || false;
+      const promptLimitError = validateByteLength('prompt', args.prompt, INPUT_BYTE_LIMITS.prompt);
+      if (promptLimitError) return promptLimitError;
+      // F-SEC-2b: --dangerously-skip-permissions is only honored when the operator
+      // has explicitly opted in via env. Any caller request for it is ignored otherwise.
+      const skipPerms =
+        (args.dangerously_skip_permissions || false) &&
+        process.env.WEZBRIDGE_ALLOW_SKIP_PERMISSIONS === 'true';
+      const permissionMode = args.permission_mode === undefined || args.permission_mode === null
+        ? null
+        : String(args.permission_mode);
+
+      if (permissionMode && !VALID_PERMISSION_MODES.has(permissionMode)) {
+        return {
+          content: [{ type: 'text', text: `Error: invalid permission_mode "${permissionMode}"` }],
+          isError: true,
+        };
+      }
+
+      if (permissionMode) {
+        try {
+          safetyPolicy.assertBypassPermissionsAllowed({ body: { permission_mode: permissionMode } });
+        } catch (err) {
+          return {
+            content: [{ type: 'text', text: err.message }],
+            isError: true,
+          };
+        }
+      }
+
+      if (args.resume && !isValidResumeSession(args.resume)) {
+        return {
+          content: [{ type: 'text', text: 'Error: invalid resume session identifier' }],
+          isError: true,
+        };
+      }
 
       // Resolve persona if provided
       let personaPath = null;
       if (args.persona) {
+        if (!isValidPersonaName(args.persona)) {
+          return {
+            content: [{ type: 'text', text: 'Error: invalid persona name' }],
+            isError: true,
+          };
+        }
         personaPath = resolvePersona(args.persona);
         if (!personaPath) {
           return {
@@ -647,17 +815,18 @@ function handleToolCall(name, args) {
         // session previously ran in that directory. Without this, --continue
         // resumes the most recent session for that cwd and the persona prompt
         // gets injected into an existing conversation (wrong behavior).
-        let claudeCmd = 'claude';
+        const claudeArgv = ['claude'];
         if (personaPath) {
           // Fresh start with persona — no --continue, no --resume
-          claudeCmd += ' --append-system-prompt-file "' + personaPath.replace(/\\/g, '/') + '"';
+          claudeArgv.push('--append-system-prompt-file', personaPath.replace(/\\/g, '/'));
         } else if (args.resume) {
-          claudeCmd += ' -r ' + (args.resume || '').replace(/"/g, '');
+          claudeArgv.push('-r', String(args.resume));
         } else {
-          claudeCmd += ' --continue';
+          claudeArgv.push('--continue');
         }
-        if (skipPerms) claudeCmd += ' --dangerously-skip-permissions';
-        if (args.permission_mode) claudeCmd += ' --permission-mode ' + args.permission_mode;
+        if (skipPerms) claudeArgv.push('--dangerously-skip-permissions');
+        if (permissionMode) claudeArgv.push('--permission-mode', permissionMode);
+        const claudeCmd = claudeArgv.map(shellQuoteArg).join(' ');
         wez.sendText(newPaneId, claudeCmd);
 
         // Set tab title to persona name for discoverPanes() detection
@@ -767,6 +936,12 @@ function handleToolCall(name, args) {
       }
 
       try {
+        log(JSON.stringify({
+          op: 'kill_session',
+          pane_id: paneId,
+          caller_meta: args.caller_meta || null,
+          timestamp: new Date().toISOString(),
+        }));
         // Send Ctrl+C first to gracefully stop, then kill
         try { wez.sendTextNoEnter(paneId, '\x03'); } catch { /* ignore */ }
         wez.killPane(paneId);
@@ -786,9 +961,25 @@ function handleToolCall(name, args) {
       try {
         const direction = args.direction === 'vertical' ? 'vertical' : 'horizontal';
         const opts = {};
+        const programLimitError = validateByteLength('program', args.program, INPUT_BYTE_LIMITS.name);
+        if (programLimitError) return programLimitError;
+        const argsLimitError = validateJsonArgsByteLength(args.args);
+        if (argsLimitError) return argsLimitError;
         if (args.cwd) opts.cwd = args.cwd;
         if (args.program) opts.program = args.program;
         if (args.args) opts.args = args.args;
+        log(JSON.stringify({
+          op: 'split_pane',
+          caller: args.caller_meta || null,
+          args_summary: {
+            pane_id: args.pane_id,
+            direction,
+            has_cwd: !!args.cwd,
+            program: args.program || null,
+            args_count: Array.isArray(args.args) ? args.args.length : 0,
+          },
+          timestamp: new Date().toISOString(),
+        }));
         const newId = direction === 'vertical'
           ? wez.splitVertical(args.pane_id, opts)
           : wez.splitHorizontal(args.pane_id, opts);
@@ -812,9 +1003,24 @@ function handleToolCall(name, args) {
     case 'spawn_ssh_domain': {
       try {
         const opts = {};
+        const programLimitError = validateByteLength('program', args.program, INPUT_BYTE_LIMITS.name);
+        if (programLimitError) return programLimitError;
+        const argsLimitError = validateJsonArgsByteLength(args.args);
+        if (argsLimitError) return argsLimitError;
         if (args.cwd) opts.cwd = args.cwd;
         if (args.program) opts.program = args.program;
         if (args.args) opts.args = args.args;
+        log(JSON.stringify({
+          op: 'spawn_ssh_domain',
+          caller: args.caller_meta || null,
+          args_summary: {
+            domain: args.domain,
+            has_cwd: !!args.cwd,
+            program: args.program || null,
+            args_count: Array.isArray(args.args) ? args.args.length : 0,
+          },
+          timestamp: new Date().toISOString(),
+        }));
         const newId = wez.spawnSshDomain(args.domain, opts);
         return {
           content: [{ type: 'text', text: JSON.stringify({ pane_id: newId, domain: args.domain, cwd: args.cwd || '(remote home)' }, null, 2) }],
@@ -845,6 +1051,11 @@ function handleToolCall(name, args) {
 
     case 'switch_workspace': {
       try {
+        if (!SWITCH_WORKSPACE_SUPPORT.supported) {
+          return mcpError(`Error: switch_workspace unsupported: ${SWITCH_WORKSPACE_SUPPORT.reason}`);
+        }
+        const nameLimitError = validateByteLength('name', args.name, INPUT_BYTE_LIMITS.name);
+        if (nameLimitError) return nameLimitError;
         wez.switchWorkspace(String(args.name));
         return { content: [{ type: 'text', text: `Switched to workspace "${args.name}".` }] };
       } catch (err) {
@@ -855,9 +1066,24 @@ function handleToolCall(name, args) {
     case 'spawn_in_workspace': {
       try {
         const opts = {};
+        const programLimitError = validateByteLength('program', args.program, INPUT_BYTE_LIMITS.name);
+        if (programLimitError) return programLimitError;
+        const argsLimitError = validateJsonArgsByteLength(args.args);
+        if (argsLimitError) return argsLimitError;
         if (args.cwd) opts.cwd = args.cwd;
         if (args.program) opts.program = args.program;
         if (args.args) opts.args = args.args;
+        log(JSON.stringify({
+          op: 'spawn_in_workspace',
+          caller: args.caller_meta || null,
+          args_summary: {
+            workspace: args.workspace,
+            has_cwd: !!args.cwd,
+            program: args.program || null,
+            args_count: Array.isArray(args.args) ? args.args.length : 0,
+          },
+          timestamp: new Date().toISOString(),
+        }));
         const newId = wez.spawnInWorkspace(String(args.workspace), opts);
         return {
           content: [{ type: 'text', text: JSON.stringify({ pane_id: newId, workspace: args.workspace }, null, 2) }],
@@ -868,6 +1094,9 @@ function handleToolCall(name, args) {
     }
 
     case 'auto_handoff': {
+      const focusLimitError = validateByteLength('focus', args.focus, INPUT_BYTE_LIMITS.focus);
+      if (focusLimitError) return focusLimitError;
+
       const _safety = safetyPolicy.evaluate({ action: 'auto_handoff', paneId: args.pane_id });
       if (!_safety.allowed) {
         return {

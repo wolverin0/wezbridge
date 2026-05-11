@@ -26,20 +26,79 @@
 
 const path = require('node:path');
 
+const SAFETY_TRIPWIRE_RESPONSE = [
+  'Safety tripwire triggered.',
+  'This request looks destructive and was not sent to the pane.',
+  'Confirm the exact action via the dashboard side channel before retrying.',
+].join(' ');
+
 // Destructive-shell text that must NEVER be injected into a pane via
-// send_prompt. Tight allowlist — false positives are worse than false
-// negatives here (we just block, user can rephrase).
+// send_prompt. These catch known bypass forms before the command allowlist.
 const DESTRUCTIVE_TEXT_PATTERNS = [
-  /\brm\s+-rf\s+\//,                          // rm -rf / or rm -rf /home/...
+  /\brm\s+-[^\s]*r[^\s]*f[^\s]*\s+(?:--\s*)?\//i, // rm -rf / or rm -rf /home/...
+  /\bsudo\s+rm\b/i,
+  // Retired the previous Remove-Item lookahead because a word boundary before
+  // "-" never fires; these replacements match explicit PowerShell flags.
+  /\bRemove-Item\b(?=.*(?:^|\s)-(?:Recurse|Rec|r)\b)(?=.*(?:^|\s)-(?:Force|Fo|f)\b)/i,
+  // AXIS-1: PowerShell abbreviated recursive/force params (Remove-Item -Rec -Fo)
+  /\bRemove-Item\b.*-(?:Rec|Fo)/i,
+  // AXIS-1: PowerShell built-in aliases ri/del/erase with recursive or force flags
+  /\b(?:ri|del|erase)\b.*-(?:Recurse|Rec|r|Force|Fo|f)/i,
   /\bDROP\s+(TABLE|DATABASE|SCHEMA)\b/i,
   /\bTRUNCATE\s+TABLE\b/i,
+  /\btruncate\s+(?:[^\n;]*\s)?--size\s*=\s*0\b/i,
+  /(^|[;&|\s]):>\s*\S+/,                      // shell truncation: :> file
   /\bformat\s+[A-Z]:/i,                       // Windows format C:
   /\bgit\s+push\s+(--force|-f)\s+origin\s+(main|master)\b/i,
+  /\bgit\s+push\b[^\n;]*--force-with-lease\b/i,
   /\bgit\s+reset\s+--hard\b/,
+  /\bgh\s+repo\s+delete\b/i,
+  /\bdd\b(?=.*\bif=\/dev\/zero\b)/i,
   /\bdd\s+if=.*of=\/dev\/(sd|nvme|hd)/,       // dd to a raw block device
   /\bmkfs(\.\w+)?\s+\/dev\//,                 // mkfs on a device
+  /\bshred\b/i,
+  /\bwipefs\b/i,
   /:\(\)\s*\{\s*:\|:&\s*\}\s*;:/,             // classic fork bomb
 ];
+
+const SHELL_INTENT_RE = /^\s*(?:\$|>|(?:please\s+)?(?:run|execute|type|paste)\s+)(.+)$/i;
+const SHELL_COMMAND_RE = /^(?:git|gh|rm|sudo|truncate|dd|mkfs(?:\.\w+)?|shred|wipefs|Remove-Item|format|npm|pnpm|yarn|node|ls|dir|pwd|echo|cat|type|rg|grep)\b/i;
+const ALLOWED_SHELL_TEXT_PATTERNS = [
+  /^git\s+(?:status|diff|log|show|branch)\b/i,
+  /^git\s+checkout\s+-b\s+[\w./-]+$/i,
+  /^git\s+push\s+(?:-u\s+)?origin\s+(?!main\b|master\b)[\w./-]+$/i,
+  /^(?:npm|pnpm|yarn)\s+(?:test|run\s+[\w:-]+)\b/i,
+  /^node\s+(?:--test|--check)\b/i,
+  /^(?:ls|dir|pwd|echo|cat|type|rg|grep)\b/i,
+];
+
+function _shellCommandFromLine(line) {
+  const match = String(line || '').match(SHELL_INTENT_RE);
+  return (match ? match[1] : line).trim();
+}
+
+function _hasUnallowlistedShellIntent(prompt) {
+  return String(prompt || '').split(/\r?\n/).some((line) => {
+    const command = _shellCommandFromLine(line);
+    if (!SHELL_COMMAND_RE.test(command)) return false;
+    return !ALLOWED_SHELL_TEXT_PATTERNS.some((re) => re.test(command));
+  });
+}
+
+function _promptIsUnsafe(prompt) {
+  const text = String(prompt || '');
+  return DESTRUCTIVE_TEXT_PATTERNS.some((re) => re.test(text)) || _hasUnallowlistedShellIntent(text);
+}
+
+function _blocked(rule) {
+  const result = { allowed: false, reason: rule.reason, matched: rule.name };
+  if (process.env.WEZBRIDGE_SAFETY_TRIPWIRE === 'true') {
+    process.stderr.write(`[safety-policy] tripwire ${rule.name}: ${rule.reason}\n`);
+    result.tripwire = true;
+    result.response = SAFETY_TRIPWIRE_RESPONSE;
+  }
+  return result;
+}
 
 // Self-pane registry — populated by host at startup. The orchestrator
 // MUST NOT target its own pane(s) for kill / hard send_key sequences.
@@ -72,7 +131,7 @@ const RULES = [
     test: ({ action, prompt }) =>
       action === 'send_prompt' &&
       typeof prompt === 'string' &&
-      DESTRUCTIVE_TEXT_PATTERNS.some((re) => re.test(prompt)),
+      _promptIsUnsafe(prompt),
     reason: 'send_prompt contains destructive shell content',
   },
   {
@@ -124,6 +183,11 @@ function evaluate(ctx) {
     return { allowed: true, reason: 'empty context' };
   }
   if (process.env.WEZBRIDGE_SAFETY_OVERRIDE === '1') {
+    if (process.env.NODE_ENV === 'production' || process.env.WEZBRIDGE_ENV === 'production') {
+      throw Object.assign(new Error('WEZBRIDGE_SAFETY_OVERRIDE is not allowed in production'), { statusCode: 403 });
+    }
+    const stack = new Error('WEZBRIDGE_SAFETY_OVERRIDE bypass stack').stack || '';
+    process.stderr.write(`[safety-policy] CRITICAL: WEZBRIDGE_SAFETY_OVERRIDE=1 bypassed safety rules\n${stack}\n`);
     return { allowed: true, reason: 'WEZBRIDGE_SAFETY_OVERRIDE=1' };
   }
   for (const rule of RULES) {
@@ -135,15 +199,28 @@ function evaluate(ctx) {
       hit = false;
     }
     if (hit) {
-      return { allowed: false, reason: rule.reason, matched: rule.name };
+      return _blocked(rule);
     }
   }
   return { allowed: true, reason: 'no destructive rule matched' };
 }
 
+function assertBypassPermissionsAllowed(req) {
+  if (req?.body?.permission_mode === 'bypassPermissions' &&
+      process.env.WEZBRIDGE_ALLOW_SKIP_PERMISSIONS !== 'true') {
+    throw Object.assign(new Error('permission_mode=bypassPermissions requires WEZBRIDGE_ALLOW_SKIP_PERMISSIONS=true'), {
+      statusCode: 403,
+    });
+  }
+  return null;
+}
+
 module.exports = {
   evaluate,
+  assertBypassPermissionsAllowed,
   setSelfPaneIds,
   RULES,
   DESTRUCTIVE_TEXT_PATTERNS,
+  ALLOWED_SHELL_TEXT_PATTERNS,
+  SAFETY_TRIPWIRE_RESPONSE,
 };

@@ -32,7 +32,7 @@
     "dashboard": "node src/dashboard-server.cjs",
     "dev": "node --watch src/dashboard-server.cjs",
     "start-streamer": "scripts/start-telegram-streamer.cmd",
-    "test": "node --test --test-reporter=spec test/*.test.cjs",
+    "test": "node --require ./test/setup.cjs --test --test-reporter=spec test/*.test.cjs",
     "install-hooks": "node scripts/install-hooks.cjs",
     "install-autostart": "scripts\\install-autostart.cmd",
     "restore-session": "node scripts/restore-session.cjs"

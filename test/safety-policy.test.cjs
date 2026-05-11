@@ -5,7 +5,14 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 
 const policy = require(path.resolve(__dirname, '..', 'src', 'safety-policy.cjs'));
-const { evaluate, setSelfPaneIds, RULES, DESTRUCTIVE_TEXT_PATTERNS } = policy;
+const {
+  evaluate,
+  assertBypassPermissionsAllowed,
+  setSelfPaneIds,
+  RULES,
+  DESTRUCTIVE_TEXT_PATTERNS,
+  SAFETY_TRIPWIRE_RESPONSE,
+} = policy;
 
 function withEnv(key, value, fn) {
   const prev = process.env[key];
@@ -68,6 +75,32 @@ test('blocks: send_prompt with fork bomb', () => {
 
 test('blocks: send_prompt with mkfs /dev/sda', () => {
   const r = evaluate({ action: 'send_prompt', paneId: 1, prompt: 'mkfs.ext4 /dev/sda1' });
+  assert.equal(r.allowed, false);
+});
+
+test('blocks: send_prompt destructive bypass variants', () => {
+  const prompts = [
+    'Remove-Item C:\\temp -Recurse -Force',
+    'Remove-Item C:\\temp -r -f',
+    'Remove-Item C:\\temp -Rec -Fo',
+    'gh repo delete owner/repo --yes',
+    'git push --force-with-lease origin main',
+    'rm -rf /',
+    'sudo rm -rf /tmp/app',
+    'truncate --size=0 important.log',
+    ':> important.log',
+    'dd if=/dev/zero of=/dev/sda',
+    'shred secrets.txt',
+    'wipefs /dev/sda',
+  ];
+  for (const prompt of prompts) {
+    const r = evaluate({ action: 'send_prompt', paneId: 1, prompt });
+    assert.equal(r.allowed, false, prompt);
+  }
+});
+
+test('blocks: command-like prompt outside the safe shell allowlist', () => {
+  const r = evaluate({ action: 'send_prompt', paneId: 1, prompt: 'run git reset --hard HEAD~1' });
   assert.equal(r.allowed, false);
 });
 
@@ -159,6 +192,45 @@ test('override: WEZBRIDGE_SAFETY_OVERRIDE=1 bypasses block', () => {
     const r = evaluate({ action: 'kill_session', paneId: 0 });
     assert.equal(r.allowed, true);
     assert.match(r.reason, /WEZBRIDGE_SAFETY_OVERRIDE/);
+  });
+});
+
+test('override: WEZBRIDGE_SAFETY_OVERRIDE=1 is refused in production', () => {
+  setSelfPaneIds([0]);
+  withEnv('WEZBRIDGE_SAFETY_OVERRIDE', '1', () => {
+    withEnv('NODE_ENV', 'production', () => {
+      assert.throws(
+        () => evaluate({ action: 'kill_session', paneId: 0 }),
+        /not allowed in production/
+      );
+    });
+  });
+});
+
+test('assertBypassPermissionsAllowed blocks bypassPermissions without env gate', () => {
+  withEnv('WEZBRIDGE_ALLOW_SKIP_PERMISSIONS', undefined, () => {
+    assert.throws(
+      () => assertBypassPermissionsAllowed({ body: { permission_mode: 'bypassPermissions' } }),
+      /WEZBRIDGE_ALLOW_SKIP_PERMISSIONS/
+    );
+  });
+});
+
+test('assertBypassPermissionsAllowed allows bypassPermissions with env gate', () => {
+  withEnv('WEZBRIDGE_ALLOW_SKIP_PERMISSIONS', 'true', () => {
+    assert.equal(
+      assertBypassPermissionsAllowed({ body: { permission_mode: 'bypassPermissions' } }),
+      null
+    );
+  });
+});
+
+test('tripwire: returns sanitized confirmation stub', () => {
+  withEnv('WEZBRIDGE_SAFETY_TRIPWIRE', 'true', () => {
+    const r = evaluate({ action: 'send_prompt', paneId: 1, prompt: 'rm -rf /' });
+    assert.equal(r.allowed, false);
+    assert.equal(r.tripwire, true);
+    assert.equal(r.response, SAFETY_TRIPWIRE_RESPONSE);
   });
 });
 
