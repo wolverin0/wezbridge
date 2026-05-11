@@ -29,6 +29,7 @@ const http = require('http');
 const https = require('https');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const { spawn, execSync } = require('child_process');
 const wez = require('./wezterm.cjs');
 const { discoverPanes } = require('./pane-discovery.cjs');
@@ -50,13 +51,37 @@ const ACTIVE_TASKS_PATH = process.env.ACTIVE_TASKS_PATH
   || path.join(process.env.OMNICLAUDE_PATH || path.join(__dirname, '..', '..', 'omniclaude'), 'active_tasks.md');
 
 // --- helpers ---
+function getCorsOrigin(req) {
+  const origin = req.headers.origin;
+  if (!origin) return null;
+  return /^http:\/\/localhost(?::\d+)?$/i.test(origin) ? origin : null;
+}
+
+function corsHeaders(res) {
+  const headers = {
+    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Vary': 'Origin',
+  };
+  if (res._corsOrigin) headers['Access-Control-Allow-Origin'] = res._corsOrigin;
+  return headers;
+}
+
+function hasValidBearerToken(req) {
+  const token = process.env.WEZBRIDGE_API_TOKEN;
+  if (!token) return true;
+  const expected = `Bearer ${token}`;
+  const actual = req.headers.authorization || '';
+  const expectedBuf = Buffer.from(expected);
+  const actualBuf = Buffer.from(actual);
+  return actualBuf.length === expectedBuf.length && crypto.timingSafeEqual(actualBuf, expectedBuf);
+}
+
 function sendJson(res, code, body) {
   const payload = JSON.stringify(body);
   res.writeHead(code, {
     'Content-Type': 'application/json',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    ...corsHeaders(res),
     'Content-Length': Buffer.byteLength(payload),
   });
   res.end(payload);
@@ -676,7 +701,7 @@ function handleEvents(req, res) {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     'Connection': 'keep-alive',
-    'Access-Control-Allow-Origin': '*',
+    ...corsHeaders(res),
   });
   const helloTs = new Date().toISOString();
   res.write(`event: hello\ndata: ${JSON.stringify({ ts: helloTs, timestamp: helloTs })}\n\n`);
@@ -1445,7 +1470,7 @@ async function handlePostRoutinesFire(req, res) {
         } else {
           res.writeHead(status, {
             'Content-Type': up.headers['content-type'] || 'text/plain',
-            'Access-Control-Allow-Origin': '*',
+            ...corsHeaders(res),
           });
           res.end(buf);
         }
@@ -1559,14 +1584,20 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const pathname = url.pathname;
   const method = req.method || 'GET';
+  res._corsOrigin = getCorsOrigin(req);
 
   if (method === 'OPTIONS') {
+    if (req.headers.origin && !res._corsOrigin) {
+      return sendJson(res, 403, { error: 'origin not allowed' });
+    }
     res.writeHead(204, {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      ...corsHeaders(res),
     });
     return res.end();
+  }
+
+  if (!hasValidBearerToken(req)) {
+    return sendJson(res, 401, { error: 'unauthorized' });
   }
 
   // CSRF defense: reject POSTs with a mismatched Origin. Only state-changing
