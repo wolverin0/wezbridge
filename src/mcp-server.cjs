@@ -64,6 +64,13 @@ function log(...args) {
 
 const RESUME_SESSION_RE = /^[0-9a-f-]{8,}$/i;
 const VALID_PERMISSION_MODES = new Set(['default', 'plan', 'acceptEdits', 'bypassPermissions']);
+const INPUT_BYTE_LIMITS = {
+  prompt: 16 * 1024,
+  key: 64,
+  focus: 256,
+  name: 256,
+  args: 4096,
+};
 
 function isValidResumeSession(resume) {
   return resume === 'last' || RESUME_SESSION_RE.test(String(resume || ''));
@@ -83,6 +90,33 @@ function isValidPersonaName(name) {
     !text.includes('\\') &&
     !path.isAbsolute(text) &&
     !/^[a-zA-Z]:[\\/]/.test(text);
+}
+
+function mcpError(message) {
+  return {
+    content: [{ type: 'text', text: message }],
+    isError: true,
+  };
+}
+
+function validateByteLength(field, value, limit) {
+  if (value === undefined || value === null) return null;
+  const length = Buffer.byteLength(String(value), 'utf8');
+  if (length <= limit) return null;
+  return mcpError(`Error: ${field} exceeds ${limit} byte limit`);
+}
+
+function validateJsonArgsByteLength(value) {
+  if (value === undefined || value === null) return null;
+  let serialized;
+  try {
+    serialized = JSON.stringify(value);
+  } catch (_err) {
+    return mcpError('Error: args must be JSON serializable');
+  }
+  const length = Buffer.byteLength(serialized || '', 'utf8');
+  if (length <= INPUT_BYTE_LIMITS.args) return null;
+  return mcpError(`Error: args exceeds ${INPUT_BYTE_LIMITS.args} byte limit`);
 }
 
 // ─── Tool Definitions ─────────────────────────────────────────────────────
@@ -402,6 +436,8 @@ function handleToolCall(name, args) {
     case 'send_prompt': {
       const paneId = args.pane_id;
       const text = args.text;
+      const promptLimitError = validateByteLength('prompt', text, INPUT_BYTE_LIMITS.prompt);
+      if (promptLimitError) return promptLimitError;
 
       const _safety = safetyPolicy.evaluate({ action: 'send_prompt', paneId, prompt: text });
       if (!_safety.allowed) {
@@ -511,6 +547,8 @@ function handleToolCall(name, args) {
     case 'send_key': {
       const paneId = args.pane_id;
       let key = args.key;
+      const keyLimitError = validateByteLength('key', key, INPUT_BYTE_LIMITS.key);
+      if (keyLimitError) return keyLimitError;
 
       const _safety = safetyPolicy.evaluate({ action: 'send_key', paneId, key });
       if (!_safety.allowed) {
@@ -635,6 +673,8 @@ function handleToolCall(name, args) {
 
     case 'spawn_session': {
       const cwd = args.cwd || process.cwd();
+      const promptLimitError = validateByteLength('prompt', args.prompt, INPUT_BYTE_LIMITS.prompt);
+      if (promptLimitError) return promptLimitError;
       // F-SEC-2b: --dangerously-skip-permissions is only honored when the operator
       // has explicitly opted in via env. Any caller request for it is ignored otherwise.
       const skipPerms =
@@ -853,6 +893,8 @@ function handleToolCall(name, args) {
       try {
         const direction = args.direction === 'vertical' ? 'vertical' : 'horizontal';
         const opts = {};
+        const argsLimitError = validateJsonArgsByteLength(args.args);
+        if (argsLimitError) return argsLimitError;
         if (args.cwd) opts.cwd = args.cwd;
         if (args.program) opts.program = args.program;
         if (args.args) opts.args = args.args;
@@ -879,6 +921,8 @@ function handleToolCall(name, args) {
     case 'spawn_ssh_domain': {
       try {
         const opts = {};
+        const argsLimitError = validateJsonArgsByteLength(args.args);
+        if (argsLimitError) return argsLimitError;
         if (args.cwd) opts.cwd = args.cwd;
         if (args.program) opts.program = args.program;
         if (args.args) opts.args = args.args;
@@ -912,6 +956,8 @@ function handleToolCall(name, args) {
 
     case 'switch_workspace': {
       try {
+        const nameLimitError = validateByteLength('name', args.name, INPUT_BYTE_LIMITS.name);
+        if (nameLimitError) return nameLimitError;
         wez.switchWorkspace(String(args.name));
         return { content: [{ type: 'text', text: `Switched to workspace "${args.name}".` }] };
       } catch (err) {
@@ -922,6 +968,8 @@ function handleToolCall(name, args) {
     case 'spawn_in_workspace': {
       try {
         const opts = {};
+        const argsLimitError = validateJsonArgsByteLength(args.args);
+        if (argsLimitError) return argsLimitError;
         if (args.cwd) opts.cwd = args.cwd;
         if (args.program) opts.program = args.program;
         if (args.args) opts.args = args.args;
@@ -935,6 +983,9 @@ function handleToolCall(name, args) {
     }
 
     case 'auto_handoff': {
+      const focusLimitError = validateByteLength('focus', args.focus, INPUT_BYTE_LIMITS.focus);
+      if (focusLimitError) return focusLimitError;
+
       const _safety = safetyPolicy.evaluate({ action: 'auto_handoff', paneId: args.pane_id });
       if (!_safety.allowed) {
         return {
