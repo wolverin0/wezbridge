@@ -1,9 +1,28 @@
 'use strict';
 
 const path = require('path');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const wez = require('./wezterm.cjs');
 const { discoverPanes } = require('./pane-discovery.cjs');
+
+// Validators for shell-arg-derived values (prevent command injection at exec sites).
+const SAFE_BRANCH_RE = /^[a-zA-Z0-9._/-]+$/;
+const SAFE_PERSONA_RE = /^[a-zA-Z0-9._-]+$/;
+function isSafeBranchName(name) {
+  const s = String(name || '');
+  return s.length > 0 && s.length <= 200 && SAFE_BRANCH_RE.test(s) && !s.includes('..');
+}
+function isValidPersonaName(name) {
+  const s = String(name || '');
+  return s.length > 0 && s.length <= 200 && SAFE_PERSONA_RE.test(s) && !s.includes('..') && !path.isAbsolute(s);
+}
+function assertWorktreePathInside(parentDir, candidate) {
+  const resolved = path.resolve(candidate);
+  const parent = path.resolve(parentDir);
+  if (!resolved.startsWith(parent + path.sep) && resolved !== parent) {
+    throw new Error(`worktree path escape: ${candidate} is not inside ${parentDir}`);
+  }
+}
 
 function collectPanes() {
   const raw = discoverPanes ? discoverPanes() : wez.listPanes().map(p => ({ paneId: p.pane_id }));
@@ -32,17 +51,27 @@ async function spawnAgentPane({ cwd, persona, permission_mode, worktree }, { res
 
   if (worktree === true) {
     try {
-      execSync(`git -C "${spawnCwd.replace(/\\/g, '/')}" rev-parse --git-dir`, { timeout: 15000, encoding: 'utf8' });
+      // execFileSync with argv array — no shell interpolation, no injection via cwd.
+      execFileSync('git', ['-C', spawnCwd, 'rev-parse', '--git-dir'], { timeout: 15000, encoding: 'utf8', stdio: 'pipe' });
     } catch {
       throw new Error('not a git repo -- cannot create worktree');
     }
     const shortId = Math.random().toString(36).slice(2, 8).padEnd(6, '0').slice(0, 6);
     const agentSlug = persona || 'agent';
+    if (!isValidPersonaName(agentSlug)) {
+      throw new Error(`invalid persona/agent slug: ${agentSlug}`);
+    }
     const branchName = `claude/agency-${agentSlug}-${shortId}`;
-    const worktreePath = path.join(spawnCwd, '.worktrees', `${agentSlug}-${shortId}`).replace(/\\/g, '/');
-    execSync(`git -C "${spawnCwd.replace(/\\/g, '/')}" worktree add "${worktreePath}" -b "${branchName}"`, { timeout: 15000, encoding: 'utf8' });
-    effectiveCwd = worktreePath;
-    worktreeInfo = { path: worktreePath, branch: branchName, baseCwd: spawnCwd };
+    if (!isSafeBranchName(branchName)) {
+      throw new Error(`unsafe branch name derived from inputs: ${branchName}`);
+    }
+    const worktreePath = path.join(spawnCwd, '.worktrees', `${agentSlug}-${shortId}`);
+    // Ensure the derived path stays inside the parent repo dir — no traversal.
+    assertWorktreePathInside(spawnCwd, worktreePath);
+    // execFileSync + argv array prevents shell-interpolation of worktreePath/branchName.
+    execFileSync('git', ['-C', spawnCwd, 'worktree', 'add', worktreePath, '-b', branchName], { timeout: 15000, encoding: 'utf8', stdio: 'pipe' });
+    effectiveCwd = worktreePath.replace(/\\/g, '/');
+    worktreeInfo = { path: effectiveCwd, branch: branchName, baseCwd: spawnCwd };
   }
 
   const paneId = wez.spawnPane({ cwd: effectiveCwd });

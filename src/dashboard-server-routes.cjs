@@ -62,6 +62,7 @@ function parseBody(req, opts = { timeoutMs: 10_000, maxBytes: 1_048_576 }) {
   const maxBytes = opts.maxBytes ?? 1_048_576;
   return new Promise((resolve, reject) => {
     let buf = '';
+    let bytesReceived = 0;
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
@@ -71,8 +72,13 @@ function parseBody(req, opts = { timeoutMs: 10_000, maxBytes: 1_048_576 }) {
       reject(err);
     }, timeoutMs);
     req.on('data', chunk => {
+      // Track actual byte count — JS string .length counts UTF-16 code units, not bytes.
+      // Multibyte UTF-8 content (e.g. emoji, non-ASCII) would otherwise bypass the byte cap.
+      bytesReceived += Buffer.isBuffer(chunk)
+        ? chunk.length
+        : Buffer.byteLength(String(chunk), 'utf8');
       buf += chunk;
-      if (!settled && buf.length > maxBytes) {
+      if (!settled && bytesReceived > maxBytes) {
         settled = true;
         clearTimeout(timer);
         const err = Object.assign(new Error('Request body too large'), { statusCode: 413 });

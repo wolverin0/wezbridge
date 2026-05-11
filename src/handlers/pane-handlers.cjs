@@ -26,6 +26,17 @@ function createPaneHandlers(ctx) {
     try {
       const { text, panes: targets } = await parseBody(req);
       if (!text) return sendJson(res, 400, { error: 'missing text' });
+      // Apply destructive-prompt guard to broadcast text — single-pane prompt
+      // sends already do this; broadcast was bypassing the guard.
+      if (safetyPolicy && typeof safetyPolicy.evaluate === 'function') {
+        const verdict = safetyPolicy.evaluate(text);
+        if (!verdict || verdict.allowed === false) {
+          return sendJson(res, 403, {
+            error: 'destructive_text_blocked',
+            reason: (verdict && verdict.reason) || 'blocked by safety policy',
+          });
+        }
+      }
       const all = collectPanes().filter(p => p.is_claude);
       const ids = Array.isArray(targets) && targets.length ? targets : all.map(p => p.pane_id);
       for (const id of ids) {
