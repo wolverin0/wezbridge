@@ -905,6 +905,12 @@ async function handlePostSpawn(req, res) {
       if (!personaPath) return sendJson(res, 400, { error: `persona "${body.persona}" not found in ${AGENTS_DIR}` });
     }
 
+    // AXIS-4: reject bypassPermissions if env gate is off
+    if (body.permission_mode === 'bypassPermissions' &&
+        process.env.WEZBRIDGE_ALLOW_SKIP_PERMISSIONS !== 'true') {
+      return sendJson(res, 403, { error: 'permission_mode=bypassPermissions requires WEZBRIDGE_ALLOW_SKIP_PERMISSIONS=true' });
+    }
+
     // Use shared helper for persona/worktree/permission spawns
     if (body.persona || body.permission_mode || body.worktree) {
       try {

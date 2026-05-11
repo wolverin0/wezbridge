@@ -61,7 +61,11 @@ async function spawnAgentPane({ cwd, persona, permission_mode, worktree }, { res
   if (process.env.WEZBRIDGE_ALLOW_SKIP_PERMISSIONS === 'true') {
     claudeCmd += ' --dangerously-skip-permissions';
   }
-  if (permission_mode && validModes.includes(permission_mode)) {
+  // AXIS-4: honour permission_mode only when the env gate is explicitly on.
+  // If the gate is off and the caller sent bypassPermissions, the spawn handler
+  // must have already rejected with 403 — this is a belt-and-suspenders guard.
+  if (process.env.WEZBRIDGE_ALLOW_SKIP_PERMISSIONS === 'true' &&
+      permission_mode && validModes.includes(permission_mode)) {
     claudeCmd += ' --permission-mode ' + permission_mode;
   }
   wez.sendText(paneId, claudeCmd);
