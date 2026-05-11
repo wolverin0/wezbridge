@@ -38,6 +38,10 @@ const DESTRUCTIVE_TEXT_PATTERNS = [
   /\brm\s+-[^\s]*r[^\s]*f[^\s]*\s+(?:--\s*)?\//i, // rm -rf / or rm -rf /home/...
   /\bsudo\s+rm\b/i,
   /\bRemove-Item\b(?=.*\b-(?:Recurse|r)\b)(?=.*\b-(?:Force|f)\b)/i,
+  // AXIS-1: PowerShell abbreviated recursive/force params (Remove-Item -Rec -Fo)
+  /\bRemove-Item\b.*-(?:Rec|Fo)/i,
+  // AXIS-1: PowerShell built-in aliases ri/del/erase with recursive or force flags
+  /\b(?:ri|del|erase)\b.*-(?:Recurse|Rec|r|Force|Fo|f)/i,
   /\bDROP\s+(TABLE|DATABASE|SCHEMA)\b/i,
   /\bTRUNCATE\s+TABLE\b/i,
   /\btruncate\s+(?:[^\n;]*\s)?--size\s*=\s*0\b/i,
