@@ -119,6 +119,26 @@ function validateJsonArgsByteLength(value) {
   return mcpError(`Error: args exceeds ${INPUT_BYTE_LIMITS.args} byte limit`);
 }
 
+function redactHomePath(value) {
+  if (typeof value !== 'string' || !value) return value;
+  const home = os.homedir();
+  if (!home) return value;
+  const normalizedValue = value.replace(/\\/g, '/');
+  const normalizedHome = home.replace(/\\/g, '/').replace(/\/$/, '');
+  const valueForCompare = process.platform === 'win32' ? normalizedValue.toLowerCase() : normalizedValue;
+  const homeForCompare = process.platform === 'win32' ? normalizedHome.toLowerCase() : normalizedHome;
+  if (valueForCompare === homeForCompare) return '~';
+  if (valueForCompare.startsWith(`${homeForCompare}/`)) {
+    return `~${normalizedValue.slice(normalizedHome.length)}`;
+  }
+  return value;
+}
+
+function formatLastText(text, verbose) {
+  const value = String(text || '');
+  return verbose || value.length <= 500 ? value : `${value.slice(0, 500)}...`;
+}
+
 // ─── Tool Definitions ─────────────────────────────────────────────────────
 
 const TOOLS = [
@@ -131,6 +151,10 @@ const TOOLS = [
         only_claude: {
           type: 'boolean',
           description: 'If true, only return panes detected as Claude Code sessions. Default: true.',
+        },
+        verbose: {
+          type: 'boolean',
+          description: 'If true, return full path and output fields without redaction or truncation.',
         },
       },
     },
@@ -180,6 +204,10 @@ const TOOLS = [
         pane_id: {
           type: 'number',
           description: 'The WezTerm pane ID to check.',
+        },
+        verbose: {
+          type: 'boolean',
+          description: 'If true, return full path and output fields without redaction or truncation.',
         },
       },
       required: ['pane_id'],
@@ -381,6 +409,7 @@ function handleToolCall(name, args) {
   switch (name) {
     case 'discover_sessions': {
       const onlyClaude = args.only_claude !== false; // default true
+      const verbose = args.verbose === true;
       const panes = discovery.discoverPanes();
       const filtered = onlyClaude ? panes.filter(p => p.isClaude) : panes;
 
@@ -389,12 +418,15 @@ function handleToolCall(name, args) {
         pane_id: p.paneId,
         is_claude: p.isClaude,
         status: p.status,
-        project: p.project,
+        project: verbose ? p.project : redactHomePath(p.project),
         project_name: p.projectName,
         title: p.title,
         workspace: p.workspace,
         confidence: p.confidence,
-        last_line: p.lastLines.split('\n').filter(l => l.trim()).slice(-3).join('\n'),
+        last_line: formatLastText(
+          verbose ? p.lastLines : p.lastLines.split('\n').filter(l => l.trim()).slice(-3).join('\n'),
+          verbose
+        ),
       }));
 
       const statusCounts = {};
@@ -484,6 +516,7 @@ function handleToolCall(name, args) {
 
     case 'get_status': {
       const paneId = args.pane_id;
+      const verbose = args.verbose === true;
 
       try {
         const allPanes = discovery.discoverPanes();
@@ -503,12 +536,15 @@ function handleToolCall(name, args) {
               pane_id: pane.paneId,
               is_claude: pane.isClaude,
               status: pane.status,
-              project: pane.project,
+              project: verbose ? pane.project : redactHomePath(pane.project),
               project_name: pane.projectName,
               title: pane.title,
               workspace: pane.workspace,
               confidence: pane.confidence,
-              last_lines: pane.lastLines.split('\n').filter(l => l.trim()).slice(-10).join('\n'),
+              last_lines: formatLastText(
+                verbose ? pane.lastLines : pane.lastLines.split('\n').filter(l => l.trim()).slice(-10).join('\n'),
+                verbose
+              ),
             }, null, 2),
           }],
         };
