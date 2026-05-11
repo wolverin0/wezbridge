@@ -87,11 +87,25 @@ function sendJson(res, code, body) {
   res.end(payload);
 }
 
+function sendError(res, err) {
+  sendJson(res, err.statusCode || 500, { error: err.message });
+}
+
 function parseBody(req) {
   return new Promise((resolve, reject) => {
     let buf = '';
-    req.on('data', chunk => { buf += chunk; if (buf.length > 1e6) req.destroy(); });
+    let rejected = false;
+    req.on('data', chunk => {
+      buf += chunk;
+      if (!rejected && buf.length > 1e6) {
+        rejected = true;
+        const err = Object.assign(new Error('Request body too large'), { statusCode: 413 });
+        reject(err);
+        req.destroy(err);
+      }
+    });
     req.on('end', () => {
+      if (rejected) return;
       if (!buf) return resolve({});
       try { resolve(JSON.parse(buf)); }
       catch (e) { reject(new Error('invalid JSON body')); }
@@ -126,7 +140,7 @@ function collectPanes() {
 
 async function handleGetPanes(req, res) {
   try { sendJson(res, 200, { panes: collectPanes() }); }
-  catch (err) { log(`GET /api/panes error: ${err.message}`); sendJson(res, 500, { error: err.message }); }
+  catch (err) { log(`GET /api/panes error: ${err.message}`); sendError(res, err); }
 }
 
 // Legacy-compat: v3.1 HTML expects { sessions: [...] } with confidence in %.
@@ -137,7 +151,7 @@ async function handleGetSessions(req, res) {
       confidence: Math.round((p.confidence || 0) * (p.confidence > 1 ? 1 : 100)),
     }));
     sendJson(res, 200, { sessions });
-  } catch (err) { sendJson(res, 500, { error: err.message }); }
+  } catch (err) { sendError(res, err); }
 }
 
 async function handleGetProjects(req, res) {
@@ -153,7 +167,7 @@ async function handleGetProjects(req, res) {
       session_count: p.sessionCount || 0,
     }));
     sendJson(res, 200, projects);
-  } catch (err) { sendJson(res, 500, { error: err.message }); }
+  } catch (err) { sendError(res, err); }
 }
 
 async function handleGetBrowse(req, res, queryPath) {
@@ -167,7 +181,7 @@ async function handleGetBrowse(req, res, queryPath) {
       .map(e => ({ name: e.name, path: path.join(dir, e.name) }))
       .slice(0, 200);
     sendJson(res, 200, { cwd: dir, dirs: entries });
-  } catch (err) { sendJson(res, 500, { error: err.message }); }
+  } catch (err) { sendError(res, err); }
 }
 
 async function handlePostBroadcast(req, res) {
@@ -180,7 +194,7 @@ async function handlePostBroadcast(req, res) {
       try { wez.sendText(id, text); wez.sendTextNoEnter(id, '\r'); } catch (e) { log(`broadcast pane ${id}: ${e.message}`); }
     }
     sendJson(res, 200, { ok: true, sent: ids.length });
-  } catch (err) { sendJson(res, 500, { error: err.message }); }
+  } catch (err) { sendError(res, err); }
 }
 
 async function handleGetPaneOutput(res, paneId, lines) {
@@ -189,7 +203,7 @@ async function handleGetPaneOutput(res, paneId, lines) {
     // Return both field names: `output` for v3.1 HTML compat, `lines` for new clients.
     sendJson(res, 200, { pane_id: paneId, output: text || '', lines: text || '' });
   } catch (err) {
-    sendJson(res, 500, { error: err.message });
+    sendError(res, err);
   }
 }
 
@@ -202,7 +216,7 @@ async function handleGetTasks(res) {
     const tasks = Array.from(tasksMap.values());
     sendJson(res, 200, { tasks, errors });
   } catch (err) {
-    sendJson(res, 500, { error: err.message });
+    sendError(res, err);
   }
 }
 
@@ -503,7 +517,7 @@ async function handleGetA2APending(req, res) {
     const corrs = Array.from(a2aState.values())
       .sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0));
     sendJson(res, 200, { corrs });
-  } catch (err) { sendJson(res, 500, { error: err.message }); }
+  } catch (err) { sendError(res, err); }
 }
 
 function slugify(s) {
@@ -527,7 +541,7 @@ async function handleGetGrades(req, res) {
   try {
     sendJson(res, 200, { grades: gradesRegistry.list(), count: gradesRegistry.size() });
   } catch (err) {
-    sendJson(res, 500, { error: err.message });
+    sendError(res, err);
   }
 }
 
@@ -547,7 +561,7 @@ async function handlePostGrade(req, res) {
     const entry = gradesRegistry.record(String(key), grade);
     sendJson(res, 200, { ok: true, ...entry });
   } catch (err) {
-    sendJson(res, 500, { error: err.message });
+    sendError(res, err);
   }
 }
 
@@ -653,7 +667,7 @@ async function handlePostA2AHandoff(req, res) {
     });
   } catch (err) {
     log(`POST /api/a2a/handoff error: ${err.message}`);
-    sendJson(res, 500, { error: err.message });
+    sendError(res, err);
   }
 }
 
@@ -762,7 +776,7 @@ async function handlePostPrompt(req, res, paneId) {
     wez.sendTextNoEnter(paneId, '\r');
     sendJson(res, 200, { ok: true, pane_id: paneId });
   } catch (err) {
-    sendJson(res, 500, { error: err.message });
+    sendError(res, err);
   }
 }
 
@@ -783,7 +797,7 @@ async function handlePostKey(req, res, paneId) {
     wez.sendTextNoEnter(paneId, payload);
     sendJson(res, 200, { ok: true, pane_id: paneId, key });
   } catch (err) {
-    sendJson(res, 500, { error: err.message });
+    sendError(res, err);
   }
 }
 
@@ -808,7 +822,7 @@ async function handlePostKill(res, paneId) {
     }
     sendJson(res, 200, { ok: true, pane_id: paneId, worktree_cleaned: !!wt });
   } catch (err) {
-    sendJson(res, 500, { error: err.message });
+    sendError(res, err);
   }
 }
 
@@ -952,7 +966,7 @@ async function handlePostAutoHandoff(req, res, paneId) {
     });
   } catch (err) {
     log(`POST /api/sessions/${paneId}/auto-handoff error: ${err.message}`);
-    sendJson(res, 500, { error: err.message });
+    sendError(res, err);
   }
 }
 
@@ -1053,7 +1067,7 @@ async function handleGetPersonas(req, res) {
     personasCacheTs = now;
     sendJson(res, 200, result);
   } catch (err) {
-    sendJson(res, 500, { error: err.message });
+    sendError(res, err);
   }
 }
 
@@ -1082,7 +1096,7 @@ async function handlePostSpawn(req, res) {
         if (worktreeInfo) response.worktree = { path: worktreeInfo.path, branch: worktreeInfo.branch };
         return sendJson(res, 200, response);
       } catch (err) {
-        return sendJson(res, 500, { error: err.message });
+        return sendError(res, err);
       }
     }
 
@@ -1090,7 +1104,7 @@ async function handlePostSpawn(req, res) {
     const paneId = wez.spawnPane({ cwd, program, args: undefined });
     sendJson(res, 200, { ok: true, pane_id: paneId, persona: null });
   } catch (err) {
-    sendJson(res, 500, { error: err.message });
+    sendError(res, err);
   }
 }
 
@@ -1107,7 +1121,7 @@ async function handleGetWorktrees(req, res) {
     }));
     sendJson(res, 200, { worktrees });
   } catch (err) {
-    sendJson(res, 500, { error: err.message });
+    sendError(res, err);
   }
 }
 
@@ -1137,7 +1151,7 @@ async function handlePostWorktreeCleanup(req, res, paneId) {
     teamManifest.record({ event: 'worktree_removed', pane_id: paneId }, { log });
     sendJson(res, 200, { ok: true, removed, branch });
   } catch (err) {
-    sendJson(res, 500, { error: err.message });
+    sendError(res, err);
   }
 }
 
@@ -1161,7 +1175,7 @@ async function handlePostWorktreeMerge(req, res, paneId) {
       return sendJson(res, 500, { error: `merge failed: ${mergeErr.message}` });
     }
   } catch (err) {
-    sendJson(res, 500, { error: err.message });
+    sendError(res, err);
   }
 }
 
@@ -1186,7 +1200,7 @@ async function handleGetPRDs(req, res) {
     }
     sendJson(res, 200, { prds });
   } catch (err) {
-    sendJson(res, 500, { error: err.message });
+    sendError(res, err);
   }
 }
 
@@ -1219,7 +1233,7 @@ async function handleGetTeams(req, res) {
     }
     sendJson(res, 200, { teams });
   } catch (err) {
-    sendJson(res, 500, { error: err.message });
+    sendError(res, err);
   }
 }
 
@@ -1333,7 +1347,7 @@ async function handlePostBootstrap(req, res) {
     sendJson(res, 200, { ok: true, team: prd.name, agents });
   } catch (err) {
     log(`POST /api/agency/bootstrap error: ${err.message}`);
-    sendJson(res, 500, { error: err.message });
+    sendError(res, err);
   }
 }
 
@@ -1409,7 +1423,7 @@ async function handleGetHandoffs(req, res, paneIdRaw) {
     sendJson(res, 200, { handoffs });
   } catch (err) {
     log(`GET /api/handoffs error: ${err.message}`);
-    sendJson(res, 500, { error: err.message });
+    sendError(res, err);
   }
 }
 
@@ -1493,7 +1507,7 @@ async function handlePostRoutinesFire(req, res) {
     upstream.end();
   } catch (err) {
     log(`POST /api/routines/fire error: ${err.message}`);
-    sendJson(res, 500, { error: err.message });
+    sendError(res, err);
   }
 }
 
@@ -1734,7 +1748,7 @@ async function handlePostAutoHandoffSuppress(req, res) {
     autoHandoffSuggested.set(paneId, Date.now() - AUTO_HANDOFF_COOLDOWN + durationMs);
     sendJson(res, 200, { ok: true, pane_id: paneId, suppressed_until: new Date(Date.now() + durationMs).toISOString() });
   } catch (err) {
-    sendJson(res, 500, { error: err.message });
+    sendError(res, err);
   }
 }
 
