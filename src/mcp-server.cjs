@@ -62,6 +62,18 @@ function log(...args) {
   process.stderr.write(`[wezbridge-mcp] ${args.join(' ')}\n`);
 }
 
+const RESUME_SESSION_RE = /^[0-9a-f-]{8,}$/i;
+
+function isValidResumeSession(resume) {
+  return resume === 'last' || RESUME_SESSION_RE.test(String(resume || ''));
+}
+
+function shellQuoteArg(arg) {
+  const text = String(arg);
+  if (/^[a-zA-Z0-9_./:=@+-]+$/.test(text)) return text;
+  return `"${text.replace(/(["\\$`])/g, '\\$1')}"`;
+}
+
 // ─── Tool Definitions ─────────────────────────────────────────────────────
 
 const TOOLS = [
@@ -618,6 +630,13 @@ function handleToolCall(name, args) {
         (args.dangerously_skip_permissions || false) &&
         process.env.WEZBRIDGE_ALLOW_SKIP_PERMISSIONS === 'true';
 
+      if (args.resume && !isValidResumeSession(args.resume)) {
+        return {
+          content: [{ type: 'text', text: 'Error: invalid resume session identifier' }],
+          isError: true,
+        };
+      }
+
       // Resolve persona if provided
       let personaPath = null;
       if (args.persona) {
@@ -656,17 +675,18 @@ function handleToolCall(name, args) {
         // session previously ran in that directory. Without this, --continue
         // resumes the most recent session for that cwd and the persona prompt
         // gets injected into an existing conversation (wrong behavior).
-        let claudeCmd = 'claude';
+        const claudeArgv = ['claude'];
         if (personaPath) {
           // Fresh start with persona — no --continue, no --resume
-          claudeCmd += ' --append-system-prompt-file "' + personaPath.replace(/\\/g, '/') + '"';
+          claudeArgv.push('--append-system-prompt-file', personaPath.replace(/\\/g, '/'));
         } else if (args.resume) {
-          claudeCmd += ' -r ' + (args.resume || '').replace(/"/g, '');
+          claudeArgv.push('-r', String(args.resume));
         } else {
-          claudeCmd += ' --continue';
+          claudeArgv.push('--continue');
         }
-        if (skipPerms) claudeCmd += ' --dangerously-skip-permissions';
-        if (args.permission_mode) claudeCmd += ' --permission-mode ' + args.permission_mode;
+        if (skipPerms) claudeArgv.push('--dangerously-skip-permissions');
+        if (args.permission_mode) claudeArgv.push('--permission-mode', String(args.permission_mode));
+        const claudeCmd = claudeArgv.map(shellQuoteArg).join(' ');
         wez.sendText(newPaneId, claudeCmd);
 
         // Set tab title to persona name for discoverPanes() detection
