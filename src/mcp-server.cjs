@@ -223,7 +223,7 @@ const TOOLS = [
         },
         max_wait: {
           type: 'number',
-          description: 'Maximum seconds to wait before giving up. Default: 120. Max: 600.',
+          description: 'Maximum seconds to wait before giving up. Default: 60. Max: 300.',
         },
         poll_interval: {
           type: 'number',
@@ -600,7 +600,9 @@ function handleToolCall(name, args) {
 
     case 'wait_for_idle': {
       const paneId = args.pane_id;
-      const maxWait = Math.min(args.max_wait || 120, 600);
+      // This handler blocks the MCP server loop while polling; cap long waits
+      // to reduce head-of-line blocking for other tool calls.
+      const maxWait = Math.min(args.max_wait || 60, 300);
       const pollInterval = Math.max(args.poll_interval || 3, 1);
 
       const startTime = Date.now();
