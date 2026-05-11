@@ -75,6 +75,16 @@ function shellQuoteArg(arg) {
   return `"${text.replace(/(["\\$`])/g, '\\$1')}"`;
 }
 
+function isValidPersonaName(name) {
+  const text = String(name || '');
+  return /^[a-zA-Z0-9._-]+$/.test(text) &&
+    !text.includes('..') &&
+    !text.includes('/') &&
+    !text.includes('\\') &&
+    !path.isAbsolute(text) &&
+    !/^[a-zA-Z]:[\\/]/.test(text);
+}
+
 // ─── Tool Definitions ─────────────────────────────────────────────────────
 
 const TOOLS = [
@@ -662,6 +672,12 @@ function handleToolCall(name, args) {
       // Resolve persona if provided
       let personaPath = null;
       if (args.persona) {
+        if (!isValidPersonaName(args.persona)) {
+          return {
+            content: [{ type: 'text', text: 'Error: invalid persona name' }],
+            isError: true,
+          };
+        }
         personaPath = resolvePersona(args.persona);
         if (!personaPath) {
           return {
