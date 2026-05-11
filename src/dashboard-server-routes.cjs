@@ -8,7 +8,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const os = require('os');
-const { createHandlers } = require('./dashboard-server-handlers.cjs');
+const { createHandlers } = require('./handlers/index.cjs');
 
 const PORT = parseInt(process.env.DASHBOARD_PORT || '4200', 10);
 const STATIC_DIR = path.join(__dirname, '..', 'dashboard', 'dist');
@@ -252,8 +252,7 @@ function startServer() {
   // hasValidBearerToken already returns false when token is absent, but
   // an explicit startup abort prevents silent misconfiguration in production.
   if (process.env.NODE_ENV === 'production' && !process.env.WEZBRIDGE_API_TOKEN) {
-    process.stderr.write('[dashboard] FATAL: WEZBRIDGE_API_TOKEN must be set in production. Aborting.
-');
+    process.stderr.write('[dashboard] FATAL: WEZBRIDGE_API_TOKEN must be set in production. Aborting.\n');
     process.exit(1);
   }
   log(`allowed origins (CSRF): ${Array.from(ALLOWED_ORIGINS).join(', ')}`);
