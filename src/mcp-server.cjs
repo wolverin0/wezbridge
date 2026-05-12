@@ -26,6 +26,7 @@ const wez = require('./wezterm.cjs');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
+const { MCP_TOOL_DEFINITION: SIDECAR_MCP_TOOL_DEFINITION, spawnSidecar } = require('./sidecar-spawner.cjs');
 
 // ─── Persona Resolution ──────────────────────────────────────────────────
 
@@ -65,6 +66,7 @@ function log(...args) {
 // ─── Tool Definitions ─────────────────────────────────────────────────────
 
 const TOOLS = [
+  SIDECAR_MCP_TOOL_DEFINITION,
   {
     name: 'discover_sessions',
     description: 'Scan all WezTerm terminal panes and discover which ones are running Claude Code sessions. Returns a list of all detected sessions with their project, status (idle/working/permission), pane ID, and confidence score. Use this first to see what sessions are available.',
@@ -322,6 +324,8 @@ const TOOLS = [
 
 function handleToolCall(name, args) {
   switch (name) {
+    case "spawn_sidecar":
+      return spawnSidecar(args);
     case 'discover_sessions': {
       const onlyClaude = args.only_claude !== false; // default true
       const panes = discovery.discoverPanes();
@@ -607,7 +611,8 @@ function handleToolCall(name, args) {
 
     case 'spawn_session': {
       const cwd = args.cwd || process.cwd();
-      const skipPerms = args.dangerously_skip_permissions || false;
+      const skipPerms = (args.dangerously_skip_permissions || false) &&
+        process.env.WEZBRIDGE_ALLOW_SKIP_PERMISSIONS === 'true';
 
       // Resolve persona if provided
       let personaPath = null;
