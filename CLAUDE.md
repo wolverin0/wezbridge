@@ -123,3 +123,26 @@ node --test --test-reporter=spec test/*.test.cjs
 ```
 
 184 cases, all green at v3.3.0.
+## Layer-2 sidecar pattern
+
+Layer-2 sidecar is a passive observer persona for long, multi-phase coding tasks. It watches the coder pane, detects phase transitions from scrollback, and audits the previous phase while the coder advances to the next phase.
+
+It activates only when a task has four or more phases. Shorter tasks skip the sidecar to avoid coordination overhead.
+
+Files:
+
+- `C:/Users/pauol/.claude/agents/sidecar.md` defines the sidecar persona.
+- `src/sidecar-spawner.cjs` exposes the `spawn_sidecar` MCP tool.
+- `src/sidecar-watcher.cjs` detects transitions, sends briefing envelopes, and updates task state.
+- `active-task.md` is the project-local handoff file updated on phase changes.
+
+`active-task.md` format:
+
+```text
+# Active task
+
+phase: <number>
+updated_at: <iso timestamp>
+```
+
+Cost note: the sidecar should be used for tasks large enough to benefit from look-ahead review. It adds another pane/session, so it is intentionally disabled for plans shorter than four phases.
