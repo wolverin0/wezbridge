@@ -34,6 +34,15 @@ Two hard rules:
 1. **Always follow `send_prompt` with `send_key("enter")`.** The Enter after typing is unreliable; if no response, send a SECOND `enter` — never re-send the prompt (that double-types the body).
 2. **Never send bash via `send_text` into a running TUI.** If the pane shows a live `Ctx:` or `gpt-X` status bar, your text is typed as a user prompt, not executed. Ctrl+C first or pick a real shell pane.
 
+Delivery verification rule:
+
+After sending an A2A envelope, read the target pane tail. If the envelope is
+still visible in the prompt/input area, or if the target has not started an
+ack/progress/work response, send one additional submit key only. Do not resend
+the envelope body. Multiline prompts can leave the target TUI in a multiline
+editor where Enter inserts a newline; the fix is a second submit action plus
+readback verification, not duplicate text injection.
+
 ## Receiving
 
 When you (a Claude or Codex session) see an envelope in your input:
