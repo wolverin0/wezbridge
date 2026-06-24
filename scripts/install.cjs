@@ -31,6 +31,7 @@ const ARGS = new Set(process.argv.slice(2));
 const DRY = ARGS.has('--dry-run');
 const SKIP_CODEX = ARGS.has('--no-codex');
 const SKIP_DAEMON = ARGS.has('--no-daemon');
+const INSTALL_WT = ARGS.has('--install-wezterm');
 
 const out = {
   head: (s) => console.log(`\n${s}`),
@@ -65,6 +66,45 @@ function readFileSafe(file) {
   }
 }
 
+function weztermInstallSpec() {
+  if (IS_WIN) {
+    return {
+      cmd: 'winget',
+      argv: ['install', '--id', 'wez.wezterm', '-e', '--accept-source-agreements', '--accept-package-agreements'],
+      human: 'winget install --id wez.wezterm -e',
+    };
+  }
+  if (process.platform === 'darwin') {
+    return { cmd: 'brew', argv: ['install', '--cask', 'wezterm'], human: 'brew install --cask wezterm' };
+  }
+  return null; // Linux: install source varies — point at the download page
+}
+
+function ensureWezterm() {
+  if (hasCmd('wezterm')) {
+    out.ok('wezterm on PATH');
+    return;
+  }
+  const spec = weztermInstallSpec();
+  if (DRY) {
+    out.dry(spec ? `(missing) ${spec.human}` : '(missing) install wezterm from https://wezfurlong.org/wezterm/');
+    return;
+  }
+  if (INSTALL_WT && spec) {
+    out.info(`installing wezterm — ${spec.human}`);
+    const r = tryRun(spec.cmd, spec.argv);
+    if (r.ok && hasCmd('wezterm')) {
+      out.ok('wezterm installed');
+      return;
+    }
+    out.warn('wezterm auto-install did not complete');
+  } else {
+    out.warn('wezterm not found');
+  }
+  if (spec) out.info(`install it:  ${spec.human}   (or re-run this script with --install-wezterm)`);
+  else out.info('install wezterm from https://wezfurlong.org/wezterm/');
+}
+
 function printHelp() {
   console.log(`wezbridge installer
 
@@ -72,9 +112,10 @@ Usage: node scripts/install.cjs [options]
 
   (no args)     register the MCP on Claude (+ Codex if present), set env, start the :4200 daemon
   --dry-run     show what would happen, change nothing
-  --no-codex    skip Codex CLI registration
-  --no-daemon   don't start or autostart the dashboard daemon
-  --help        this message
+  --no-codex          skip Codex CLI registration
+  --no-daemon         don't start or autostart the dashboard daemon
+  --install-wezterm   install WezTerm if missing (winget on Windows, brew on macOS)
+  --help              this message
 
 Prereqs: Node 20+, WezTerm, and at least one AI CLI (claude and/or codex).`);
 }
@@ -85,8 +126,7 @@ function checkPrereqs() {
   if (major < 20) out.warn(`Node ${process.versions.node} found — wezbridge needs Node 20+`);
   else out.ok(`Node ${process.versions.node}`);
 
-  if (hasCmd('wezterm')) out.ok('wezterm on PATH');
-  else out.warn('wezterm not found — install from https://wezfurlong.org/wezterm/ (mux is built in)');
+  ensureWezterm();
 
   const claude = hasCmd('claude');
   const codex = hasCmd('codex');

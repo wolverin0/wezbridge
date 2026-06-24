@@ -4,15 +4,6 @@
 
 Run a swarm of long-lived AI coding sessions in parallel — one per WezTerm pane — and let any of them spawn, prompt, and read the others through `mcp__wezbridge__*` tool calls. Drive the whole thing from your phone via Telegram by designating one pane as your "OmniClaude" controller. **No browser dashboard, no UI on the PC** — the daemon on `:4200` is a headless backend; the control surface is Claude Code itself.
 
-### Not included
-
-- Cloud orchestration
-- Hosted dashboard or web UI
-- Autonomous agent manager
-- Replacement for Claude Code, Codex, or WezTerm
-
-If you need any of those, this isn't the tool. wezbridge is the local plumbing that lets the AI CLIs you already use coordinate with each other.
-
 ### Three layers
 
 The repo ships in three opt-in tiers — install the core, add the others if you want them:
@@ -75,9 +66,9 @@ That's the whole install. The script auto-detects your AI CLIs and:
 - starts the `:4200` daemon and sets it to auto-launch on login,
 - verifies the daemon is responding.
 
-It's **idempotent** (safe to re-run). Flags: `--dry-run` (preview, change nothing), `--no-codex`, `--no-daemon`, `--help`.
+It's **idempotent** (safe to re-run). Flags: `--dry-run` (preview, change nothing), `--install-wezterm`, `--no-codex`, `--no-daemon`, `--help`.
 
-**Prereqs:** Node 20+, [WezTerm](https://wezfurlong.org/wezterm/), and at least one AI CLI (`claude` and/or `codex`).
+**Prereqs:** Node 20+ and at least one AI CLI (`claude` and/or `codex`). The installer can install **WezTerm** for you with `--install-wezterm` (winget on Windows, brew on macOS), or grab it from [wezfurlong.org/wezterm](https://wezfurlong.org/wezterm/).
 
 <details>
 <summary><b>Manual install — step by step</b> (if you'd rather wire it yourself, or the script can't run)</summary>
@@ -265,10 +256,6 @@ When picking how to dispatch work:
 | `scripts/start-telegram-streamer.cmd` | Standalone persistent streamer launcher (Windows) |
 | `scripts/omniclaude-forever.sh` | Supervisor that keeps streamer + OmniClaude session aligned |
 | `scripts/install-hooks.cjs` | Installs the wezbridge git pre-push guard hook |
-
-## Reviving the abandoned dashboard ambition
-
-The repo originally aspired to a browser dashboard + autonomous orchestrator (the "theorchestra" attempt). That was reverted on 2026-05-03 to the simpler "Claude Code as orchestrator" pattern. The full pre-revert state — dashboard.html, telegram-streamer with all event modes, orchestra-goose Tier-2 recipes, the React/Vite v3 build — is preserved at the `omniclaude-pre-rollback` git tag (commit `acd3460`). To revive, check out that tag.
 
 ## License
 
