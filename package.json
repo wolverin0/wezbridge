@@ -27,6 +27,7 @@
   },
   "scripts": {
     "mcp": "node src/mcp-server.cjs",
+    "setup": "node scripts/install.cjs",
     "streamer": "node src/telegram-streamer.cjs",
     "tasks-watcher": "node src/tasks-watcher.cjs",
     "dashboard": "node src/dashboard-server.cjs",

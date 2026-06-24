@@ -61,6 +61,27 @@ For the full step-by-step on the Telegram pattern, see [`docs/SETUP-omniclaude-t
 
 ## Quick start
 
+### One command (recommended)
+
+```bash
+git clone https://github.com/wolverin0/wezbridge.git && cd wezbridge
+node scripts/install.cjs          # or:  npm run setup
+```
+
+That's the whole install. The script auto-detects your AI CLIs and:
+
+- registers the `wezbridge` MCP on **Claude Code** (`--scope user`) and **Codex** (if present),
+- sets the Windows crash-prevention env var,
+- starts the `:4200` daemon and sets it to auto-launch on login,
+- verifies the daemon is responding.
+
+It's **idempotent** (safe to re-run). Flags: `--dry-run` (preview, change nothing), `--no-codex`, `--no-daemon`, `--help`.
+
+**Prereqs:** Node 20+, [WezTerm](https://wezfurlong.org/wezterm/), and at least one AI CLI (`claude` and/or `codex`).
+
+<details>
+<summary><b>Manual install — step by step</b> (if you'd rather wire it yourself, or the script can't run)</summary>
+
 The install is 6 steps: WezTerm → AI CLI → clone → register MCP on Claude → register MCP on Codex → launch daemon.
 
 ### 1. Install WezTerm
@@ -196,6 +217,8 @@ return config
 ```
 
 See `wezterm/example-wezterm.lua` in this repo for a fuller example.
+
+</details>
 
 ## A2A protocol
 
