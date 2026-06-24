@@ -1,0 +1,36 @@
+node_modules/
+dist/
+build/
+coverage/
+.git/
+graphify-out/
+*.log
+*.lock
+*.min.js
+*.map
+.DS_Store
+Thumbs.db
+
+# Vendored / scratch / runtime dirs (not core wezbridge source)
+repo/
+tmp/
+vault/
+debates/
+logs/
+obsidian-vault/
+supabase/
+test-workspace/
+.claude/
+.claude-flow/
+.codex/
+.goose/
+.omc/
+.playwright-mcp/
+.vibecode/
+
+# Screenshot / image artifacts (not architecture-relevant)
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
