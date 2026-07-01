@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Loop Engineering Playbook — When to let agents run themselves</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c232c; --ink:#e6edf3; --muted:#9aa7b4;
+    --line:#2d3742; --accent:#58a6ff; --green:#3fb950; --amber:#d29922; --red:#f85149;
+    --purple:#bc8cff; --mono:'SF Mono',ui-monospace,'Cascadia Code',Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+       -webkit-font-smoothing:antialiased}
+  .wrap{max-width:1040px;margin:0 auto;padding:40px 28px 80px}
+  header{border-bottom:1px solid var(--line);padding-bottom:22px;margin-bottom:34px}
+  h1{font-size:30px;margin:0 0 6px;letter-spacing:-.5px}
+  h2{font-size:21px;margin:46px 0 14px;padding-top:14px;border-top:1px solid var(--line);letter-spacing:-.3px}
+  h3{font-size:16px;margin:26px 0 8px;color:var(--accent)}
+  .sub{color:var(--muted);font-size:14px}
+  p{margin:10px 0}
+  .lead{font-size:16px;color:#cdd9e5}
+  code{font-family:var(--mono);font-size:.86em;background:#222b35;padding:1px 6px;border-radius:5px;color:#d2e3f7}
+  pre{background:#11161c;border:1px solid var(--line);border-radius:10px;padding:16px 18px;overflow:auto;font-family:var(--mono);font-size:13px;line-height:1.55}
+  pre code{background:none;padding:0;color:#c9d6e3}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:9px 11px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);font-weight:600;color:#cdd9e5}
+  tr:nth-child(even) td{background:#12171d}
+  .pill{display:inline-block;font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px;letter-spacing:.3px;text-transform:uppercase}
+  .yes{background:rgba(63,185,80,.16);color:var(--green);border:1px solid rgba(63,185,80,.35)}
+  .maybe{background:rgba(210,153,34,.16);color:var(--amber);border:1px solid rgba(210,153,34,.35)}
+  .no{background:rgba(248,81,73,.16);color:var(--red);border:1px solid rgba(248,81,73,.35)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:16px 0}
+  .gate{background:linear-gradient(180deg,#16202b,#131922);border:1px solid #29384a;border-left:4px solid var(--accent);border-radius:10px;padding:18px 20px;margin:18px 0}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:720px){.grid2{grid-template-columns:1fr}}
+  .tree{font-family:var(--mono);font-size:13px;line-height:1.8;background:#11161c;border:1px solid var(--line);border-radius:10px;padding:18px}
+  .tree b{color:var(--accent)}
+  .tag{color:var(--purple);font-family:var(--mono);font-size:12px}
+  ul.tight{margin:8px 0;padding-left:22px}
+  ul.tight li{margin:4px 0}
+  .kbd{font-family:var(--mono);font-size:12px;color:var(--green)}
+  .muted{color:var(--muted)}
+  .note{font-size:13px;color:var(--muted);border-left:2px solid var(--line);padding-left:12px;margin:12px 0}
+  .stopword{color:var(--red);font-weight:700}
+  .big{font-size:18px;font-weight:600}
+  footer{margin-top:50px;border-top:1px solid var(--line);padding-top:18px;color:var(--muted);font-size:13px}
+  .scorebar{display:inline-block;width:64px;height:8px;border-radius:4px;background:#2a333d;vertical-align:middle;overflow:hidden}
+  .scorebar > i{display:block;height:100%}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Loop Engineering Playbook</h1>
+  <div class="sub">When to let agents run themselves on a goal — and when not. A reusable decision method + the streamlined loop, with a worked example on <b>Futura CRM</b>.</div>
+  <div class="sub" style="margin-top:8px">2026-06-25 · grounded in the loop-engineering research corpus (51 sources) + direct inspection of the <code>crm/</code> repo.</div>
+</header>
+
+<p class="lead">"Loop engineering" = you stop hand-prompting an agent turn-by-turn and instead design a <b>goal-driven, self-correcting cycle</b> that prompts the agent for you and runs until an <b>independent check</b> says it's done. You become the architect of the loop, not the operator inside it.</p>
+
+<p>But the method is only worth using on work that fits it. <b>Most of the value — and all of the danger — is in one question.</b></p>
+
+<!-- ============ THE GATE ============ -->
+<h2>1 · The one gate that decides everything</h2>
+
+<div class="gate">
+  <div class="big">Can a machine decide "done" without a human looking?</div>
+  <p style="margin:8px 0 0">If yes → the work is <b>loopable</b>. If no → looping it just means <span class="stopword">an agent grading its own homework</span>, which is the #1 fatal failure mode (the "self-approval trap"). A loop with a weak stop condition doesn't save you work — it produces <b>expensive, confident garbage faster</b>.</p>
+</div>
+
+<p>Everything else is secondary to having a real <b>stop condition</b>: a deterministic, independent signal that the goal is met. Tests passing, a build succeeding, a linter clean, a coverage number crossed, an eval grader scoring ≥ N, a schema validating, an HTTP 200. The agent that <i>does</i> the work must <span class="stopword">never</span> be the thing that decides it succeeded.</p>
+
+<h3>The 5-axis suitability rubric</h3>
+<p class="muted">Score a piece of work before looping it. Axis 1 is a hard gate — fail it and the rest don't matter.</p>
+<table>
+  <tr><th style="width:200px">Axis</th><th>Loop it (green)</th><th>Be careful (amber)</th><th>Don't loop (red)</th></tr>
+  <tr>
+    <td><b>1. Stop condition</b> <span class="tag">hard gate</span></td>
+    <td><span class="pill yes">strong</span> Deterministic + independent: tests, build, lint, coverage %, eval grader, schema check</td>
+    <td><span class="pill maybe">weak</span> Partial: a few tests but big gaps; proxy metric only</td>
+    <td><span class="pill no">none</span> "Looks good", taste, UX feel, "is this the right feature?"</td>
+  </tr>
+  <tr>
+    <td><b>2. Blast radius</b></td>
+    <td><span class="pill yes">reversible</span> git-tracked code, sandbox, branch, throwaway DB</td>
+    <td><span class="pill maybe">contained</span> staging data, internal tools</td>
+    <td><span class="pill no">irreversible</span> prod data, payments, sending messages to customers, schema drops</td>
+  </tr>
+  <tr>
+    <td><b>3. Decomposability</b></td>
+    <td><span class="pill yes">scoped</span> Splits into small tasks each independently verifiable</td>
+    <td><span class="pill maybe">coupled</span> Stages depend on each other but are sequenceable</td>
+    <td><span class="pill no">monolithic</span> One big judgment call that can't be chunked</td>
+  </tr>
+  <tr>
+    <td><b>4. Spec clarity</b></td>
+    <td><span class="pill yes">written</span> A spec/roadmap/audit list exists; "done" is describable</td>
+    <td><span class="pill maybe">sketch</span> Rough intent, needs a planning pass first</td>
+    <td><span class="pill no">vague</span> "Make it better" — no one can say what good is</td>
+  </tr>
+  <tr>
+    <td><b>5. Cost ceiling</b></td>
+    <td><span class="pill yes">capped</span> You can set MAX_ITER + token/$ budget and walk away</td>
+    <td><span class="pill maybe">watch</span> Expensive per iter; needs a tight cap</td>
+    <td><span class="pill no">unbounded</span> Each iter hits a paid external API with no cap</td>
+  </tr>
+</table>
+
+<!-- ============ DECISION TREE ============ -->
+<h2>2 · The decision tree</h2>
+<div class="tree">
+Work arrives →<br>
+&nbsp;&nbsp;<b>Q1.</b> Is there a command that returns pass/fail without a human? <br>
+&nbsp;&nbsp;&nbsp;&nbsp;├─ <b>No</b> &nbsp;→ <span class="pill no">don't loop</span> keep a human in the loop, OR first <i>build</i> the check (write tests/an eval), then revisit.<br>
+&nbsp;&nbsp;&nbsp;&nbsp;└─ <b>Yes</b> → <b>Q2.</b> Can a bad iteration be thrown away safely (git/sandbox/branch)?<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├─ <b>No</b> &nbsp;→ <span class="pill no">don't loop</span> the action is irreversible (prod data, payments, customer messages).<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└─ <b>Yes</b> → <b>Q3.</b> Did a single manual run already succeed end-to-end?<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├─ <b>No</b> &nbsp;→ <span class="pill maybe">not yet</span> do 1 manual run + 3–5 manual repeats first. Never automate an unproven run.<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└─ <b>Yes</b> → <span class="pill yes">loop it</span> wire Goal→Execute→Verify→Iterate with MAX_ITER + budget cap, run unattended, review by PR.
+</div>
+<p class="note">Q3 is the most-skipped step and the most expensive to skip. If you can't get it working <i>once</i> by hand, a loop just reproduces the failure N times and bills you for it.</p>
+
+<!-- ============ THE METHOD ============ -->
+<h2>3 · The streamlined method</h2>
+
+<div class="grid2">
+  <div class="card">
+    <h3 style="margin-top:0">The cycle</h3>
+    <pre><code>GOAL      one measurable objective
+  │
+EXECUTE   maker agent, fresh context,
+  │       state loaded from disk
+VERIFY    independent check runs
+  │       (maker ≠ checker)
+  ├─ pass → commit + update memory → STOP
+  └─ fail → record why → ITERATE
+            (until MAX_ITER / budget)</code></pre>
+  </div>
+  <div class="card">
+    <h3 style="margin-top:0">The 5 rules that make it work</h3>
+    <ul class="tight">
+      <li><b>Independent verification</b> — the checker is a different process/prompt than the maker. Deterministic where possible.</li>
+      <li><b>Stateless iterations</b> — each turn starts fresh; state lives in files/git, not chat history. Beats context rot.</li>
+      <li><b>Scoped workers</b> — narrow task + narrow tools &gt; one giant agent with everything.</li>
+      <li><b>Proof + memory</b> — every pass emits an artifact (test log, diff) and writes what it learned.</li>
+      <li><b>Hard rails</b> — <code>MAX_ITER</code>, token/$ cap, and a human gate on anything irreversible.</li>
+    </ul>
+  </div>
+</div>
+
+<h3>The reusable per-project loop spec</h3>
+<p class="muted">Drop one of these in <code>&lt;project&gt;/.loops/&lt;name&gt;.md</code>. It's the whole contract — fill the blanks and it's runnable.</p>
+<pre><code># Loop: &lt;name&gt;
+
+Goal:            &lt;one measurable sentence — what "done" means&gt;
+Trigger:         &lt;manual | on CI red | cron | when audit-report changes&gt;
+Maker:           &lt;model that does the work&gt;
+Checker:         &lt;the INDEPENDENT verification — a command, not an opinion&gt;
+Stop condition:  &lt;exact deterministic gate, e.g. "pytest exits 0 AND coverage ≥ 80"&gt;
+Max iterations:  &lt;N&gt;
+Budget cap:      &lt;tokens / $&gt;
+State location:  &lt;dir/files the loop reads at the start of each turn&gt;
+Memory update:   &lt;where results + lessons are written&gt;
+Human checkpoint: &lt;none | review PR at end | approve before any external action&gt;
+Blast radius:    &lt;branch/sandbox — what a bad iteration can and cannot touch&gt;</code></pre>
+
+<h3>Minimal stateless runner (shape, not framework)</h3>
+<pre><code>while iter &lt; MAX_ITER and spent &lt; BUDGET:
+    state   = load_relevant_files()        # only what's needed, fresh
+    result  = maker.run(goal, state)       # new context every turn
+    proof   = checker.run()                # INDEPENDENT, deterministic
+    if proof.passed:
+        git.commit(result); memory.write(proof); break
+    else:
+        memory.append_failure(proof.why)   # next turn reads this
+        iter += 1
+# exit → human reviews the branch / PR</code></pre>
+<p class="note">You don't need a heavyweight tool to start. The "Ralph" family (ralph-orchestrator, ralphy, ralph-zero) and skills like <code>loop-me</code> / the loop-library are just polished versions of this <code>while</code> loop. Start with the loop; adopt a harness only when you feel the pain.</p>
+
+<!-- ============ WORKED EXAMPLE ============ -->
+<h2>4 · Worked example — Futura CRM <span class="pill yes" style="vertical-align:middle">strong fit</span></h2>
+
+<p>Why this project is a clean teaching case: it already carries the verification surface most projects lack. Inspected in <code>crm/recovered-source/crm-standalone/</code>:</p>
+
+<table>
+  <tr><th style="width:230px">Verification surface (already in repo)</th><th>What it gives you as a stop condition</th></tr>
+  <tr><td><code>pytest</code> · 117 test files · asyncio · <code>integration</code> marker</td><td>Deterministic backend gate — "all tests green" is machine-checkable.</td></tr>
+  <tr><td>CI: <code>ci.yml</code>, <code>api-sdk.yml</code>, <code>sec-scan.yml</code></td><td>A canonical, already-agreed definition of "green" — the loop's checker can just be "make CI pass."</td></tr>
+  <tr><td><code>backend/evals/</code> — <code>dataset.py</code>, <code>grader.py</code>, <code>replay.py</code>, <code>golden/</code></td><td>A <b>maker/checker harness that already exists</b>. Golden dataset + grader = independent semantic verification for LLM-ish behavior, not just unit tests.</td></tr>
+  <tr><td>Frontend: <code>tsc -b &amp;&amp; vite build</code> + <code>eslint .</code></td><td>Type-check + build + lint = a deterministic frontend gate.</td></tr>
+  <tr><td><code>audit-report.md</code>, <code>MONITORING_PLAN.md</code>, <code>RUNBOOK.md</code></td><td>Pre-written work-lists → ready-made loop goals with describable "done".</td></tr>
+</table>
+
+<h3>What we'd actually loop on Futura CRM (concrete)</h3>
+<table>
+  <tr><th style="width:185px">Loop</th><th>Goal</th><th>Stop condition (independent)</th><th>Fit</th></tr>
+  <tr>
+    <td><b>Green-keeper</b></td>
+    <td>Keep the branch CI-green; on any red, diagnose + fix until passing</td>
+    <td><code>ci.yml</code> passes (exit 0)</td>
+    <td><span class="pill yes">yes</span></td>
+  </tr>
+  <tr>
+    <td><b>Coverage climb</b></td>
+    <td>Raise backend test coverage to a target, writing real tests (not <code>assert True</code>)</td>
+    <td><code>pytest</code> green <b>AND</b> coverage ≥ target <b>AND</b> mutation/spot-check sample</td>
+    <td><span class="pill yes">yes</span></td>
+  </tr>
+  <tr>
+    <td><b>Eval-score lift</b></td>
+    <td>Improve CRM agent behavior against the golden set</td>
+    <td><code>evals/run.py</code> grader score ≥ N on <code>golden/</code> (variance-aware)</td>
+    <td><span class="pill yes">yes</span> — uses existing harness</td>
+  </tr>
+  <tr>
+    <td><b>Audit remediation</b></td>
+    <td>Close every P0/P1 in <code>audit-report.md</code>, each with a regression test</td>
+    <td>Audit re-run shows 0 open P0/P1 <b>AND</b> new tests green</td>
+    <td><span class="pill yes">yes</span></td>
+  </tr>
+  <tr>
+    <td><b>The live S0–S9 port</b></td>
+    <td>(what the pane is doing by hand now) port Command Center stage-by-stage</td>
+    <td>Each stage's tests green before advancing</td>
+    <td><span class="pill maybe">partial</span> — loopable per-stage <i>if</i> each stage has a test gate; the cut-over/decommission stage needs a human.</td>
+  </tr>
+</table>
+
+<h3>What we would <span class="stopword">not</span> loop on Futura CRM</h3>
+<ul class="tight">
+  <li><span class="pill no">no</span> <b>Sending WhatsApp / outreach to real customers</b> — irreversible external action; your own rule already makes this operator-approval-only.</li>
+  <li><span class="pill no">no</span> <b>Anything touching <code>leads.db</code> / production data or payments</b> — blast radius fails axis 2.</li>
+  <li><span class="pill no">no</span> <b>"Is this the right feature / does this UX feel good?"</b> — no machine stop condition; needs your taste. (A loop can <i>build</i> a feature once you've decided it and written its acceptance test — it can't <i>decide</i> it.)</li>
+  <li><span class="pill no">no</span> <b>Schema migrations with irreversible drops</b> — gate behind a human even if reversible-on-paper.</li>
+</ul>
+
+<div class="card">
+  <h3 style="margin-top:0">So why would you actually use this here?</h3>
+  <p style="margin:6px 0">Because the CRM accumulates a large surface of <b>verifiable maintenance</b> — coverage gaps, audit findings, eval regressions, flaky CI — that is real work, is boring, and has a built-in "done" signal. That's the sweet spot: you define the target once (e.g. "audit-report has zero P0/P1, CI green"), the loop grinds it overnight against the existing tests/CI/evals, and you review a PR in the morning. You stop being the loop for the parts a machine can already grade — and you keep your attention for the feature and customer decisions a machine can't.</p>
+</div>
+
+<!-- ============ WHEN NOT / ANTIPATTERNS ============ -->
+<h2>5 · When not to use it (any project) + fatal anti-patterns</h2>
+<div class="grid2">
+  <div class="card">
+    <h3 style="margin-top:0">Don't loop when…</h3>
+    <ul class="tight">
+      <li>There's no independent "done" check (and you're not willing to build one first).</li>
+      <li>The action is irreversible or customer-facing (send/publish/pay/delete prod).</li>
+      <li>The task is a single design/taste judgment that can't be chunked.</li>
+      <li>You haven't gotten it working <b>once</b> by hand.</li>
+      <li>You can't put a hard cap on iterations and spend.</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3 style="margin-top:0">Fatal anti-patterns</h3>
+    <ul class="tight">
+      <li><b>Self-approval trap</b> — maker grades its own work.</li>
+      <li><b>Doom loop</b> — one fat context, logs pile up, context rot, agent spins.</li>
+      <li><b>Monolith agent</b> — every tool, no scope, drifts off-goal.</li>
+      <li><b>Vague goal</b> — "make it better" has no stop condition.</li>
+      <li><b>No caps</b> — runs until the bill, not the goal.</li>
+      <li><b>Looping the unproven</b> — automating a run that never worked manually.</li>
+    </ul>
+  </div>
+</div>
+
+<footer>
+  <p><b>How this ties back to wezbridge / omniclaude:</b> the orchestrator pattern people use (Derek Nee's "Matrix": Workspace Brain → Runtime → Department leads → scoped Claude Code / Codex worker seats → Proof / Check-in loop) is exactly the wezbridge pane model with a stop condition bolted on. A pane is a worker seat; the orchestrator pane dispatches a loop spec; the project's tests/CI/evals are the checker. The missing piece to operationalize is small: a per-project <code>.loops/</code> spec + a stateless runner that reads state, runs the maker in a worker pane, runs the checker command, and advances only on proof.</p>
+  <p class="muted">Companion deep-dive: <code>wezbridge/docs/loop-engineering-briefing.md</code> · Source corpus: NotebookLM "Loop Engineering: Autonomous Claude/Codex Agents".</p>
+</footer>
+
+</div>
+</body>
+</html>
