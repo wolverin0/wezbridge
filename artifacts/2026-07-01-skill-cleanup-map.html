@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Skill Cleanup Map — 2026-07-01</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #1c2128;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --text-dim: #8b949e;
+    --text-bright: #e6edf3;
+    --green: #238636;
+    --green-text: #3fb950;
+    --orange: #9e4711;
+    --orange-text: #f0883e;
+    --blue: #1158c7;
+    --blue-text: #58a6ff;
+    --gray: #2d333b;
+    --gray-text: #8b949e;
+    --red: #da3633;
+    --accent: #388bfd;
+    --cluster-bg: #13161a;
+    --new-badge: #5a3e00;
+    --new-text: #ffa657;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  a { color: var(--accent); text-decoration: none; }
+
+  /* HEADER */
+  .header {
+    background: linear-gradient(135deg, #0d1117 0%, #161b22 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 24px 32px 20px;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  .header h1 {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--text-bright);
+    margin-bottom: 4px;
+  }
+  .header .meta { color: var(--text-dim); font-size: 12px; margin-bottom: 14px; }
+  .archive-note {
+    background: #1a1a2e;
+    border: 1px solid #3b3b5c;
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 12px;
+    color: #9399b0;
+    margin-bottom: 14px;
+  }
+  .archive-note strong { color: #b0b8d8; }
+
+  /* SUMMARY BAR */
+  .summary-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 14px;
+  }
+  .sum-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 4px 12px;
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .sum-chip .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+  }
+  .sum-chip.total { border-color: var(--accent); color: var(--text-bright); }
+  .sum-chip.keep .dot { background: var(--green-text); }
+  .sum-chip.keep { color: var(--green-text); }
+  .sum-chip.overlap .dot { background: var(--orange-text); }
+  .sum-chip.overlap { color: var(--orange-text); }
+  .sum-chip.family .dot { background: var(--blue-text); }
+  .sum-chip.family { color: var(--blue-text); }
+  .sum-chip.review .dot { background: var(--gray-text); }
+  .sum-chip.review { color: var(--gray-text); }
+
+  /* FILTER */
+  .filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .filter-bar input {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 6px 12px;
+    font-size: 13px;
+    width: 280px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .filter-bar input:focus { border-color: var(--accent); }
+  .filter-bar input::placeholder { color: var(--text-dim); }
+  .filter-count { color: var(--text-dim); font-size: 12px; }
+
+  /* MAIN */
+  .main { padding: 24px 32px 60px; max-width: 1400px; }
+
+  /* SECTION */
+  .section { margin-bottom: 36px; }
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .section-header h2 {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-bright);
+  }
+  .section-count {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1px 8px;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .section-toggle {
+    margin-left: auto;
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-dim);
+    padding: 2px 8px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .section-toggle:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* CLUSTER */
+  .cluster {
+    margin-bottom: 20px;
+    background: var(--cluster-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .cluster-header {
+    background: var(--surface2);
+    padding: 8px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  /* SKILL TABLE */
+  .skill-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .skill-table th {
+    text-align: left;
+    padding: 8px 12px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  .skill-table td {
+    padding: 9px 12px;
+    border-bottom: 1px solid #1c2128;
+    vertical-align: top;
+  }
+  .skill-table tr:last-child td { border-bottom: none; }
+  .skill-table tr:hover td { background: rgba(88, 166, 255, 0.03); }
+  .skill-table tr.hidden { display: none; }
+
+  /* VERDICT BADGE */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    border-radius: 4px;
+    padding: 2px 7px;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .badge-keep { background: rgba(35, 134, 54, 0.2); color: var(--green-text); border: 1px solid rgba(63, 185, 80, 0.3); }
+  .badge-overlap { background: rgba(158, 71, 17, 0.2); color: var(--orange-text); border: 1px solid rgba(240, 136, 62, 0.3); }
+  .badge-family { background: rgba(17, 88, 199, 0.2); color: var(--blue-text); border: 1px solid rgba(88, 166, 255, 0.3); }
+  .badge-review { background: rgba(45, 51, 59, 0.5); color: var(--gray-text); border: 1px solid #3d444d; }
+  .badge-new { background: rgba(90, 62, 0, 0.4); color: var(--new-text); border: 1px solid rgba(255, 166, 87, 0.3); font-size: 10px; margin-left: 4px; }
+
+  /* AGENT PILL */
+  .agent-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 10px;
+    font-weight: 500;
+  }
+  .agent-claude { background: rgba(255, 150, 100, 0.15); color: #ff9664; border: 1px solid rgba(255, 150, 100, 0.25); }
+  .agent-codex { background: rgba(100, 200, 255, 0.12); color: #64c8ff; border: 1px solid rgba(100, 200, 255, 0.22); }
+  .agent-both { background: rgba(150, 100, 255, 0.15); color: #b88fff; border: 1px solid rgba(150, 100, 255, 0.25); }
+
+  /* NAME */
+  .skill-name {
+    font-family: 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-bright);
+    white-space: nowrap;
+  }
+
+  /* PURPOSE */
+  .skill-purpose {
+    color: var(--text-dim);
+    font-size: 12px;
+    line-height: 1.4;
+    max-width: 380px;
+  }
+
+  /* RECOMMENDATION */
+  .recommendation {
+    font-size: 11px;
+    color: #c07850;
+    font-style: italic;
+    margin-top: 3px;
+  }
+
+  /* DATE */
+  .skill-date {
+    font-size: 11px;
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+  .skill-date.stale { color: #7d4a3a; }
+  .skill-date.recent { color: #3fb950; }
+
+  /* SIZE */
+  .skill-size {
+    font-size: 11px;
+    color: var(--text-dim);
+    white-space: nowrap;
+    font-family: monospace;
+  }
+
+  /* CLUSTER TAG */
+  .cluster-tag {
+    font-size: 10px;
+    color: #6e7681;
+    font-weight: 500;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 1px 5px;
+    white-space: nowrap;
+  }
+
+  /* COLLAPSIBLE */
+  .collapsible-body { transition: none; }
+  .collapsible-body.collapsed { display: none; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Skill Cleanup Map</h1>
+  <div class="meta">Generated 2026-07-01 &mdash; 102 distinct skills across ~/.claude/skills/ + ~/.codex/skills/</div>
+
+  <div class="archive-note">
+    <strong>Already archived 2026-07-01 to ~/.claude/_skills-archive/:</strong>
+    feature-validation (stale test harness) and autoresearch.bak (backup copy of autoresearch).
+    Those are excluded from counts below.
+  </div>
+
+  <div class="summary-bar" id="summaryBar">
+    <!-- filled by JS -->
+  </div>
+
+  <div class="filter-bar">
+    <input type="text" id="filterBox" placeholder="Filter by name, purpose, cluster…" oninput="applyFilter()">
+    <span class="filter-count" id="filterCount"></span>
+  </div>
+</div>
+
+<div class="main" id="main">
+  <!-- Sections injected by JS -->
+</div>
+
+<script>
+// ============================================================
+// DATA
+// ============================================================
+const SKILLS = [
+  // name, desc, agents, lastmod, size, verdict, cluster, recommendation, isNew
+  // --- OVERLAP: skill-creation ---
+  {name:"agent-skill-creator", desc:"Create cross-platform agent skills from workflow descriptions. Activates when users ask to create an agent, automate a repetitive workflow, create a custom skill.", agents:"claude", lastmod:"2026-03-22", size:29126, verdict:"overlap", cluster:"skill-creation", rec:"Merge into skill-creator (canonical); duplicates trigger conditions and structure."},
+  {name:"skill-builder", desc:"Create new Claude Code Skills with proper YAML frontmatter, progressive disclosure structure, and complete directory organization.", agents:"claude", lastmod:"2026-03-11", size:21901, verdict:"overlap", cluster:"skill-creation", rec:"Merge into skill-creator; overlaps entirely — skill-creator is the maintained canonical."},
+  {name:"skill-creator", desc:"Guide for creating effective skills. Use when users want to create a new skill (or update an existing skill) that extends Claude's capabilities.", agents:"both", lastmod:"2026-05-16", size:5423, verdict:"keep", cluster:"skill-creation", rec:"CANONICAL — keep. Has both-agent coverage and is actively maintained."},
+  {name:"skillify", desc:"Turn a just-proven repeated workflow into a concise reusable skill after explicit user approval. Use when the user asks to save, codify, or reuse a completed workflow.", agents:"both", lastmod:"2026-05-17", size:2504, verdict:"keep", cluster:null, rec:null},
+  // --- OVERLAP: brainstorm ---
+  {name:"brainstorming", desc:"Explores user intent, requirements and design before implementation. You MUST use this before any creative work — creating features, building components, adding functionality.", agents:"both", lastmod:"2026-04-11", size:10634, verdict:"overlap", cluster:"brainstorm", rec:"De-duplicate: pick one (brainstorming has both-agent coverage). Archive superskills-brainstorm."},
+  {name:"superskills-brainstorm", desc:"You MUST use this before any creative work — creating features, building components, adding functionality, or modifying behavior. Explores user intent, requirements and design before implementation.", agents:"claude", lastmod:"2026-04-11", size:10634, verdict:"overlap", cluster:"brainstorm", rec:"Exact duplicate of brainstorming (same content, same date, same size). Archive this copy."},
+  // --- OVERLAP: ui-design ---
+  {name:"frontend-design", desc:"Guidance for distinctive, intentional visual design when building new UI or reshaping an existing one. Aesthetic direction, typography, making choices that don't read as templated defaults.", agents:"both", lastmod:"2026-06-27", size:10270, verdict:"overlap", cluster:"ui-design", rec:"Overlaps impeccable/frontendgame in scope. Taste call: keep if you use it as quick aesthetic guide."},
+  {name:"frontendgame", desc:"Create, critique, reverse-engineer, and implement premium mobile-first product interfaces with advanced UX patterns, design-system discipline, and motion engineering.", agents:"claude", lastmod:"2026-06-13", size:9362, verdict:"overlap", cluster:"ui-design", rec:"Overlaps impeccable. Taste call — keep if you want the 'premium mobile-first' framing specifically."},
+  {name:"design-skill", desc:"Comprehensive design skill: brand identity, design tokens, UI styling, logo generation (55 styles, Gemini AI), corporate identity program (50 deliverables, CIP mockups), HTML presentations.", agents:"claude", lastmod:"2026-03-12", size:11946, verdict:"overlap", cluster:"ui-design", rec:"Scope sprawl — covers brand+logo+CIP+HTML presentations. Assess if distinct from impeccable; if not, archive."},
+  {name:"impeccable", desc:"Use when the user wants to design, redesign, critique, audit, polish, clarify, distill, harden, optimize, animate, colorize, extract, or otherwise improve a frontend interface.", agents:"both", lastmod:"2026-05-18", size:12856, verdict:"overlap", cluster:"ui-design", rec:"Broadest UI skill — good candidate to be canonical. Taste call on which 1-2 to keep active."},
+  {name:"taste-skill", desc:"Senior UI/UX Engineer. Architect digital interfaces overriding default LLM biases. Enforces metric-based rules, strict component architecture, CSS hardware acceleration, balanced design.", agents:"both", lastmod:"2026-03-23", size:21140, verdict:"overlap", cluster:"ui-design", rec:"Enforces a specific opinionated ruleset. Keep if you run it as a quality gate; else merge into impeccable."},
+  {name:"ui-styling", desc:"Create beautiful, accessible user interfaces with shadcn/ui components (built on Radix UI + Tailwind), Tailwind CSS utility-first styling, and canvas-based visual designs.", agents:"codex", lastmod:"2026-04-09", size:10049, verdict:"overlap", cluster:"ui-design", rec:"shadcn-specific — partially overlaps shadcn-ui-kit. Consolidate or scope clearly."},
+  // --- KEEP (distinct from ui-design cluster) ---
+  {name:"emil-design-eng", desc:"Emil Kowalski's philosophy on UI polish, component design, animation decisions, and the invisible details that make software feel great.", agents:"both", lastmod:"2026-05-18", size:27335, verdict:"keep", cluster:null, rec:null},
+  {name:"motion-site-prompt", desc:"Generate a deterministic exhaustive build prompt for an animated/motion landing page or hero section — the MotionSites method, grounded in anti-slop rules.", agents:"claude", lastmod:"2026-06-22", size:4462, verdict:"keep", cluster:null, rec:null},
+  {name:"shadcn-ui-kit", desc:"shadcn/ui component kit reference. Comprehensive patterns for shadcn components, Radix UI primitives, and Tailwind integration.", agents:"claude", lastmod:"2026-03-16", size:50252, verdict:"keep", cluster:null, rec:null},
+  {name:"ui-ux-pro-max", desc:"UI/UX design intelligence: 50+ styles, 161 color palettes, 57 font pairings, 161 product types, 99 UX guidelines, 25 chart types across 10 stacks.", agents:"both", lastmod:"2026-03-12", size:44776, verdict:"keep", cluster:null, rec:null},
+  // --- REVIEW: puntofutura-demo ---
+  {name:"demo-forge", desc:"Generate unique, high-quality business demo pages for PuntoFutura CRM leads.", agents:"claude", lastmod:"2026-03-13", size:8884, verdict:"review", cluster:"puntofutura-demo", rec:"Project-specific (PuntoFutura). Archive if PuntoFutura demo campaign is retired."},
+  {name:"demo-qa", desc:"End-to-end QA for PuntoFutura demo pages. Validates photos load, no placeholders, correct Instagram, appropriate template for rubro.", agents:"claude", lastmod:"2026-03-15", size:2203, verdict:"review", cluster:"puntofutura-demo", rec:"Project-specific (PuntoFutura). Archive alongside demo-forge if campaign retired."},
+  {name:"deploydemo", desc:"Deploy static SPA demos to demo.puntofutura.com.ar/<slug>. Handles Vite build and rsync to prod server.", agents:"claude", lastmod:"2026-03-14", size:3995, verdict:"review", cluster:"puntofutura-demo", rec:"Project-specific (PuntoFutura). Archive if demo server no longer maintained."},
+  {name:"generate-demos", desc:"Generate premium demo websites for CRM leads using Opus templates. Fills HTML templates with lead data and optionally generates Haiku taglines.", agents:"claude", lastmod:"2026-03-10", size:1755, verdict:"review", cluster:"puntofutura-demo", rec:"Older generation of demo-forge; likely superseded. Archive."},
+  {name:"video-demo", desc:"Automate product demo video production. Captures app screenshots with Playwright, generates Argentine Spanish TTS via Google Chirp 3 HD, syncs slides to speech.", agents:"claude", lastmod:"2026-03-30", size:2049, verdict:"review", cluster:"puntofutura-demo", rec:"Part of PuntoFutura demo pipeline. Archive if video demos are retired."},
+  // --- OVERLAP: autoresearch ---
+  {name:"autoresearch", desc:"Autonomous long-running research and iteration loops. Covers /autoresearch, /autoresearch:plan, :debug, :fix, :security, :ship, :scenario, :predict, :reason, :probe, :learn.", agents:"claude", lastmod:"2026-05-04", size:44573, verdict:"overlap", cluster:"autoresearch", rec:"CANONICAL. Keep. codex-autoresearch is the Codex-specific variant — keep both if you need cross-agent coverage."},
+  {name:"codex-autoresearch", desc:"Autonomous long-running iteration for Codex CLI. Use when Codex should plan or run an unattended improve-verify loop toward a measurable or verifiable outcome.", agents:"codex", lastmod:"2026-05-09", size:14638, verdict:"overlap", cluster:"autoresearch", rec:"Codex-specific variant of autoresearch. Keep if you run Codex autonomous loops; de-dup trigger conditions."},
+  // --- FAMILY: audit-pipeline ---
+  {name:"audit-orchestrator", desc:"Conduct a full technical due diligence audit of a vibe-coded codebase. Coordinates all audit phases.", agents:"both", lastmod:"2026-06-08", size:12932, verdict:"family", cluster:"audit-pipeline", rec:null},
+  {name:"audit-method", desc:"Run the methodology setup phase — fingerprint the stack, inventory the repository, produce a system map. Use BEFORE running any audit domains.", agents:"both", lastmod:"2026-05-10", size:12877, verdict:"family", cluster:"audit-pipeline", rec:null},
+  {name:"audit-hard-stops", desc:"Walk the H1-H11 hard-stops catalog systematically. FIRST audit phase after audit-method completes.", agents:"both", lastmod:"2026-06-08", size:13414, verdict:"family", cluster:"audit-pipeline", rec:null},
+  {name:"audit-tambon-hunt", desc:"Hunt the three Tambon LLM-failure-mode signatures (Hallucinated Object, Wrong Attribute, Silly Mistake) across an audit scope.", agents:"both", lastmod:"2026-04-25", size:9771, verdict:"family", cluster:"audit-pipeline", rec:null},
+  {name:"audit-blind-spots", desc:"Walk the B1-B19 AI-to-AI blind-spot catalog systematically. After hard-stops and Tambon hunt, before the 13 domain audits.", agents:"both", lastmod:"2026-06-08", size:6748, verdict:"family", cluster:"audit-pipeline", rec:null},
+  {name:"audit-domain-01-security", desc:"Audit the security domain — auth, authz, secrets, transport, sensitive data exposure, dependency CVEs.", agents:"both", lastmod:"2026-06-26", size:11218, verdict:"family", cluster:"audit-pipeline", rec:null},
+  {name:"audit-domain-02-architecture", desc:"Audit architecture and code quality — module boundaries, abstraction layers, code organization, naming, documentation.", agents:"both", lastmod:"2026-06-08", size:13094, verdict:"family", cluster:"audit-pipeline", rec:null},
+  {name:"audit-domain-03-database", desc:"Audit database and data layer — schema design, query patterns, migrations, indexing, RLS, soft-delete, transactions.", agents:"both", lastmod:"2026-06-08", size:8287, verdict:"family", cluster:"audit-pipeline", rec:null},
+  {name:"audit-domain-04-devops", desc:"Audit infra and DevOps — CI/CD, deployment, IaC, secrets management, environments, logging, observability.", agents:"both", lastmod:"2026-06-08", size:8710, verdict:"family", cluster:"audit-pipeline", rec:null},
+  {name:"audit-domain-05-performance", desc:"Audit performance — query efficiency, caching, async/blocking calls, payload sizes, scaling assumptions.", agents:"both", lastmod:"2026-06-08", size:8945, verdict:"family", cluster:"audit-pipeline", rec:null},
+  {name:"audit-domain-06-ux-a11y", desc:"Audit UI/UX and accessibility — error states, loading states, form validation, keyboard nav, ARIA, color contrast, mobile responsiveness.", agents:"both", lastmod:"2026-06-08", size:8723, verdict:"family", cluster:"audit-pipeline", rec:null},
+  {name:"audit-domain-07-reliability", desc:"Audit reliability — error handling, retries, idempotency, race conditions, partial failures, timeouts, graceful degradation.", agents:"both", lastmod:"2026-06-08", size:8928, verdict:"family", cluster:"audit-pipeline", rec:null},
+  {name:"audit-domain-08-compliance", desc:"Audit legal/privacy/compliance — privacy policy alignment, data retention, GDPR/CCPA basics, cookie consent, export/delete capabilities.", agents:"both", lastmod:"2026-06-08", size:8844, verdict:"family", cluster:"audit-pipeline", rec:null},
+  {name:"audit-domain-09-maintainability", desc:"Audit dev experience and maintainability — local setup, documentation, test quality, CI feedback time, debuggability.", agents:"both", lastmod:"2026-06-08", size:6861, verdict:"family", cluster:"audit-pipeline", rec:null},
+  {name:"audit-domain-10-cost", desc:"Audit cost and billing risk — runaway loops, unbounded LLM/API calls, missing rate limits on paid services, infrastructure cost amplifiers.", agents:"both", lastmod:"2026-06-08", size:9106, verdict:"family", cluster:"audit-pipeline", rec:null},
+  {name:"audit-domain-11-demo-vs-prod", desc:"Audit the gap between demo-quality and production-quality — hardcoded test data, dev-only configs shipped, missing prod hardening.", agents:"both", lastmod:"2026-06-08", size:8711, verdict:"family", cluster:"audit-pipeline", rec:null},
+  {name:"audit-domain-12-missing", desc:"Audit what a normal production app at this scale would have but is absent — health checks, error tracking, feature flags, audit logs, on-call.", agents:"both", lastmod:"2026-06-08", size:10424, verdict:"family", cluster:"audit-pipeline", rec:null},
+  {name:"audit-domain-13-code-integrity", desc:"Audit code integrity and coherence — duplication, hallucinated references, Tambon signatures, spec drift, Frankenstein patterns, mystery code.", agents:"both", lastmod:"2026-06-08", size:9421, verdict:"family", cluster:"audit-pipeline", rec:null},
+  {name:"audit-fix-generator", desc:"Generate a detailed AI fix prompt for a specific audit finding. Use when the user asks /audit-fix or 'give me the fix prompt for finding N'.", agents:"both", lastmod:"2026-06-08", size:9047, verdict:"family", cluster:"audit-pipeline", rec:null},
+  {name:"audit-decisions", desc:"Standardize remediation decisions, baseline-policy entries, and legal-review banners for accepted, deferred, or policy-blocked audit findings.", agents:"both", lastmod:"2026-05-10", size:3300, verdict:"family", cluster:"audit-pipeline", rec:null},
+  {name:"audit-loop", desc:"Orchestrate the full audit improvement cycle: audit, roadmap, remediation, rerun, delta comparison, and skill patching for missed findings until convergence.", agents:"both", lastmod:"2026-05-10", size:3914, verdict:"family", cluster:"audit-pipeline", rec:null},
+  // --- FAMILY: gitnexus ---
+  {name:"gitnexus-cli", desc:"Run GitNexus CLI commands: analyze/index a repo, check status, clean the index, generate a wiki, or list indexed repos.", agents:"claude", lastmod:"2026-03-22", size:3445, verdict:"family", cluster:"gitnexus", rec:null},
+  {name:"gitnexus-debugging", desc:"Use when debugging a bug, tracing an error, or asking why something fails. GitNexus-powered call graph and symbol lookup.", agents:"claude", lastmod:"2026-03-22", size:3164, verdict:"family", cluster:"gitnexus", rec:null},
+  {name:"gitnexus-exploring", desc:"Use when the user asks how code works, wants to understand architecture, trace execution flows, or explore unfamiliar parts of the codebase.", agents:"claude", lastmod:"2026-03-22", size:3037, verdict:"family", cluster:"gitnexus", rec:null},
+  {name:"gitnexus-guide", desc:"Use when the user asks about GitNexus itself — tools, how to query the knowledge graph, MCP resources, graph schema, or workflow reference.", agents:"claude", lastmod:"2026-03-22", size:3480, verdict:"family", cluster:"gitnexus", rec:null},
+  {name:"gitnexus-impact-analysis", desc:"Use when the user wants to know what will break if they change something, or needs safety analysis before editing code.", agents:"claude", lastmod:"2026-03-22", size:2919, verdict:"family", cluster:"gitnexus", rec:null},
+  {name:"gitnexus-pr-review", desc:"Use when the user wants to review a pull request, understand what a PR changes, assess risk of merging, or check for missing test coverage.", agents:"claude", lastmod:"2026-03-22", size:5429, verdict:"family", cluster:"gitnexus", rec:null},
+  {name:"gitnexus-refactoring", desc:"Use when the user wants to rename, extract, split, move, or restructure code safely.", agents:"claude", lastmod:"2026-03-22", size:4107, verdict:"family", cluster:"gitnexus", rec:null},
+  // --- KEEP: loop stack (built this session) ---
+  {name:"quality-loop", desc:"Drive a project hardening + full quality-sweep loop in an isolated worktree. Security, prod-readiness, deps/CVEs, tests/coverage, dead code.", agents:"both", lastmod:"2026-06-30", size:6414, verdict:"keep", cluster:null, rec:null, isNew:true},
+  {name:"battle-test", desc:"One-command end-to-end project hardening — diagnose, runtime-verify, fix, and prove the fixes. Use when the user wants a project battle-tested or production-ready.", agents:"both", lastmod:"2026-06-29", size:3977, verdict:"keep", cluster:null, rec:null, isNew:true},
+  {name:"skill-evolve", desc:"Review a skill's real-run history and propose concrete SKILL.md improvements — the independent-reviewer half of retrospective skill evolution.", agents:"both", lastmod:"2026-06-29", size:3729, verdict:"keep", cluster:null, rec:null, isNew:true},
+  // --- KEEP: individual skills ---
+  {name:"all-plan", desc:"Collaborative planning using abstract roles (designer + inspiration + reviewer).", agents:"codex", lastmod:"2026-03-23", size:665, verdict:"keep", cluster:null, rec:null},
+  {name:"ask", desc:"Send the user's request to specified AI provider asynchronously.", agents:"codex", lastmod:"2026-03-23", size:1253, verdict:"keep", cluster:null, rec:null},
+  {name:"auto-harness", desc:"Launch a self-sustaining Claude Code loop that dispatches codex:codex-rescue jobs in 25-min cycles, harvests git commits, and re-arms itself via ScheduleWakeup.", agents:"claude", lastmod:"2026-05-11", size:7431, verdict:"keep", cluster:null, rec:null},
+  {name:"codex-visual-builder-guild", desc:"Use when Codex should improve visual UI/UX through a screenshot-driven design loop with imagegen assets, vision review, responsive checks, interaction states, accessibility.", agents:"codex", lastmod:"2026-05-05", size:7744, verdict:"keep", cluster:null, rec:null},
+  {name:"daydream", desc:"Free-form creative/speculative reasoning mode. Use when you want Claude to explore an idea without constraints.", agents:"claude", lastmod:"2026-05-16", size:1703, verdict:"keep", cluster:null, rec:null},
+  {name:"debate", desc:"Multi-LLM debate orchestration (Claude vs Codex vs Gemini) with rounds + synthesis.", agents:"claude", lastmod:"2026-06-20", size:18848, verdict:"keep", cluster:null, rec:null},
+  {name:"defuddle", desc:"Extract clean markdown content from web pages using Defuddle CLI, removing clutter and navigation to save tokens.", agents:"claude", lastmod:"2026-04-27", size:1164, verdict:"keep", cluster:null, rec:null},
+  {name:"deploy-verify", desc:"Use after deployments to verify health endpoints, run API smoke tests, and confirm release integrity with CLI checks.", agents:"claude", lastmod:"2026-02-27", size:2604, verdict:"keep", cluster:null, rec:null},
+  {name:"file-op", desc:"Execute FileOpsREQ protocol requests. Handles autoflow domain ops for .ccb/ state management.", agents:"codex", lastmod:"2026-03-23", size:3789, verdict:"keep", cluster:null, rec:null},
+  {name:"graphify", desc:"Any input (code, docs, papers, images) to knowledge graph to clustered communities to HTML + JSON + audit report.", agents:"claude", lastmod:"2026-04-10", size:51704, verdict:"keep", cluster:null, rec:null},
+  {name:"grill-me", desc:"Interview the user relentlessly, one question at a time, each with a recommended answer. Stress-test a plan/design until every branch is decided.", agents:"claude", lastmod:"2026-06-10", size:4402, verdict:"keep", cluster:null, rec:null},
+  {name:"gsd-codebase-mapper", desc:"Explores codebase and writes structured analysis documents. Spawned by map-codebase with a focus area (tech, arch, quality, concerns).", agents:"codex", lastmod:"2026-05-26", size:21388, verdict:"keep", cluster:null, rec:null},
+  {name:"gsd-map-codebase", desc:"Analyze codebase with parallel mapper agents to produce .planning/codebase/ documents.", agents:"claude", lastmod:"2026-05-26", size:3477, verdict:"keep", cluster:null, rec:null},
+  {name:"handoff", desc:"Write a structured session handoff before ending, clearing context, or transferring work to another agent or pane.", agents:"both", lastmod:"2026-05-17", size:4093, verdict:"keep", cluster:null, rec:null},
+  {name:"higgsfield-generate", desc:"Generate images/videos via Higgsfield AI. Default: GPT Image 2 for images/design/text, Seedance 2.0 for video, Nano Banana 2/Pro for character/reference image work.", agents:"claude", lastmod:"2026-06-09", size:20726, verdict:"keep", cluster:null, rec:null},
+  {name:"install-confirm-coverage", desc:"Operator-facing WatchKeeper companion skill. Fires when the event-injector delivers an M6 stream event (new installation_requests row from the bot).", agents:"claude", lastmod:"2026-05-15", size:8043, verdict:"keep", cluster:null, rec:null},
+  {name:"json-canvas", desc:"Create and edit JSON Canvas files (.canvas) with nodes, edges, groups, and connections.", agents:"claude", lastmod:"2026-04-27", size:7868, verdict:"keep", cluster:null, rec:null},
+  {name:"marketing", desc:"End-to-end marketing production playbook — generate ad creatives, publish to social, and run paid campaigns from Claude Code.", agents:"claude", lastmod:"2026-06-20", size:6393, verdict:"keep", cluster:null, rec:null},
+  {name:"marketing-setup", desc:"Prepare a project for the marketing agent by scaffolding a .marketing/ folder from codebase evidence.", agents:"claude", lastmod:"2026-06-20", size:5235, verdict:"keep", cluster:null, rec:null},
+  {name:"mcp-builder", desc:"Guide for creating high-quality MCP servers that enable LLMs to interact with external services through well-designed tools.", agents:"claude", lastmod:"2026-02-27", size:13552, verdict:"keep", cluster:null, rec:null},
+  {name:"mercadopago-integration", desc:"Integrate MercadoPago OAuth, checkout, webhooks, and token storage in Supabase/React-style multi-tenant web apps.", agents:"both", lastmod:"2026-05-17", size:7104, verdict:"keep", cluster:null, rec:null},
+  {name:"mercadopago-memory", desc:"MercadoPago payment integration patterns learned from 7+ Argentine production projects. Webhooks, OAuth multi-tenant, checkout pro, subscription billing.", agents:"claude", lastmod:"2026-03-22", size:11579, verdict:"keep", cluster:null, rec:null},
+  {name:"monitoring-setup", desc:"Prepare any project for OmniClaude monitoring. Runs graphify, leverages existing intelligence layers, generates a production-ready monitoring.md.", agents:"claude", lastmod:"2026-04-28", size:18046, verdict:"keep", cluster:null, rec:null},
+  {name:"mounted", desc:"Report which CCB providers are mounted (session exists AND daemon is online). Outputs JSON.", agents:"codex", lastmod:"2026-03-23", size:405, verdict:"keep", cluster:null, rec:null},
+  {name:"notebooklm", desc:"Complete API for Google NotebookLM — create notebooks, add sources, generate all artifact types, download in multiple formats.", agents:"claude", lastmod:"2026-05-17", size:28861, verdict:"keep", cluster:null, rec:null},
+  {name:"obsidian-bases", desc:"Create and edit Obsidian Bases (.base files) with views, filters, formulas, and summaries.", agents:"claude", lastmod:"2026-04-27", size:13400, verdict:"keep", cluster:null, rec:null},
+  {name:"obsidian-cli", desc:"Interact with Obsidian vaults using the Obsidian CLI to read, create, search, and manage notes, tasks, properties, and more.", agents:"claude", lastmod:"2026-04-27", size:3289, verdict:"keep", cluster:null, rec:null},
+  {name:"obsidian-markdown", desc:"Create and edit Obsidian Flavored Markdown with wikilinks, embeds, callouts, properties, and other Obsidian-specific syntax.", agents:"claude", lastmod:"2026-04-27", size:5563, verdict:"keep", cluster:null, rec:null},
+  {name:"output-skill", desc:"Overrides default LLM truncation behavior. Enforces complete code generation, bans placeholder patterns, handles token-limit splits cleanly.", agents:"claude", lastmod:"2026-03-23", size:2592, verdict:"keep", cluster:null, rec:null},
+  {name:"pend", desc:"View latest reply from AI provider (gemini/codex/opencode/droid/claude).", agents:"codex", lastmod:"2026-03-23", size:679, verdict:"keep", cluster:null, rec:null},
+  {name:"ping", desc:"Test connectivity with AI provider (gemini/codex/opencode/droid/claude).", agents:"codex", lastmod:"2026-03-23", size:575, verdict:"keep", cluster:null, rec:null},
+  {name:"pitch-deck-creator", desc:"Generate presentation-ready pitch decks with structured slides and speaker notes.", agents:"codex", lastmod:"2026-05-27", size:2061, verdict:"keep", cluster:null, rec:null},
+  {name:"project-curate", desc:"Curate a project's .claude directory with scoped rules, preserved user content, and grep-verified references.", agents:"both", lastmod:"2026-05-17", size:2358, verdict:"keep", cluster:null, rec:null},
+  {name:"project-doctor", desc:"Read-only audit for stale or broken project orchestration files, agent instructions, monitoring config, graphify output, and referenced skills.", agents:"both", lastmod:"2026-06-08", size:4385, verdict:"keep", cluster:null, rec:null},
+  {name:"project-setup", desc:"Generate or refresh project AGENTS.md, CLAUDE.md, and optional GEMINI.md from real codebase evidence.", agents:"both", lastmod:"2026-06-08", size:6339, verdict:"keep", cluster:null, rec:null},
+  {name:"review", desc:"Dual review with Claude and Codex for quality verification. Use for step or task review.", agents:"claude", lastmod:"2026-03-23", size:240, verdict:"keep", cluster:null, rec:null},
+  {name:"rf-action-review", desc:"Operator-facing WatchKeeper companion skill. Fires when the event-injector delivers an M1 pwo_action_ready_for_approval event.", agents:"claude", lastmod:"2026-05-17", size:5755, verdict:"keep", cluster:null, rec:null},
+  {name:"saleor-storefront", desc:"Manage and customize PuntoFutura Saleor storefronts (reseller + consumer). Editing storefront components, deploying changes, debugging Saleor GraphQL.", agents:"claude", lastmod:"2026-03-11", size:9067, verdict:"keep", cluster:null, rec:null},
+  {name:"schedule", desc:"Create, list, edit, or delete Claude Desktop scheduled tasks.", agents:"claude", lastmod:"2026-03-08", size:2798, verdict:"keep", cluster:null, rec:null},
+  {name:"security-review", desc:"Review security-sensitive code changes involving auth, user input, secrets, APIs, payments, files, RLS, or third-party integrations.", agents:"both", lastmod:"2026-05-17", size:1614, verdict:"keep", cluster:null, rec:null},
+  {name:"supabase-debug", desc:"Use when diagnosing Supabase issues like RLS, auth, empty queries, webhooks, and performance problems in production apps.", agents:"both", lastmod:"2026-05-17", size:3382, verdict:"keep", cluster:null, rec:null},
+  {name:"tdd-workflow", desc:"Guide test-first implementation for features, bug fixes, and refactors. Use when the user wants tests to drive or protect code changes.", agents:"both", lastmod:"2026-05-17", size:1931, verdict:"keep", cluster:null, rec:null},
+  {name:"validation", desc:"Validate implemented web apps and UI workflows in a real browser with screenshots, console checks, critical-flow evidence, resumable state, and reports.", agents:"both", lastmod:"2026-06-29", size:9449, verdict:"keep", cluster:null, rec:null},
+  {name:"vibe-to-prod", desc:"Guided 13-layer production-readiness self-check for a vibe-coded app. Use when the user asks 'is this production ready' or 'what am I missing before launch'.", agents:"claude", lastmod:"2026-06-08", size:5890, verdict:"keep", cluster:null, rec:null},
+  {name:"visual-verification-harness", desc:"Use when visual UI work needs reliable browser screenshots for authenticated apps, dashboards, PWAs, TWAs, protected routes, mocked data, seeded data.", agents:"codex", lastmod:"2026-05-06", size:3331, verdict:"keep", cluster:null, rec:null},
+  {name:"whatsappbotretention", desc:"Operator-initiated customer-retention workflow for Punto Futura whatsappbot-final project. Fetches LIVE UISP saldo + services, computes tiered retention offer.", agents:"claude", lastmod:"2026-06-18", size:8643, verdict:"keep", cluster:null, rec:null},
+  {name:"whatsappbotriage", desc:"End-to-end triage workflow for open WhatsApp-bot reclamos in the Punto Futura whatsappbot-final project. Scans MySQL for open reclamos, runs UISP CRM+NMS diagnostics.", agents:"claude", lastmod:"2026-06-17", size:23826, verdict:"keep", cluster:null, rec:null},
+  {name:"wiki", desc:"Compile project knowledge into a self-evolving wiki. Ingest raw sources, absorb into structured articles, query, cleanup, lint, and breakdown.", agents:"claude", lastmod:"2026-04-09", size:7925, verdict:"keep", cluster:null, rec:null},
+];
+
+// ============================================================
+// CLASSIFICATION HELPERS
+// ============================================================
+function verdictLabel(v) {
+  const map = {keep:"🟢 KEEP", overlap:"🟠 OVERLAP", family:"🔵 FAMILY", review:"⚪ REVIEW"};
+  return map[v] || v;
+}
+function badgeClass(v) {
+  return {keep:"badge-keep", overlap:"badge-overlap", family:"badge-family", review:"badge-review"}[v] || "";
+}
+function agentPill(a) {
+  if (a === "both") return `<span class="agent-pill agent-both">claude + codex</span>`;
+  if (a === "claude") return `<span class="agent-pill agent-claude">claude</span>`;
+  if (a === "codex") return `<span class="agent-pill agent-codex">codex</span>`;
+  return a;
+}
+function dateClass(d) {
+  const dt = new Date(d);
+  const now = new Date("2026-07-01");
+  const daysDiff = (now - dt) / 86400000;
+  if (daysDiff < 30) return "recent";
+  if (daysDiff > 365) return "stale";
+  return "";
+}
+function fmtSize(n) {
+  if (n > 1024) return (n/1024).toFixed(1) + "k";
+  return n + "b";
+}
+
+// ============================================================
+// COUNT PER VERDICT
+// ============================================================
+const counts = {keep:0, overlap:0, family:0, review:0};
+SKILLS.forEach(s => { if (counts[s.verdict] !== undefined) counts[s.verdict]++; });
+
+// Summary bar
+const summaryBar = document.getElementById("summaryBar");
+summaryBar.innerHTML = `
+  <div class="sum-chip total">Total: ${SKILLS.length} skills</div>
+  <div class="sum-chip keep"><span class="dot"></span>${counts.keep} KEEP</div>
+  <div class="sum-chip overlap"><span class="dot"></span>${counts.overlap} OVERLAP</div>
+  <div class="sum-chip review"><span class="dot"></span>${counts.review} REVIEW</div>
+  <div class="sum-chip family"><span class="dot"></span>${counts.family} FAMILY</div>
+`;
+
+// ============================================================
+// BUILD TABLE ROWS
+// ============================================================
+function makeRow(s) {
+  const newBadge = s.isNew ? `<span class="badge badge-new">built 2026-07</span>` : "";
+  const clusterTag = s.cluster ? `<span class="cluster-tag">${s.cluster}</span>` : "";
+  const rec = s.rec ? `<div class="recommendation">&#x2192; ${s.rec}</div>` : "";
+  return `<tr class="skill-row"
+    data-name="${s.name.toLowerCase()}"
+    data-desc="${(s.desc||"").toLowerCase()}"
+    data-cluster="${(s.cluster||"").toLowerCase()}"
+    data-verdict="${s.verdict}">
+    <td><span class="skill-name">${s.name}</span>${newBadge}</td>
+    <td><span class="badge ${badgeClass(s.verdict)}">${verdictLabel(s.verdict)}</span></td>
+    <td>${clusterTag}</td>
+    <td>${agentPill(s.agents)}</td>
+    <td class="skill-date ${dateClass(s.lastmod)}">${s.lastmod}</td>
+    <td class="skill-size">${fmtSize(s.size)}</td>
+    <td class="skill-purpose">${s.desc || '<span style="color:#444">—</span>'}${rec}</td>
+  </tr>`;
+}
+
+function makeTable(skills) {
+  return `<table class="skill-table">
+    <thead><tr>
+      <th>Name</th><th>Verdict</th><th>Cluster</th><th>Agents</th><th>Last Modified</th><th>Size</th><th>Purpose / Recommendation</th>
+    </tr></thead>
+    <tbody>${skills.map(makeRow).join("")}</tbody>
+  </table>`;
+}
+
+// ============================================================
+// SECTION BUILDERS
+// ============================================================
+const main = document.getElementById("main");
+
+// --- OVERLAP SECTION ---
+function buildOverlapSection() {
+  const clusters = {};
+  SKILLS.filter(s => s.verdict === "overlap").forEach(s => {
+    const c = s.cluster || "other";
+    if (!clusters[c]) clusters[c] = [];
+    clusters[c].push(s);
+  });
+
+  let html = `<div class="section" data-section="overlap">
+    <div class="section-header">
+      <h2>🟠 OVERLAP — Redundancy Clusters</h2>
+      <span class="section-count">${counts.overlap} skills</span>
+    </div>`;
+
+  const clusterLabels = {
+    "skill-creation": "Skill Creation (skill-creator is canonical)",
+    "brainstorm": "Brainstorming (exact duplicate found)",
+    "ui-design": "UI / Design (overlapping scope — taste call)",
+    "autoresearch": "Autoresearch (claude + codex variants)",
+    "other": "Other"
+  };
+
+  for (const [cname, skills] of Object.entries(clusters)) {
+    html += `<div class="cluster">
+      <div class="cluster-header">Cluster: ${clusterLabels[cname] || cname}</div>
+      ${makeTable(skills)}
+    </div>`;
+  }
+  html += `</div>`;
+  return html;
+}
+
+// --- REVIEW SECTION ---
+function buildReviewSection() {
+  const clusters = {};
+  SKILLS.filter(s => s.verdict === "review").forEach(s => {
+    const c = s.cluster || "other";
+    if (!clusters[c]) clusters[c] = [];
+    clusters[c].push(s);
+  });
+
+  let html = `<div class="section" data-section="review">
+    <div class="section-header">
+      <h2>⚪ REVIEW — Stale / Project-Specific</h2>
+      <span class="section-count">${counts.review} skills</span>
+    </div>`;
+
+  const clusterLabels = {
+    "puntofutura-demo": "PuntoFutura Demo Campaign (~Mar 2026 — archive if campaign retired)"
+  };
+
+  for (const [cname, skills] of Object.entries(clusters)) {
+    html += `<div class="cluster">
+      <div class="cluster-header">Cluster: ${clusterLabels[cname] || cname}</div>
+      ${makeTable(skills)}
+    </div>`;
+  }
+  html += `</div>`;
+  return html;
+}
+
+// --- FAMILY SECTION (collapsed by default) ---
+function buildFamilySection() {
+  const clusters = {};
+  SKILLS.filter(s => s.verdict === "family").forEach(s => {
+    const c = s.cluster || "other";
+    if (!clusters[c]) clusters[c] = [];
+    clusters[c].push(s);
+  });
+
+  let html = `<div class="section" data-section="family">
+    <div class="section-header">
+      <h2>🔵 FAMILY — Intentional Pipelines (leave alone)</h2>
+      <span class="section-count">${counts.family} skills</span>
+      <button class="section-toggle" onclick="toggleSection(this)">Expand</button>
+    </div>
+    <div class="collapsible-body collapsed" id="family-body">`;
+
+  const clusterLabels = {
+    "audit-pipeline": "Audit Pipeline (audit-orchestrator + method + hard-stops + tambon + blind-spots + 13 domains + fix-generator + decisions + loop)",
+    "gitnexus": "GitNexus Family (cli + debugging + exploring + guide + impact-analysis + pr-review + refactoring)"
+  };
+
+  for (const [cname, skills] of Object.entries(clusters)) {
+    html += `<div class="cluster">
+      <div class="cluster-header">${clusterLabels[cname] || cname}</div>
+      ${makeTable(skills)}
+    </div>`;
+  }
+  html += `</div></div>`;
+  return html;
+}
+
+// --- KEEP SECTION ---
+function buildKeepSection() {
+  const skills = SKILLS.filter(s => s.verdict === "keep").sort((a,b) => a.name.localeCompare(b.name));
+  return `<div class="section" data-section="keep">
+    <div class="section-header">
+      <h2>🟢 KEEP — Distinct, Useful</h2>
+      <span class="section-count">${skills.length} skills</span>
+      <button class="section-toggle" onclick="toggleSection(this)">Collapse</button>
+    </div>
+    <div class="collapsible-body" id="keep-body">
+      <div class="cluster">${makeTable(skills)}</div>
+    </div>
+  </div>`;
+}
+
+main.innerHTML = buildOverlapSection() + buildReviewSection() + buildFamilySection() + buildKeepSection();
+
+// ============================================================
+// TOGGLE
+// ============================================================
+function toggleSection(btn) {
+  const body = btn.closest(".section").querySelector(".collapsible-body");
+  const collapsed = body.classList.toggle("collapsed");
+  btn.textContent = collapsed ? "Expand" : "Collapse";
+}
+
+// ============================================================
+// FILTER
+// ============================================================
+let allRows = null;
+function applyFilter() {
+  if (!allRows) allRows = Array.from(document.querySelectorAll(".skill-row"));
+  const q = document.getElementById("filterBox").value.trim().toLowerCase();
+  let shown = 0;
+  allRows.forEach(row => {
+    const match = !q
+      || row.dataset.name.includes(q)
+      || row.dataset.desc.includes(q)
+      || row.dataset.cluster.includes(q)
+      || row.dataset.verdict.includes(q);
+    row.classList.toggle("hidden", !match);
+    if (match) shown++;
+
+    // Expand collapsed sections when filter is active
+    if (q) {
+      const body = row.closest(".collapsible-body");
+      if (body && match) body.classList.remove("collapsed");
+    }
+  });
+  document.getElementById("filterCount").textContent = q ? `${shown} of ${allRows.length} shown` : "";
+}
+</script>
+</body>
+</html>

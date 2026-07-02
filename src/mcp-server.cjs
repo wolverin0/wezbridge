@@ -93,6 +93,12 @@ function isValidPersonaName(name) {
     !/^[a-zA-Z]:[\\/]/.test(text);
 }
 
+// Model alias reaching a shell command — keep it to a safe charset (aliases and
+// full model ids only), never anything that could break out of the argv token.
+function isValidModelName(model) {
+  return /^[a-zA-Z0-9._-]+$/.test(String(model || ''));
+}
+
 function mcpError(message) {
   return {
     content: [{ type: 'text', text: message }],
@@ -320,6 +326,10 @@ const TOOLS = [
           enum: ['default', 'plan', 'acceptEdits', 'bypassPermissions'],
           description: "Claude Code permission mode for the spawned session. 'plan' = read-only (good for reviewers), 'acceptEdits' = auto-approve edits (good for devs), 'bypassPermissions' = skip all (current default).",
         },
+        model: {
+          type: 'string',
+          description: "Model alias for the spawned session, passed as --model (e.g. 'sonnet', 'haiku', 'opus'). Use to right-size executor panes per model-tiering (mechanical work -> haiku, routine -> sonnet). Omit to inherit the default model.",
+        },
         spawned_by_pane_id: {
           type: 'number',
           description: "Pane ID of the coordinator that is spawning this peer. If provided, the initial prompt is wrapped with a [PEER-PANE CONTEXT] header telling the executor its own pane_id and the coordinator's pane_id, plus how to report back via A2A envelopes. Always set this when you are a peer pane spawning another peer.",
@@ -424,6 +434,11 @@ const TOOLS = [
       },
       required: ['pane_id'],
     },
+  },
+  {
+    name: 'bridge_health',
+    description: 'One-call self-diagnosis of the wezbridge stack: is the WezTerm CLI reachable, is the :4200 daemon up (and its version), is the session-snapshot crash-restore watcher armed, and how many panes are visible. Call this first when a wezbridge tool errors unexpectedly or when you are unsure whether the daemon is running.',
+    inputSchema: { type: 'object', properties: {} },
   },
 ].filter(tool => tool.name !== 'switch_workspace' || SWITCH_WORKSPACE_SUPPORT.supported);
 
@@ -764,6 +779,13 @@ function handleToolCall(name, args) {
         }
       }
 
+      if (args.model !== undefined && args.model !== null && !isValidModelName(args.model)) {
+        return {
+          content: [{ type: 'text', text: `Error: invalid model "${args.model}"` }],
+          isError: true,
+        };
+      }
+
       if (args.resume && !isValidResumeSession(args.resume)) {
         return {
           content: [{ type: 'text', text: 'Error: invalid resume session identifier' }],
@@ -826,6 +848,7 @@ function handleToolCall(name, args) {
         }
         if (skipPerms) claudeArgv.push('--dangerously-skip-permissions');
         if (permissionMode) claudeArgv.push('--permission-mode', permissionMode);
+        if (args.model) claudeArgv.push('--model', String(args.model));
         const claudeCmd = claudeArgv.map(shellQuoteArg).join(' ');
         wez.sendText(newPaneId, claudeCmd);
 
@@ -1129,7 +1152,7 @@ function handleToolCall(name, args) {
         });
         req.on('error', (err) => {
           resolve({
-            content: [{ type: 'text', text: `Error contacting dashboard at localhost:${dashPort}: ${err.message}` }],
+            content: [{ type: 'text', text: `Error contacting dashboard at localhost:${dashPort}: ${err.message}. The :4200 daemon may be down — run \`npm run dashboard\` in the wezbridge repo, or call bridge_health to confirm.` }],
             isError: true,
           });
         });
@@ -1145,12 +1168,71 @@ function handleToolCall(name, args) {
       });
     }
 
+    case 'bridge_health':
+      return handleBridgeHealth();
+
     default:
       return {
         content: [{ type: 'text', text: `Unknown tool: ${name}` }],
         isError: true,
       };
   }
+}
+
+// ─── bridge_health ────────────────────────────────────────────────────────
+
+/**
+ * Probe wezterm reachability, the :4200 daemon, the snapshot watcher, and pane
+ * count. Returns a single JSON blob so a session can self-diagnose without
+ * chaining several tool calls. Never throws — every probe degrades to a
+ * reported error string.
+ */
+function probeWezterm() {
+  try {
+    const panes = wez.listPanes();
+    let version = null;
+    try {
+      version = require('child_process')
+        .execFileSync(wez.WEZTERM, ['--version'], { encoding: 'utf-8', timeout: 4000, windowsHide: true })
+        .trim();
+    } catch { /* version optional */ }
+    return { reachable: true, pane_count: Array.isArray(panes) ? panes.length : 0, version };
+  } catch (err) {
+    return { reachable: false, error: err.message };
+  }
+}
+
+function probeDaemon() {
+  const dashPort = parseInt(process.env.DASHBOARD_PORT || '4200', 10);
+  return new Promise((resolve) => {
+    const http = require('http');
+    const req = http.request(
+      { host: '127.0.0.1', port: dashPort, method: 'GET', path: '/api/panes' },
+      (res) => {
+        res.on('data', () => {});
+        res.on('end', () => resolve({ up: res.statusCode < 500, port: dashPort, status: res.statusCode }));
+      }
+    );
+    req.on('error', () => resolve({ up: false, port: dashPort, hint: 'daemon down — run `npm run dashboard` in the wezbridge repo' }));
+    req.setTimeout(2500, () => { req.destroy(); resolve({ up: false, port: dashPort, hint: 'daemon did not respond within 2.5s' }); });
+    req.end();
+  });
+}
+
+async function handleBridgeHealth() {
+  let pkgVersion = 'unknown';
+  try { pkgVersion = require('../package.json').version; } catch { /* ignore */ }
+  const snapshotArmed = process.env.WEZBRIDGE_SESSION_SNAPSHOT !== '0'; // default ON since v3.4.1
+  const [daemon] = await Promise.all([probeDaemon()]);
+  const wezterm = probeWezterm();
+  const health = {
+    wezbridge_version: pkgVersion,
+    wezterm,
+    daemon,
+    session_snapshot_armed: snapshotArmed,
+    ok: wezterm.reachable, // wezterm is the only hard dependency for core MCP tools
+  };
+  return { content: [{ type: 'text', text: JSON.stringify(health, null, 2) }] };
 }
 
 // ─── MCP Protocol Handler ─────────────────────────────────────────────────

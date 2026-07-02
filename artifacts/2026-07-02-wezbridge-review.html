@@ -1,0 +1,102 @@
+<!doctype html><html><head><meta charset="utf-8"><title>wezbridge review — 2026-07-02</title><style>
+:root{--bg:#0d1117;--card:#161b22;--bd:#30363d;--fg:#e6edf3;--mut:#8b949e;--acc:#58a6ff;--grn:#3fb950;--org:#d29922;--red:#f85149;--blu:#388bfd;--pur:#bc8cff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.55 -apple-system,Segoe UI,Roboto,sans-serif;padding:28px;max-width:1160px}
+h1{margin:0 0 2px;font-size:24px}h2{font-size:17px;margin:30px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--bd)}
+.sub{color:var(--mut);margin-bottom:18px}
+.b{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:700;vertical-align:middle}
+.crit{background:#3d1418;color:var(--red)}.high{background:#3a2d0a;color:var(--org)}.med{background:#0d2137;color:var(--blu)}.low{background:#1c1f24;color:var(--mut)}.win{background:#12331d;color:var(--grn)}
+table{border-collapse:collapse;width:100%;margin:10px 0}
+td,th{border-bottom:1px solid var(--bd);padding:8px 9px;text-align:left;vertical-align:top;font-size:13px}
+th{color:var(--mut);font-weight:600}
+code{background:#1c2128;border:1px solid var(--bd);border-radius:4px;padding:1px 5px;font-size:12px;color:#e6edf3}
+pre{background:#1c2128;border:1px solid var(--bd);border-radius:6px;padding:10px 12px;font-size:12px;overflow-x:auto}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:14px 18px;margin:12px 0}
+.card h3{margin:0 0 6px;font-size:14px}
+.finding{border-left:3px solid var(--bd);padding:8px 14px;margin:10px 0}
+.finding.crit{border-left-color:var(--red)}.finding.high{border-left-color:var(--org)}.finding.med{border-left-color:var(--blu)}.finding.low{border-left-color:var(--gry)}
+.finding h3{margin:0 0 4px;font-size:14px}.finding p{margin:4px 0;color:#c9d1d9}
+.k{color:var(--grn)}.w{color:var(--org)}
+ul{margin:6px 0;padding-left:22px}li{margin:3px 0}
+.verdict{font-size:15px;background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:14px 18px}
+.eff{color:var(--mut);font-size:11px;font-weight:400}
+</style></head><body>
+<h1>wezbridge — project review</h1>
+<div class="sub">v3.4.2 · zero-dep MCP server + :4200 daemon · reviewed 2026-07-02 · evidence: graphify report, 263/263 tests, live daemon probe, source read of mcp-server / handlers / routes</div>
+
+<div class="verdict"><b>Verdict:</b> the core is healthy — 263/263 tests green, clean module split after the v3.4 refactor (handlers/, routes, ipc), the audit-remediation wave (b242ea2) clearly paid off. But the repo has drifted from its own documentation, the daemon was found <b>dead</b> with nothing supervising it, one <b>LAN-exposure security hole</b> survived the audits, and the two worst real-world failure modes (enter-key loss, event-loop blocking) are documented as protocol rules instead of fixed at source.</div>
+
+<h2>🛑 Broken / fix first</h2>
+
+<div class="finding crit"><h3><span class="b crit">CRITICAL</span> :4200 binds all interfaces with auth disabled in dev</h3>
+<p><code>src/dashboard-server-routes.cjs:286</code> — <code>server.listen(PORT)</code> has no host arg → binds <code>0.0.0.0</code>. <code>checkAuth()</code> (line 34-36) returns allow-all when <code>WEZBRIDGE_API_TOKEN</code> is unset and <code>NODE_ENV !== 'production'</code> — which is every real run. The Origin-header CSRF defense only stops <i>browsers</i>; any device on your LAN can <code>POST /api/sessions/:id/prompt</code> and type arbitrary text + Enter into your panes — including shell panes = remote command execution. The safety-policy 5-rule gate filters known-dangerous patterns, not everything.</p>
+<p class="k">Fix: <code>server.listen(PORT, '127.0.0.1')</code> by default; add <code>WEZBRIDGE_BIND</code> env for the rare LAN case and REQUIRE the token whenever bind ≠ loopback. ~5 lines + 1 test.</p></div>
+
+<div class="finding high"><h3><span class="b high">HIGH</span> Daemon is down and nothing notices</h3>
+<p>Live probe: <code>curl :4200/api/panes</code> → connection refused. Core MCP tools survive (they call wezterm CLI directly now), but everything the daemon owns dies silently: telegram-streamer, SSE, auto-handoff, grades, and <b>session-snapshot (default ON since v3.4.1 — you currently have no crash-restore snapshots)</b>. <code>install-autostart.cmd</code> and <code>start-wezbridge-sentinel.cmd</code> exist but evidently aren't active.</p>
+<p class="k">Fix: (a) run install-autostart so the sentinel supervises the daemon; (b) add a <code>bridge_health</code> MCP tool (wezterm reachable? daemon up? version) so any session can self-diagnose in one call; (c) auto_handoff should return "daemon down — run npm run dashboard" instead of a raw fetch error.</p></div>
+
+<div class="finding high"><h3><span class="b high">HIGH</span> CLAUDE.md is lying to every session that loads it</h3>
+<p>CLAUDE.md says v3.3.0 / 184 tests / "the dashboard daemon must be alive for the MCP server's tools to work" / a repo layout without <code>handlers/</code>, <code>session-snapshot</code>, <code>project-status-registry</code>, <code>telegram-router</code>, or the dashboard-server split. Reality: v3.4.2, 263 tests, MCP talks to wezterm directly (only <code>auto_handoff</code> touches :4200). Every new session inherits these wrong facts — this review almost started from them.</p>
+<p class="k">Fix: rewrite CLAUDE.md's status header, layout table, and the daemon-dependency sentence. 15 min, highest doc ROI in the repo.</p></div>
+
+<div class="finding high"><h3><span class="b high">HIGH</span> Untracked TypeScript orphans in src/</h3>
+<p><code>src/backend/{peers-broker,peers-channel-plugin,wezterm-bridge}.ts</code>, <code>src/frontend/{XtermPane.tsx,scrollback.ts}</code>, <code>src/mcp/handlers/peers.ts</code> — TS/React files in a zero-dependency CJS project, imported by nothing, and <b>not committed</b> (only <code>src/shared/types.ts</code> is tracked). One git-clean and they're gone forever; meanwhile graphify indexes PeersBroker as a god node, polluting the architecture picture.</p>
+<p class="k">Fix: decide once — commit to an <code>experiment/peers-broker</code> branch (or move under <code>docs/_drafts/</code>) if it's the future xterm.js direction, else delete. Don't leave unrecoverable work sitting untracked.</p></div>
+
+<h2>⚠ Needs tweaking</h2>
+
+<div class="finding med"><h3><span class="b med">MED</span> Enter-key loss is patched by protocol, not by code <span class="eff">(the claim-8945 bug)</span></h3>
+<p><code>send_prompt</code> does <code>sendText(text)</code> + <code>sendTextNoEnter('\r')</code> and hopes. The known failure (Enter not registering) is "fixed" by a hard rule in three CLAUDE.mds forcing every caller to follow with <code>send_key('enter')</code> — and the A2A dispatch prompt in event-handlers.cjs even teaches peers the two-call dance.</p>
+<p class="k">Fix at source: after sending, wait ~800ms, read the pane tail; if the prompt text is still sitting unsubmitted in the input box, resend <code>\r</code> (max 2 retries) and return <code>{submitted: true|false}</code>. Then delete the protocol rule everywhere. This kills the #1 A2A failure mode.</p></div>
+
+<div class="finding med"><h3><span class="b med">MED</span> spawn_session / wait_for_idle block the whole MCP server</h3>
+<p>Both use <b>execFileSync sleep loops</b> (spawn: 2s shell-init + up to 8s boot-wait; wait_for_idle admits it in a comment at mcp-server.cjs:663). The stdio JSON-RPC loop is single-threaded — while one tool sleeps, every other tool call from the session stalls behind it. An orchestrator spawning 3 peers serializes ~30s of dead time.</p>
+<p class="k">Fix: make the handlers async (<code>await setTimeout</code>) — JSON-RPC responses can resolve out of order, nothing else needs to change.</p></div>
+
+<div class="finding med"><h3><span class="b med">MED</span> spawn_session is missing the params you actually need</h3>
+<ul>
+<li><b>No <code>model</code> param</b> — your own global CLAUDE.md carries a workaround note ("spawn_session has no model param — note in prompt if the executor should self-restrict"). Executor panes should be <code>claude --model sonnet</code> per your tiering rule.</li>
+<li><b>No <code>agent</code> param</b> — can't spawn a Codex pane via MCP even though the repo bills itself as the Claude/Codex bridge; you shell out manually today.</li>
+<li><b><code>--continue</code> is the default</b> — resumes whatever session last ran in that cwd; a "new peer" can wake up inside an old conversation. Persona spawns already avoid this deliberately (the comment explains why). Make fresh-start the default, add <code>continue: true</code> opt-in.</li>
+</ul></div>
+
+<div class="finding low"><h3><span class="b low">LOW</span> Dead weight</h3>
+<ul>
+<li><code>orchestrator-executor.cjs</code> — 607 lines, zero importers (verified). The rest of theorchestra lives at the <code>omniclaude-pre-rollback</code> tag; this straggler should join it.</li>
+<li><code>docs/</code> carries 7+ PLAN/RESEARCH/ROADMAP/BRAINSTORM docs of the abandoned sentinel-orchestrator ambition at top level — move to <code>docs/_drafts/</code> so docs/ reads as "how to use", not "what we dreamed".</li>
+<li>Test suite takes 30s for 263 unit tests — there are real sleeps somewhere; worth a pass when convenient.</li>
+<li>graphify-out is from 2026-06-08 (pre-v3.4 refactor) — re-run to reflect handlers/ split.</li>
+</ul></div>
+
+<h2>💡 Worth adding (small, high-leverage)</h2>
+<table>
+<tr><th>Addition</th><th>Why</th><th>Effort</th></tr>
+<tr><td><b><code>a2a_send</code> tool</b></td><td>One tool that formats the envelope (<code>from/to/corr/type</code>), sends, <b>verifies submission</b>, optionally waits for the ack. The A2A protocol currently lives as prose rules in 3 CLAUDE.mds + a skill — encode it in the tool and the rules shrink to one line. Pairs with the enter-fix above.</td><td>~½ day</td></tr>
+<tr><td><b><code>read_output</code> delta mode</b></td><td><code>since</code> cursor token → return only new lines since last call. Codex requesters must poll every 1-3 min per your protocol; deltas make that cheap and diff-able instead of re-reading 80 lines each time.</td><td>~2h</td></tr>
+<tr><td><b><code>bridge_health</code> tool</b></td><td>wezterm CLI reachable, daemon up/down + version, snapshot watcher armed, pane count. Sessions self-diagnose in one call instead of cryptic tool errors. Also the natural place to surface "daemon down".</td><td>~2h</td></tr>
+<tr><td><b><code>model</code>/<code>agent</code> on spawn</b></td><td>Closes the tiering gap (executor panes on sonnet) and finally makes Codex peers spawnable via MCP.</td><td>~2h + tests</td></tr>
+<tr><td><b>Sentinel by default</b></td><td>Make <code>install-autostart</code> part of <code>npm run setup</code> (opt-out) so daemon-down stops being a recurring state.</td><td>~1h</td></tr>
+</table>
+
+<h2>✅ What's genuinely good (don't touch)</h2>
+<ul>
+<li>263/263 tests, zero dependencies, Node ≥20 — the audit wave left real hardening: input byte limits, skip-permissions gated behind env opt-in, path redaction, wait caps, safety-policy tripwires on send_prompt/send_key.</li>
+<li>The v3.4 refactor (mcp-server → handlers/, dashboard-server → routes/ipc/handlers shims) is clean and kept backward-compat entry points.</li>
+<li>Persona spawn logic (fresh session + tab-title tagging for discovery) is thoughtful — the <code>--continue</code>-vs-persona comment shows the right instinct; it just needs to become the default for all spawns.</li>
+<li>One-command installer + README quick-start (d3b8b34/3ab7982) is the right onboarding story.</li>
+</ul>
+
+<h2>Suggested order of attack</h2>
+<table>
+<tr><th>#</th><th>Item</th><th>Type</th><th>Effort</th></tr>
+<tr><td>1</td><td>Bind 127.0.0.1 + token-when-not-loopback</td><td><span class="b crit">security</span></td><td>30 min</td></tr>
+<tr><td>2</td><td>Decide the untracked TS files (branch or delete)</td><td><span class="b high">hygiene</span></td><td>15 min</td></tr>
+<tr><td>3</td><td>Rewrite CLAUDE.md (version, layout, daemon claim)</td><td><span class="b high">docs</span></td><td>15 min</td></tr>
+<tr><td>4</td><td>Enter-verify + retry in send_prompt, drop the 2-call protocol rule</td><td><span class="b med">fix</span></td><td>½ day</td></tr>
+<tr><td>5</td><td>De-sync spawn/wait_for_idle (async sleeps)</td><td><span class="b med">fix</span></td><td>½ day</td></tr>
+<tr><td>6</td><td>spawn_session: model/agent params, fresh-start default</td><td><span class="b med">feature</span></td><td>½ day</td></tr>
+<tr><td>7</td><td>bridge_health + a2a_send + read_output deltas</td><td><span class="b win">feature</span></td><td>1 day</td></tr>
+<tr><td>8</td><td>Sentinel autostart in setup; archive orchestrator-executor; docs/_drafts sweep; re-graphify</td><td><span class="b low">chore</span></td><td>½ day</td></tr>
+</table>
+<p class="sub">Items 1-3 are a single morning and remove the only real risk + the misinformation. 4-6 kill the two failure modes you've been compensating for by protocol. 7 is the feature set that makes the A2A story feel native.</p>
+</body></html>
