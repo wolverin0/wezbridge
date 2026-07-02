@@ -1,10 +1,12 @@
-# wezbridge (v3.3.0)
+# wezbridge (v3.4.3)
 
-> **Status 2026-05-08:** v3.3.0 curation pass complete. Repo is now a focused MCP server, not the abandoned theorchestra orchestrator. Zero npm dependencies. The browser dashboard, the orchestrator-worker pane, the React/Vite v3 build, and the orchestra-goose Tier-2 recipes were all removed and preserved at the `omniclaude-pre-rollback` git tag (commit `acd3460`) for any future revival. **If you're a Claude Code session reading this, you are a regular dev session — there is no orchestrator-worker convention anymore.**
+> **Status 2026-07-02 (v3.4.3):** focused MCP server, not the abandoned theorchestra orchestrator. Zero npm dependencies. 270 unit tests (all green). The browser dashboard, the orchestrator-worker pane, the React/Vite v3 build, and the orchestra-goose Tier-2 recipes were removed and preserved at the `omniclaude-pre-rollback` git tag (commit `acd3460`). **If you're a Claude Code session reading this, you are a regular dev session — there is no orchestrator-worker convention anymore.**
 
 ## What this repo is
 
-An **MCP server** that exposes `mcp__wezbridge__*` tools so any Claude Code or Codex CLI session can spawn, prompt, read, and discover other sessions running in WezTerm panes. That's it. The `:4200` HTTP daemon is a headless backend for the MCP server (it serves `/api/panes` etc. — there is no browser UI).
+An **MCP server** that exposes `mcp__wezbridge__*` tools so any Claude Code or Codex CLI session can spawn, prompt, read, and discover other sessions running in WezTerm panes. **The core MCP tools talk to the WezTerm CLI directly — they do NOT require the `:4200` daemon.** Only `auto_handoff` calls the daemon (`/api/panes/:id/auto-handoff`); every other tool works with the daemon down. The `:4200` HTTP daemon is a separate headless backend (SSE events, telegram-streamer, session-snapshot crash-restore, grades) — start it with `npm run dashboard` when you want those. Call `bridge_health` to see, in one shot, whether wezterm is reachable, the daemon is up, and the snapshot watcher is armed.
+>
+> **Security (v3.4.3):** the daemon binds `127.0.0.1` only. To expose it on a LAN set `WEZBRIDGE_BIND` (e.g. `0.0.0.0`) — a `WEZBRIDGE_API_TOKEN` then becomes mandatory or the daemon refuses to start.
 
 ## What this repo is NOT
 
@@ -13,7 +15,9 @@ An **MCP server** that exposes `mcp__wezbridge__*` tools so any Claude Code or C
 - Not a hosted multi-agent platform
 - Not a replacement for Claude Code / Codex / wezterm
 
-## Repo layout (post-v3.3.0)
+## Repo layout (v3.4.x)
+
+> The MCP server (`mcp-server.cjs`) and dashboard (`dashboard-server.cjs`, a thin shim over `dashboard-server-routes.cjs` + `handlers/`) were split into modules in the v3.4 refactor. Other post-v3.3 additions: `session-snapshot.cjs` (crash-restore, default ON since v3.4.1), `project-status-registry.cjs`, `telegram-router.cjs`, and the `handlers/` directory. Below is the original v3.3 map — mostly still accurate for the leaf modules.
 
 ```
 src/
@@ -37,7 +41,7 @@ src/
   permission-alerts.cjs, voice-handler.cjs, media-handler.cjs,
   ntfy-notifier.cjs, github-webhook.cjs, plugin-host.cjs,
   project-scanner.cjs, routines-config.cjs, diff-reporter.cjs
-test/                       — 13 unit-test files (184 cases, all green)
+test/                       — unit-test files (270 cases, all green)
 bin/guard-shims/            — git, gh argv-token guards (v3.2)
 scripts/                    — install-hooks, command-guard, outcome-grader,
                              replay-merge, commit-guard, omniclaude-forever.sh,
@@ -54,14 +58,14 @@ package.json                — name "wezbridge", zero deps
 
 ## Running it
 
-The dashboard daemon must be alive for the MCP server's tools to work (they fetch `/api/panes` etc.).
+The core MCP tools (discover/read/send/spawn/kill/…) drive the WezTerm CLI directly and work with **no daemon running**. The `:4200` daemon is only needed for `auto_handoff` and the background services (SSE, telegram-streamer, session-snapshot crash-restore, grades).
 
 ```bash
-npm run dashboard          # plain run
+npm run dashboard          # start the :4200 daemon (binds 127.0.0.1)
 npm run dev                # node --watch — auto-restart on file change
 ```
 
-`http://localhost:4200/` returns 404 — that's intentional. The daemon is headless. Verify it's up with `curl http://localhost:4200/api/panes`.
+`http://127.0.0.1:4200/` returns 404 — that's intentional. The daemon is headless. Verify it's up with `curl http://127.0.0.1:4200/api/panes`, or from any session call the `bridge_health` MCP tool. It binds loopback only; set `WEZBRIDGE_BIND=0.0.0.0` (plus a `WEZBRIDGE_API_TOKEN`) to expose it on a LAN.
 
 For the OmniClaude-via-Telegram pattern (one Claude Code pane controls the swarm via DMs), see [`docs/SETUP-omniclaude-telegram.md`](docs/SETUP-omniclaude-telegram.md).
 
@@ -122,4 +126,4 @@ If you want to bring back the dashboard UI, the orchestrator-worker pane, the or
 node --test --test-reporter=spec test/*.test.cjs
 ```
 
-184 cases, all green at v3.3.0.
+270 cases, all green at v3.4.3.
