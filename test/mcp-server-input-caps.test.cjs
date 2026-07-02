@@ -33,7 +33,9 @@ test('split_pane rejects args JSON over 4 KB', async () => {
 
 test('valid capped inputs are accepted', async () => {
   const prompt = await callMcpTool('send_prompt', { pane_id: 1, text: 'a'.repeat(16 * 1024) });
-  assert.equal(prompt.isError, undefined);
+  // v3.5: send_prompt returns isError: false explicitly + a JSON body with a
+  // submitted verdict — assert "not an error", not the legacy undefined.
+  assert.ok(!prompt.isError, 'send_prompt must not error');
   assert.match(prompt.content[0].text, /Prompt sent to pane 1/);
 
   const key = await callMcpTool('send_key', { pane_id: 1, key: 'x'.repeat(64) });

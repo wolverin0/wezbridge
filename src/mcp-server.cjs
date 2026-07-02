@@ -107,6 +107,9 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// In-flight async tool responses — drained on stdin close (see shutdown hook).
+const pendingAsyncCalls = new Set();
+
 // ─── Verified prompt submission (claim-8945 fix at source) ────────────────
 // wezterm's `cli send-text --no-paste` intermittently swallows the trailing
 // \r, leaving the prompt sitting unsubmitted in the TUI input box. The old
@@ -1473,7 +1476,7 @@ function handleMessage(msg) {
         const result = handleToolCall(name, toolArgs || {});
         // Support async tool handlers (e.g. auto_handoff) — write response when resolved
         if (result && typeof result.then === 'function') {
-          result.then(
+          const tracked = result.then(
             (resolved) => process.stdout.write(jsonRpcResponse(id, resolved) + '\n'),
             (err) => {
               log(`Tool async error: ${err.message}`);
@@ -1482,7 +1485,10 @@ function handleMessage(msg) {
                 isError: true,
               }) + '\n');
             }
-          );
+          ).finally(() => pendingAsyncCalls.delete(tracked));
+          // Track so a stdin close drains in-flight responses before exit —
+          // otherwise an async tool's reply is silently dropped.
+          pendingAsyncCalls.add(tracked);
           return null; // signal: response will be written async
         }
         return jsonRpcResponse(id, result);
@@ -1540,6 +1546,18 @@ process.stdin.on('data', (chunk) => {
 });
 
 process.stdin.on('end', () => {
+  // Drain in-flight async tool calls before exiting — clients often write one
+  // request and immediately close stdin; exiting here would drop the reply.
+  if (pendingAsyncCalls.size > 0) {
+    log(`stdin closed, draining ${pendingAsyncCalls.size} in-flight call(s) before shutdown`);
+    const drain = Promise.allSettled([...pendingAsyncCalls]);
+    const cap = new Promise((resolve) => setTimeout(resolve, 30000));
+    Promise.race([drain, cap]).then(() => {
+      log('drained, shutting down');
+      process.exit(0);
+    });
+    return;
+  }
   log('stdin closed, shutting down');
   process.exit(0);
 });
