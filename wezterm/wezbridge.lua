@@ -66,15 +66,33 @@ local function group_by_ts(entries)
   return groups
 end
 
---- Parse an ISO-8601 timestamp into epoch seconds. Returns nil on failure.
+--- Parse an ISO-8601 UTC timestamp into epoch seconds. Returns nil on failure.
 local function iso_to_epoch(iso)
   if not iso then return nil end
   local y, mo, d, h, mi, s = iso:match('(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)')
   if not y then return nil end
-  return os.time({
+  -- snapshot_ts is UTC (trailing Z) but os.time() interprets the fields as
+  -- LOCAL time — at UTC-3 every snapshot looked 3h in the future ("-180 min
+  -- ago" in the picker) and the auto-restore age gate was skewed the same way.
+  local local_interp = os.time({
     year = tonumber(y), month = tonumber(mo), day = tonumber(d),
     hour = tonumber(h), min = tonumber(mi), sec = tonumber(s),
   })
+  local now = os.time()
+  local utc_offset = os.difftime(now, os.time(os.date('!*t', now)))
+  return local_interp + utc_offset
+end
+
+--- Signature of a snapshot group's LAYOUT: which AI panes in which cwds.
+--- Consecutive 60s ticks of an unchanged workspace produce identical
+--- signatures — the picker collapses them to the newest occurrence.
+local function layout_signature(entries)
+  local parts = {}
+  for _, e in ipairs(entries) do
+    table.insert(parts, string.format('%s|%s', e.ai or '?', e.cwd or '?'))
+  end
+  table.sort(parts)
+  return table.concat(parts, ';')
 end
 
 --- Returns the most-recent snapshot batch as an array of entries, or nil.
@@ -183,12 +201,21 @@ local function setup_restore_keybind(config, opts)
         window:toast_notification('wezbridge', 'No snapshots found.', nil, 4000)
         return
       end
+      -- The watcher ticks every 60s, so raw groups flood the picker with
+      -- near-identical entries. Collapse consecutive identical LAYOUTS
+      -- (same AI panes in same cwds) to their newest occurrence, cap at 15.
       local choices = {}
+      local seen_sig = {}
       for _, g in ipairs(groups) do
-        local epoch = iso_to_epoch(g.ts)
-        local age = epoch and math.floor((os.time() - epoch) / 60) or -1
-        local label = string.format('%s · %d panes · %d min ago', g.ts, #g.entries, age)
-        table.insert(choices, { id = g.ts, label = label })
+        local sig = layout_signature(g.entries)
+        if not seen_sig[sig] then
+          seen_sig[sig] = true
+          local epoch = iso_to_epoch(g.ts)
+          local age = epoch and math.floor((os.time() - epoch) / 60) or -1
+          local label = string.format('%s · %d panes · %d min ago', g.ts, #g.entries, age)
+          table.insert(choices, { id = g.ts, label = label })
+          if #choices >= 15 then break end
+        end
       end
       window:perform_action(wezterm.action.InputSelector({
         title = 'Restore wezbridge snapshot',
