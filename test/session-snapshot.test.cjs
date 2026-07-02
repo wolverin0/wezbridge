@@ -192,6 +192,21 @@ test('snapshotOnce: writes only AI panes from listPanes() output', () => {
   assert.deepEqual(all.map((e) => e.pane_id).sort(), [1, 3]);
 });
 
+test('snapshotOnce: cmdline_hint captures Claude panes with TOPIC titles (2026-07-02 crash gap)', () => {
+  // Claude Code sets session-topic titles with no "claude" anywhere — the
+  // real pre-crash panes looked exactly like this and were never snapshotted.
+  const logPath = tmpLog();
+  const panes = [
+    { pane_id: 8, pid: null, title: '✳ Resume PuntoFutura CRM recovery phase 3', tab_title: 'crm', cwd: '/crm', cmdline_hint: 'claude' },
+    { pane_id: 6, pid: null, title: 'MINGW64:/g/some/path', tab_title: 'venezia', cwd: '/v' }, // plain shell, no hint
+  ];
+  const written = snap.snapshotOnce({ listPanes: () => panes, capture: () => null, logPath });
+  assert.equal(written, 1, 'hinted topic-title pane is captured, plain shell is not');
+  const all = snap.readAllSnapshots({ logPath });
+  assert.equal(all[0].pane_id, 8);
+  assert.equal(all[0].ai, 'claude');
+});
+
 test('snapshotOnce: writes nothing when no AI panes', () => {
   const logPath = tmpLog();
   const panes = [{ pane_id: 1, pid: 100, title: 'bash.exe', tab_title: '', cwd: '/a' }];

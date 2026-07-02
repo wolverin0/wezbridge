@@ -165,7 +165,11 @@ function snapshotOnce({ listPanes, capture, logPath, log, ts }) {
   const stamp = ts || new Date().toISOString();
   const entries = [];
   for (const pane of panes) {
-    const cmdline = pane.pid != null ? captureFn(pane.pid) : null;
+    // cmdline_hint: injected by the daemon wiring from pane-discovery. Claude
+    // Code sets session-TOPIC titles ("✳ Fix the parser") with no "claude" in
+    // them, so title-regex classification silently captured NOTHING — the
+    // 2026-07-02 crash had zero restorable snapshots because of this.
+    const cmdline = pane.cmdline_hint || (pane.pid != null ? captureFn(pane.pid) : null);
     const entry = buildSnapshotEntry(pane, cmdline, stamp);
     if (entry) entries.push(entry);
   }

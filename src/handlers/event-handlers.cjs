@@ -338,7 +338,21 @@ function createEventHandlers(ctx) {
     if (snapEnv !== '0') {
       const intervalMs = (snapEnv && Number(snapEnv) > 1 ? Number(snapEnv) : 60) * 1000;
       sessionSnapshot.startWatcher({
-        listPanes: () => ipc.wez.listPanes(),
+        // Enrich raw panes with pane-discovery's AI detection: Claude Code
+        // sets topic titles with no "claude" in them, so the title-regex
+        // classifier alone captures nothing (snapshot gap found 2026-07-02).
+        listPanes: () => {
+          const raw = ipc.wez.listPanes() || [];
+          const detected = new Set();
+          try {
+            for (const d of ipc.discoverPanes()) {
+              if (d.isClaude) detected.add(d.paneId);
+            }
+          } catch (err) {
+            log(`snapshot discovery enrichment failed (falling back to titles): ${err.message}`);
+          }
+          return raw.map((p) => detected.has(p.pane_id) ? { ...p, cmdline_hint: 'claude' } : p);
+        },
         intervalMs,
         log,
       });
