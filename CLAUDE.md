@@ -1,6 +1,8 @@
-# wezbridge (v3.4.3)
+# wezbridge (v3.5.0)
 
-> **Status 2026-07-02 (v3.4.3):** focused MCP server, not the abandoned theorchestra orchestrator. Zero npm dependencies. 270 unit tests (all green). The browser dashboard, the orchestrator-worker pane, the React/Vite v3 build, and the orchestra-goose Tier-2 recipes were removed and preserved at the `omniclaude-pre-rollback` git tag (commit `acd3460`). **If you're a Claude Code session reading this, you are a regular dev session — there is no orchestrator-worker convention anymore.**
+> **Status 2026-07-02 (v3.5.0):** focused MCP server, not the abandoned theorchestra orchestrator. Zero npm dependencies. The browser dashboard, the orchestrator-worker pane, the React/Vite v3 build, and the orchestra-goose Tier-2 recipes were removed and preserved at the `omniclaude-pre-rollback` git tag (commit `acd3460`). **If you're a Claude Code session reading this, you are a regular dev session — there is no orchestrator-worker convention anymore.**
+>
+> **v3.5.0 highlights:** `send_prompt`/`a2a_send` now VERIFY submission (read the input box back, retry enter, return `submitted`) — the manual follow-up `send_key("enter")` rule is obsolete on v3.5+ servers. `spawn_session` starts FRESH sessions by default (`continue: true` to opt back into `--continue`), and gains `agent: claude|codex|shell` + `model`. `read_output` gains delta/cursor polling. `wait_for_idle`/`spawn_session` no longer block the MCP event loop.
 
 ## What this repo is
 
@@ -37,7 +39,6 @@ src/
   memory-inbox.cjs         — gated MemoryMaster Dreams inbox (v3.2)
   cost-meter.cjs           — per-pane runtime tracker (v3.2, lib only)
   guard-bootstrap.cjs      — PATH-shim activation (v3.2)
-  orchestrator-executor.cjs — preserved utility (legacy)
   permission-alerts.cjs, voice-handler.cjs, media-handler.cjs,
   ntfy-notifier.cjs, github-webhook.cjs, plugin-host.cjs,
   project-scanner.cjs, routines-config.cjs, diff-reporter.cjs
@@ -49,9 +50,9 @@ scripts/                    — install-hooks, command-guard, outcome-grader,
 docs/
   SETUP-omniclaude-telegram.md — the daily-driver walkthrough
   USAGE-guard.md               — v3.2 guard reference
-  PLAN-managed-agents-backfill.md
   a2a-protocol.md              — A2A envelope spec
   plugins.md                   — plugin-host extension API
+  _drafts/                     — parked plans/research (sentinel-orchestrator era)
 plugins/example/            — plugin-host demo
 package.json                — name "wezbridge", zero deps
 ```
@@ -109,10 +110,10 @@ Every peer-to-peer message uses an envelope:
 
 Hard rules (mandatory for any pane using these tools):
 
-1. Always follow `send_prompt` with `send_key("enter")`.
-2. Never send bash via `send_prompt` into a running TUI — your text becomes a user prompt, not a shell command.
-3. Every responder MUST push `type=progress` every ~3 min during long work and `type=result` on completion. Codex cannot subscribe via `Monitor`; Claude can.
-4. Before spawning a peer, declare your coordinator role: `parallel-worker` / `qa-verifier` / `pre-stager` / `monitor-only`.
+1. Prefer `a2a_send` — it builds the envelope, sends it, and VERIFIES submission in one call. When using raw `send_prompt` (v3.5+), check the returned `submitted` field: only send `send_key("enter")` if it reports `stuck`. (Pre-v3.5 servers verify nothing — there, always follow `send_prompt` with `send_key("enter")`.)
+2. Never send bash via `send_prompt` into a running TUI — your text becomes a user prompt, not a shell command. (`spawn_session` with `agent: "shell"` gives you a real shell pane.)
+3. Every responder MUST push `type=progress` every ~3 min during long work and `type=result` on completion. Codex cannot subscribe via `Monitor`; Claude can — Codex requesters should poll with `read_output` delta mode (`with_cursor` → `since`).
+4. Before spawning a peer, declare your coordinator role: `parallel-worker` / `qa-verifier` / `pre-stager` / `monitor-only`. Note: `spawn_session` starts FRESH sessions by default since v3.5 (pass `continue: true` for the old `--continue` behavior).
 
 Full spec: [`docs/a2a-protocol.md`](docs/a2a-protocol.md).
 

@@ -123,27 +123,40 @@ function findGuiSocket() {
 // Note: execFileSync blocks the event loop. For N sessions, pollAll blocks N * timeout_ms.
 // TODO: Consider async execFile for high session counts.
 function wezCmd(args, opts = {}) {
-  try {
-    const guiSocket = findGuiSocket();
-    const env = guiSocket
-      ? { ...process.env, WEZTERM_UNIX_SOCKET: guiSocket }
-      : process.env;
+  // One bounded retry on timeout: with several services polling the mux
+  // socket (dashboard daemon, streamer, MCP servers) a `wezterm cli` call
+  // occasionally exceeds its window under contention on Windows. The retry
+  // is safe for our command set (list/get-text are reads; send-text/spawn
+  // that ACTUALLY timed out did not reach the mux — spawnSync kills the
+  // child before it can act).
+  const attempts = opts.retries === undefined ? 1 : opts.retries;
+  let lastErr;
+  for (let attempt = 0; attempt <= attempts; attempt++) {
+    try {
+      const guiSocket = findGuiSocket();
+      const env = guiSocket
+        ? { ...process.env, WEZTERM_UNIX_SOCKET: guiSocket }
+        : process.env;
 
-    // Connect to GUI only — --no-auto-start prevents spawning zombie mux-servers
-    const cliArgs = guiSocket
-      ? ['cli', ...args]
-      : ['cli', '--no-auto-start', ...args];
+      // Connect to GUI only — --no-auto-start prevents spawning zombie mux-servers
+      const cliArgs = guiSocket
+        ? ['cli', ...args]
+        : ['cli', '--no-auto-start', ...args];
 
-    const result = execFileSync(WEZTERM, cliArgs, {
-      encoding: 'utf-8',
-      timeout: opts.timeout || 10000,
-      windowsHide: true,
-      env,
-    });
-    return result.trim();
-  } catch (err) {
-    throw new Error(`wezterm cli ${args.join(' ')} failed: ${err.message}`);
+      const result = execFileSync(WEZTERM, cliArgs, {
+        encoding: 'utf-8',
+        timeout: opts.timeout || 10000,
+        windowsHide: true,
+        env,
+      });
+      return result.trim();
+    } catch (err) {
+      lastErr = err;
+      const timedOut = /ETIMEDOUT/i.test(err.message || '');
+      if (!timedOut || attempt === attempts) break;
+    }
   }
+  throw new Error(`wezterm cli ${args.join(' ')} failed: ${lastErr.message}`);
 }
 
 // In-process cache for listPanes(). Added 2026-04-19 to reduce wezterm CLI

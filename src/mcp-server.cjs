@@ -99,6 +99,90 @@ function isValidModelName(model) {
   return /^[a-zA-Z0-9._-]+$/.test(String(model || ''));
 }
 
+// Non-blocking sleep. The stdio JSON-RPC loop is single-threaded — the old
+// execFileSync('timeout'/'sleep') pattern froze EVERY concurrent tool call
+// while one handler waited. Async handlers resolve out of order (the dispatch
+// layer supports promises), so awaiting a timer keeps the server responsive.
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ─── Verified prompt submission (claim-8945 fix at source) ────────────────
+// wezterm's `cli send-text --no-paste` intermittently swallows the trailing
+// \r, leaving the prompt sitting unsubmitted in the TUI input box. The old
+// approach fired blind redundant enters and reported success regardless.
+// This reads the pane back: the BOTTOM-MOST prompt-marker line (❯ / > / ›,
+// optionally behind a box-drawing border) is the live input box — if our text
+// is still sitting there, nudge enter and re-check (bounded retries).
+// Returns 'submitted' | 'stuck' | 'unknown' (pane unreadable / non-TUI shell).
+function inputBoxContent(tailLines) {
+  const markers = tailLines.filter((l) => /^[\s│|]*[❯>›]/.test(l));
+  const last = markers[markers.length - 1] || '';
+  return last.replace(/^[\s│|]*[❯>›]\s*/, '').replace(/[\s│|]+$/, '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+// ─── read_output delta cursors ────────────────────────────────────────────
+// A cursor is a base64 fingerprint of the last lines of a read. On the next
+// read, everything after the fingerprint match is "new". Cheap polling for
+// A2A requesters (esp. Codex, which must poll) without re-reading 100 lines.
+function trimTrailingEmpty(lines) {
+  let end = lines.length;
+  while (end > 0 && !lines[end - 1].trim()) end--;
+  return lines.slice(0, end);
+}
+
+function makeReadCursor(lines) {
+  const trimmed = trimTrailingEmpty(lines);
+  // Drop the very last line: it's the LIVE prompt/input line and mutates in
+  // place ("$" becomes "$ echo next-cmd"), which both breaks matching and —
+  // worse — bare prompt lines repeat, so a fingerprint ending on one can
+  // match the NEWEST occurrence and swallow the whole delta. Three lines of
+  // context above the live line (command + output) are effectively unique.
+  const body = trimmed.length > 1 ? trimmed.slice(0, -1) : trimmed;
+  const fp = body.slice(-3);
+  return Buffer.from(JSON.stringify(fp), 'utf-8').toString('base64');
+}
+
+// Returns lines after the cursor match, or null if the cursor no longer
+// matches (scrolled out of the window / invalid) — caller falls back to full.
+function sliceAfterCursor(lines, cursorB64) {
+  let fp;
+  try { fp = JSON.parse(Buffer.from(String(cursorB64), 'base64').toString('utf-8')); } catch { return null; }
+  if (!Array.isArray(fp) || fp.length === 0 || !fp.every((l) => typeof l === 'string')) return null;
+  const trimmed = trimTrailingEmpty(lines);
+  for (let i = trimmed.length - fp.length; i >= 0; i--) {
+    let match = true;
+    for (let j = 0; j < fp.length; j++) {
+      if (trimmed[i + j] !== fp[j]) { match = false; break; }
+    }
+    if (match) return trimmed.slice(i + fp.length);
+  }
+  return null;
+}
+
+async function verifyPromptSubmission(paneId, text, { retries = 2, settleMs = 700 } = {}) {
+  const probe = String(text).replace(/\s+/g, ' ').trim().slice(0, 60).toLowerCase();
+  if (!probe) return 'unknown';
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    await sleep(attempt === 0 ? settleMs : 900);
+    let tailLines;
+    try {
+      wez.invalidateGetTextCache(paneId);
+      tailLines = wez.getFullText(paneId, 25).split('\n');
+    } catch {
+      return 'unknown';
+    }
+    const content = inputBoxContent(tailLines);
+    const stuck = content.length > 0 &&
+      (probe.startsWith(content.slice(0, 40)) || content.startsWith(probe.slice(0, 40)));
+    if (!stuck) return 'submitted';
+    // Text still in the input box — a fresh, time-separated enter (empty
+    // send-text + appended \r, same path as send_key('enter')) unsticks it.
+    try { wez.sendText(paneId, ''); } catch { /* ignore */ }
+  }
+  return 'stuck';
+}
+
 function mcpError(message) {
   return {
     content: [{ type: 'text', text: message }],
@@ -191,7 +275,7 @@ const TOOLS = [
   },
   {
     name: 'read_output',
-    description: 'Read the terminal output from a specific WezTerm pane. Returns the last N lines of scrollback. Use this to see what a Claude session has been doing or what it responded with.',
+    description: 'Read the terminal output from a specific WezTerm pane. Returns the last N lines of scrollback. Use this to see what a Claude session has been doing or what it responded with. DELTA MODE for cheap polling: pass with_cursor: true on the first read to get a cursor token, then pass it back as since on later reads to receive only the NEW lines since (response becomes JSON {new_output, cursor, cursor_found}).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -203,13 +287,21 @@ const TOOLS = [
           type: 'number',
           description: 'Number of scrollback lines to read. Default: 100. Max: 500.',
         },
+        since: {
+          type: 'string',
+          description: 'Cursor token from a previous read — return only lines after it. If it no longer matches, the full tail is returned with cursor_found: false.',
+        },
+        with_cursor: {
+          type: 'boolean',
+          description: 'Include a cursor token in the response (JSON shape) without filtering. Use on the first read of a polling loop.',
+        },
       },
       required: ['pane_id'],
     },
   },
   {
     name: 'send_prompt',
-    description: 'Send a text prompt to a Claude Code session running in a WezTerm pane. The text is typed into the terminal and Enter is pressed. Use this to give instructions to other Claude sessions. IMPORTANT: Only send to sessions that are in "idle" status, not "working".',
+    description: 'Send a text prompt to a Claude/Codex session running in a WezTerm pane. The text is typed, Enter is pressed, and submission is VERIFIED by reading the pane back (retrying Enter if the text is still sitting in the input box). Returns {submitted: submitted|stuck|unknown} — no follow-up send_key("enter") needed unless it reports stuck. IMPORTANT: Only send to sessions that are in "idle" status, not "working".',
     inputSchema: {
       type: 'object',
       properties: {
@@ -293,7 +385,7 @@ const TOOLS = [
   },
   {
     name: 'spawn_session',
-    description: 'Launch a new Claude Code session in a new WezTerm pane. Optionally provide a project directory and an initial prompt. Returns the new pane ID.',
+    description: 'Launch a new agent session (Claude Code by default, or Codex, or a plain shell) in a new WezTerm pane. Starts a FRESH session by default (v3.5: no more implicit --continue). Optionally provide a project directory and an initial prompt (submission is verified). Returns the new pane ID.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -301,13 +393,22 @@ const TOOLS = [
           type: 'string',
           description: 'Working directory for the new session (project path). Default: current directory.',
         },
+        agent: {
+          type: 'string',
+          enum: ['claude', 'codex', 'shell'],
+          description: "Which CLI to boot: 'claude' (default), 'codex', or 'shell' (leave the pane as a plain shell, no command typed). persona/resume/continue/permission flags apply to claude only.",
+        },
         prompt: {
           type: 'string',
-          description: 'Optional initial prompt to send after Claude starts up. The session will start, wait for the ❯ prompt, then send this text.',
+          description: 'Optional initial prompt to send after the agent starts up. The session will start, wait for the input prompt, then send this text and VERIFY it submitted.',
+        },
+        continue: {
+          type: 'boolean',
+          description: 'If true, launch with --continue (resume the most recent session for that cwd). Default false — fresh session. Before v3.5 --continue was the implicit default; it could wake a "new" peer inside an old conversation.',
         },
         resume: {
           type: 'string',
-          description: 'Resume a specific named session instead of --continue. Pass the session name (e.g. "fork-webdesign").',
+          description: 'Resume a specific named session. Pass the session name (e.g. "fork-webdesign").',
         },
         split_from: {
           type: 'number',
@@ -440,6 +541,21 @@ const TOOLS = [
     description: 'One-call self-diagnosis of the wezbridge stack: is the WezTerm CLI reachable, is the :4200 daemon up (and its version), is the session-snapshot crash-restore watcher armed, and how many panes are visible. Call this first when a wezbridge tool errors unexpectedly or when you are unsure whether the daemon is running.',
     inputSchema: { type: 'object', properties: {} },
   },
+  {
+    name: 'a2a_send',
+    description: 'Send an A2A protocol envelope to a peer pane in ONE call: builds "[A2A from pane-N to pane-M | corr=<id> | type=<t>]\\n<body>", sends it with VERIFIED submission (no follow-up send_key needed), and returns {submitted, corr}. from_pane defaults to this session\'s own pane (WEZTERM_PANE env). Use this instead of hand-formatting envelopes with send_prompt.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        to_pane: { type: 'number', description: 'Target pane ID.' },
+        body: { type: 'string', description: 'Envelope body (the actual message).' },
+        type: { type: 'string', enum: ['request', 'ack', 'progress', 'result', 'error'], description: 'A2A message type. Default: request.' },
+        corr: { type: 'string', description: 'Correlation id — keep it stable across a thread. Default: generated (returned in the response; reuse it for follow-ups).' },
+        from_pane: { type: 'number', description: 'Sender pane ID. Default: WEZTERM_PANE env (your own pane).' },
+      },
+      required: ['to_pane', 'body'],
+    },
+  },
 ].filter(tool => tool.name !== 'switch_workspace' || SWITCH_WORKSPACE_SUPPORT.supported);
 
 // ─── Tool Implementations ─────────────────────────────────────────────────
@@ -493,6 +609,32 @@ function handleToolCall(name, args) {
         const text = wez.getFullText(paneId, lines);
         // Strip empty trailing lines
         const cleaned = text.replace(/\n{3,}/g, '\n\n').trim();
+
+        // Delta mode: with a cursor (or with_cursor: true), respond with a
+        // JSON object carrying only the NEW lines plus the next cursor.
+        if (args.since !== undefined || args.with_cursor === true) {
+          const allLines = cleaned.split('\n');
+          const cursor = makeReadCursor(allLines);
+          let newOutput = cleaned;
+          let cursorFound = null;
+          if (args.since !== undefined) {
+            const delta = sliceAfterCursor(allLines, args.since);
+            cursorFound = delta !== null;
+            newOutput = cursorFound ? delta.join('\n') : cleaned;
+          }
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                new_output: newOutput,
+                cursor,
+                cursor_found: cursorFound,
+                note: cursorFound === false ? 'cursor no longer matches (output scrolled past or invalid) — returning the full tail' : undefined,
+              }, null, 2),
+            }],
+          };
+        }
+
         return {
           content: [{ type: 'text', text: cleaned }],
         };
@@ -530,27 +672,30 @@ function handleToolCall(name, args) {
         };
       }
 
-      try {
-        wez.sendText(paneId, text);
-        // Triple-redundant enter submission — see spawn_session for the
-        // full rationale. Sync retry covers short-prompt \r-swallowing;
-        // async 250ms retry covers back-to-back \r being coalesced.
-        // Both are harmless no-ops on successful submit (Claude TUI
-        // ignores bare enter on empty input).
-        try { wez.sendTextNoEnter(paneId, '\r'); } catch { /* ignore */ }
-        setTimeout(() => {
-          try { wez.sendText(paneId, ''); } catch { /* ignore */ }
-        }, 250);
-        log(`Sent prompt to pane ${paneId}: ${text.slice(0, 80)}...`);
-        return {
-          content: [{ type: 'text', text: `Prompt sent to pane ${paneId}. The session will now process it. Use read_output or get_status later to check the result.` }],
-        };
-      } catch (err) {
-        return {
-          content: [{ type: 'text', text: `Error sending to pane ${paneId}: ${err.message}` }],
-          isError: true,
-        };
-      }
+      return (async () => {
+        try {
+          wez.sendText(paneId, text);
+          try { wez.sendTextNoEnter(paneId, '\r'); } catch { /* ignore */ }
+          // Read back instead of firing blind extra enters (claim-8945 fix):
+          // confirm the text actually left the input box, retry enter if not.
+          const submitted = await verifyPromptSubmission(paneId, text);
+          log(`Sent prompt to pane ${paneId} [${submitted}]: ${text.slice(0, 80)}...`);
+          const note = {
+            submitted: 'Prompt sent to pane ' + paneId + ' and VERIFIED submitted (left the input box). Use read_output or get_status later for the result. No follow-up send_key("enter") needed.',
+            stuck: 'Prompt was typed into pane ' + paneId + ' but still sits UNSUBMITTED in the input box after retries. Send send_key("enter") manually or check the pane state with get_status.',
+            unknown: 'Prompt sent to pane ' + paneId + '. Submission could not be verified (pane unreadable or non-TUI shell prompt) — enter was sent; check with read_output if in doubt.',
+          }[submitted];
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ ok: submitted !== 'stuck', submitted, message: note }, null, 2) }],
+            isError: false,
+          };
+        } catch (err) {
+          return {
+            content: [{ type: 'text', text: `Error sending to pane ${paneId}: ${err.message}` }],
+            isError: true,
+          };
+        }
+      })();
     }
 
     case 'get_status': {
@@ -673,32 +818,22 @@ function handleToolCall(name, args) {
       }
     }
 
-    case 'wait_for_idle': {
+    case 'wait_for_idle': return (async () => {
       const paneId = args.pane_id;
-      // This handler blocks the MCP server loop while polling; cap long waits
-      // to reduce head-of-line blocking for other tool calls.
       const maxWait = Math.min(args.max_wait || 60, 300);
       const pollInterval = Math.max(args.poll_interval || 3, 1);
 
       const startTime = Date.now();
       const deadline = startTime + maxWait * 1000;
 
-      // Helper: blocking sleep via wezterm (no async in this codebase)
-      function sleepSync(ms) {
-        try {
-          require('child_process').execFileSync(
-            process.platform === 'win32' ? 'timeout' : 'sleep',
-            process.platform === 'win32' ? ['/t', String(Math.ceil(ms / 1000)), '/nobreak'] : [String(ms / 1000)],
-            { windowsHide: true, stdio: 'ignore', timeout: ms + 2000 }
-          );
-        } catch { /* ignore */ }
-      }
-
       let lastText = '';
       let timedOut = true;
 
       while (Date.now() < deadline) {
         try {
+          // We're explicitly waiting for a state CHANGE — a stale cached read
+          // defeats the purpose, so bust this pane's text cache each poll.
+          wez.invalidateGetTextCache(paneId);
           const text = wez.getFullText(paneId, 50);
           const lines = text.split('\n').filter(l => l.trim());
           lastText = lines.slice(-20).join('\n');
@@ -726,7 +861,7 @@ function handleToolCall(name, args) {
           };
         }
 
-        sleepSync(pollInterval * 1000);
+        await sleep(pollInterval * 1000);
       }
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -746,7 +881,7 @@ function handleToolCall(name, args) {
           text: `Pane ${paneId} is now idle (waited ${elapsed}s).\n\nOutput:\n${lastText}`,
         }],
       };
-    }
+    })();
 
     case 'spawn_session': {
       const cwd = args.cwd || process.cwd();
@@ -811,8 +946,25 @@ function handleToolCall(name, args) {
         }
       }
 
+      // Which CLI boots in the pane. 'shell' leaves the pane as a plain shell
+      // (no command typed) — useful for scratch panes and e2e tests.
+      const agent = args.agent === undefined || args.agent === null ? 'claude' : String(args.agent);
+      if (!['claude', 'codex', 'shell'].includes(agent)) {
+        return {
+          content: [{ type: 'text', text: `Error: invalid agent "${agent}" (claude | codex | shell)` }],
+          isError: true,
+        };
+      }
+      if (agent !== 'claude' && (args.persona || args.resume || args.continue || permissionMode || skipPerms)) {
+        return {
+          content: [{ type: 'text', text: `Error: persona/resume/continue/permission flags only apply to agent "claude" (got agent="${agent}")` }],
+          isError: true,
+        };
+      }
+
+      return (async () => {
       try {
-        // Spawn a plain shell pane, then send the claude command as text.
+        // Spawn a plain shell pane, then send the CLI command as text.
         // This works on all platforms (Windows cmd, bash, pwsh) without
         // needing to know the user's shell in advance.
         let newPaneId;
@@ -822,59 +974,53 @@ function handleToolCall(name, args) {
           newPaneId = wez.spawnPane({ cwd });
         }
 
-        // Give the shell a moment to initialize
-        try {
-          require('child_process').execFileSync(
-            process.platform === 'win32' ? 'timeout' : 'sleep',
-            process.platform === 'win32' ? ['/t', '2', '/nobreak'] : ['2'],
-            { windowsHide: true, stdio: 'ignore', timeout: 4000 }
-          );
-        } catch { /* ignore */ }
+        // Give the shell a moment to initialize (async — doesn't block other tool calls)
+        await sleep(2000);
 
-        // Type the claude command into the shell
-        // When a persona is set → fresh session (no --continue / --resume).
-        // A persona agent is a NEW entity, not a continuation of whatever
-        // session previously ran in that directory. Without this, --continue
-        // resumes the most recent session for that cwd and the persona prompt
-        // gets injected into an existing conversation (wrong behavior).
-        const claudeArgv = ['claude'];
-        if (personaPath) {
-          // Fresh start with persona — no --continue, no --resume
-          claudeArgv.push('--append-system-prompt-file', personaPath.replace(/\\/g, '/'));
-        } else if (args.resume) {
-          claudeArgv.push('-r', String(args.resume));
-        } else {
-          claudeArgv.push('--continue');
+        // Build the CLI command. DEFAULT IS A FRESH SESSION (since v3.5.0):
+        // --continue resumed whatever session last ran in that cwd, so a "new
+        // peer" could wake up inside an old conversation. Personas always
+        // deliberately avoided this; now every spawn does. Opt back in with
+        // continue: true, or resume a named session with resume.
+        let cliCmd = null;
+        if (agent === 'claude') {
+          const claudeArgv = ['claude'];
+          if (personaPath) {
+            claudeArgv.push('--append-system-prompt-file', personaPath.replace(/\\/g, '/'));
+          } else if (args.resume) {
+            claudeArgv.push('-r', String(args.resume));
+          } else if (args.continue === true) {
+            claudeArgv.push('--continue');
+          }
+          if (skipPerms) claudeArgv.push('--dangerously-skip-permissions');
+          if (permissionMode) claudeArgv.push('--permission-mode', permissionMode);
+          if (args.model) claudeArgv.push('--model', String(args.model));
+          cliCmd = claudeArgv.map(shellQuoteArg).join(' ');
+        } else if (agent === 'codex') {
+          const codexArgv = ['codex'];
+          if (args.model) codexArgv.push('--model', String(args.model));
+          cliCmd = codexArgv.map(shellQuoteArg).join(' ');
         }
-        if (skipPerms) claudeArgv.push('--dangerously-skip-permissions');
-        if (permissionMode) claudeArgv.push('--permission-mode', permissionMode);
-        if (args.model) claudeArgv.push('--model', String(args.model));
-        const claudeCmd = claudeArgv.map(shellQuoteArg).join(' ');
-        wez.sendText(newPaneId, claudeCmd);
+        if (cliCmd) wez.sendText(newPaneId, cliCmd);
 
         // Set tab title to persona name for discoverPanes() detection
         if (args.persona) {
           try { wez.setTabTitle(newPaneId, '[' + args.persona + ']'); } catch { /* ignore */ }
         }
 
-        log(`Spawned Claude session in pane ${newPaneId} at ${cwd}${args.persona ? ' [persona=' + args.persona + ']' : ''}`);
+        log(`Spawned ${agent} pane ${newPaneId} at ${cwd}${args.persona ? ' [persona=' + args.persona + ']' : ''}`);
 
+        let promptSubmitted = null;
         // If an initial prompt was given, wait for the session to boot then send it
         if (args.prompt) {
-          // Give Claude a few seconds to start up and show ❯
-          const bootWait = 8;
+          // Give the TUI a few seconds to start up and show its input prompt
+          const bootWait = agent === 'shell' ? 1 : 8;
           for (let i = 0; i < bootWait; i++) {
+            await sleep(1000);
             try {
-              require('child_process').execFileSync(
-                process.platform === 'win32' ? 'timeout' : 'sleep',
-                process.platform === 'win32' ? ['/t', '1', '/nobreak'] : ['1'],
-                { windowsHide: true, stdio: 'ignore', timeout: 3000 }
-              );
-            } catch { /* ignore */ }
-
-            try {
+              wez.invalidateGetTextCache(newPaneId);
               const text = wez.getFullText(newPaneId, 20);
-              if (/[❯>]\s*$/m.test(text)) break;
+              if (/[❯>›]\s*$/m.test(text)) break;
             } catch { /* pane not ready */ }
           }
 
@@ -904,25 +1050,10 @@ function handleToolCall(name, args) {
           }
 
           wez.sendText(newPaneId, finalPrompt);
-          // Triple-redundant enter submission because wezterm's
-          // `cli send-text --no-paste` is unreliable about the trailing
-          // \r in various ways:
-          //   (a) Long prompts: \r gets swallowed (pane-33, elduderino).
-          //   (b) Short prompts: \r gets swallowed (pane-35 E2E, 114 chars).
-          //   (c) Immediate back-to-back \r retries ALSO get swallowed
-          //       (pane-36 E2E — the length-gated retry fired but prompt
-          //       still sat unsent; only a fresh RPC `send_key('enter')`
-          //       minutes later unstuck it).
-          // Solution: fire one sync retry for cases (a)/(b), plus a
-          // SECOND async retry after 250ms for case (c), giving wezterm
-          // time to flush. The async retry uses wez.sendText(paneId, '')
-          // which is the same internal path as send_key('enter') (empty
-          // text + appended \r) — proven to work when separated in time.
-          // Extra enters on empty input are harmless no-ops in Claude's TUI.
           try { wez.sendTextNoEnter(newPaneId, '\r'); } catch { /* ignore */ }
-          setTimeout(() => {
-            try { wez.sendText(newPaneId, ''); } catch { /* ignore */ }
-          }, 250);
+          // Verified submission (claim-8945 fix) — read the input box back
+          // and retry enter until the prompt actually leaves it.
+          promptSubmitted = await verifyPromptSubmission(newPaneId, finalPrompt);
         }
 
         return {
@@ -931,11 +1062,15 @@ function handleToolCall(name, args) {
             text: JSON.stringify({
               pane_id: newPaneId,
               cwd,
+              agent,
               persona: args.persona || null,
               permission_mode: args.permission_mode || null,
+              model: args.model || null,
+              fresh_session: agent === 'claude' && !args.resume && args.continue !== true,
               spawned_by_pane_id: typeof args.spawned_by_pane_id === 'number' ? args.spawned_by_pane_id : null,
               initial_prompt: args.prompt || null,
-              message: `Claude session spawned in pane ${newPaneId}.${args.persona ? ' Persona: ' + args.persona + '.' : ''} ${args.prompt ? 'Initial prompt sent.' : 'Ready for prompts.'}${typeof args.spawned_by_pane_id === 'number' ? ' Peer-pane bootstrap injected (coordinator=pane-' + args.spawned_by_pane_id + ').' : ''}`,
+              initial_prompt_submitted: promptSubmitted,
+              message: `${agent} pane spawned: ${newPaneId}.${args.persona ? ' Persona: ' + args.persona + '.' : ''} ${args.prompt ? `Initial prompt ${promptSubmitted === 'submitted' ? 'sent and verified' : promptSubmitted === 'stuck' ? 'typed but STUCK in input box — send send_key("enter")' : 'sent (unverified)'}.` : 'Ready for prompts.'}${typeof args.spawned_by_pane_id === 'number' ? ' Peer-pane bootstrap injected (coordinator=pane-' + args.spawned_by_pane_id + ').' : ''}`,
             }, null, 2),
           }],
         };
@@ -945,6 +1080,7 @@ function handleToolCall(name, args) {
           isError: true,
         };
       }
+      })();
     }
 
     case 'kill_session': {
@@ -1170,6 +1306,68 @@ function handleToolCall(name, args) {
 
     case 'bridge_health':
       return handleBridgeHealth();
+
+    case 'a2a_send': return (async () => {
+      const toPane = args.to_pane;
+      const body = args.body;
+      if (typeof toPane !== 'number' || !Number.isInteger(toPane)) {
+        return { content: [{ type: 'text', text: 'Error: to_pane must be an integer pane id' }], isError: true };
+      }
+      if (!body || !String(body).trim()) {
+        return { content: [{ type: 'text', text: 'Error: empty body' }], isError: true };
+      }
+      const bodyLimitError = validateByteLength('prompt', body, INPUT_BYTE_LIMITS.prompt);
+      if (bodyLimitError) return bodyLimitError;
+      const msgType = args.type === undefined || args.type === null ? 'request' : String(args.type);
+      if (!['request', 'ack', 'progress', 'result', 'error'].includes(msgType)) {
+        return { content: [{ type: 'text', text: `Error: invalid type "${msgType}" (request|ack|progress|result|error)` }], isError: true };
+      }
+      const fromPane = typeof args.from_pane === 'number'
+        ? args.from_pane
+        : parseInt(process.env.WEZTERM_PANE || '', 10);
+      if (!Number.isInteger(fromPane)) {
+        return { content: [{ type: 'text', text: 'Error: from_pane not given and WEZTERM_PANE env not set — pass from_pane explicitly' }], isError: true };
+      }
+      const corr = args.corr === undefined || args.corr === null
+        ? `a2a-${Date.now().toString(36)}`
+        : String(args.corr);
+      if (!/^[a-zA-Z0-9._-]{1,64}$/.test(corr)) {
+        return { content: [{ type: 'text', text: 'Error: corr must be 1-64 chars of [a-zA-Z0-9._-]' }], isError: true };
+      }
+
+      const envelope = `[A2A from pane-${fromPane} to pane-${toPane} | corr=${corr} | type=${msgType}]\n${body}`;
+      const _safety = safetyPolicy.evaluate({ action: 'send_prompt', paneId: toPane, prompt: envelope });
+      if (!_safety.allowed) {
+        if (_safety.tripwire) return { content: [{ type: 'text', text: _safety.response }] };
+        return { content: [{ type: 'text', text: `safety-policy: BLOCKED a2a_send — ${_safety.reason}. Set WEZBRIDGE_SAFETY_OVERRIDE=1 to bypass.` }], isError: true };
+      }
+
+      try {
+        wez.sendText(toPane, envelope);
+        try { wez.sendTextNoEnter(toPane, '\r'); } catch { /* ignore */ }
+        const submitted = await verifyPromptSubmission(toPane, envelope);
+        log(`a2a_send pane-${fromPane} -> pane-${toPane} corr=${corr} type=${msgType} [${submitted}]`);
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              ok: submitted !== 'stuck',
+              submitted,
+              corr,
+              from_pane: fromPane,
+              to_pane: toPane,
+              type: msgType,
+              note: submitted === 'stuck'
+                ? 'Envelope typed but STUCK in the input box after retries — send send_key("enter") to the pane.'
+                : `Envelope delivered. Reuse corr=${corr} for the rest of this thread; the responder should reply with type=ack/progress/result.`,
+            }, null, 2),
+          }],
+          isError: false,
+        };
+      } catch (err) {
+        return { content: [{ type: 'text', text: `Error sending A2A envelope to pane ${toPane}: ${err.message}` }], isError: true };
+      }
+    })();
 
     default:
       return {

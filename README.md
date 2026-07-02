@@ -10,7 +10,7 @@ The repo ships in three opt-in tiers — install the core, add the others if you
 
 | Layer | What it gives you | Status |
 |---|---|---|
-| **Core** | `mcp__wezbridge__*` tool surface — `discover_sessions`, `read_output`, `send_prompt`, `send_key`, `spawn_session`, `split_pane`, `set_tab_title`, `kill_session`, `auto_handoff`, `spawn_ssh_domain`, `bridge_health`, plus the safety policy + command guard | **Stable.** This is the product. |
+| **Core** | `mcp__wezbridge__*` tool surface — `discover_sessions`, `read_output`, `send_prompt`, `send_key`, `spawn_session`, `split_pane`, `set_tab_title`, `kill_session`, `auto_handoff`, `spawn_ssh_domain`, `bridge_health`, `a2a_send`, plus the safety policy + command guard | **Stable.** This is the product. |
 | **Telegram remote** (optional) | Per-pane forum-topic streaming, inbound DMs to your OmniClaude pane via the official channel plugin, voice/media forwarding, ntfy backup, diff reporter | **Stable, opt-in.** Set up `~/.claude/channels/telegram/.env` + `~/.omniclaude/telegram-topics.json`. |
 | **Multi-agent layer** (experimental) | A2A envelope protocol, agency mode (persona spawning), PRD-driven team bootstrap, auto-handoff at Ctx threshold, MA-backfill modules (rubric grader, A2A heartbeat, sidecar audit pane) | **Experimental.** Useful but evolving. Default OFF. |
 
@@ -224,9 +224,9 @@ Every peer-to-peer message uses an envelope, parseable by regex, threadable by `
 
 Hard rules for any agent using these tools:
 
-1. **Always follow `send_prompt` with `send_key("enter")`.** Enter after typing is unreliable on Windows even with the triple-redundant retry.
-2. **Never send bash via `send_prompt` into a running TUI.** Your text becomes a user prompt, not a shell command.
-3. **Every responder MUST push** `type=progress` every ~3 min during long work and `type=result` on completion. Codex cannot subscribe via `Monitor`; Claude can.
+1. **Prefer `a2a_send`** — envelope + send + VERIFIED submission in one call. With raw `send_prompt` (v3.5+), check the returned `submitted` field and only send `send_key("enter")` if it reports `stuck`. (Pre-v3.5 servers verify nothing — there, always follow with `send_key("enter")`.)
+2. **Never send bash via `send_prompt` into a running TUI.** Your text becomes a user prompt, not a shell command. (`spawn_session` with `agent: "shell"` gives you a real shell pane.)
+3. **Every responder MUST push** `type=progress` every ~3 min during long work and `type=result` on completion. Codex cannot subscribe via `Monitor`; Claude can — Codex requesters should poll cheaply with `read_output` delta mode (`with_cursor` → `since`).
 4. **Before spawning a peer, declare your coordinator role** — `parallel-worker` / `qa-verifier` / `pre-stager` / `monitor-only`. "parallel" ≠ "delegated"; if you'll be idle while the peer runs, do the work in-session instead.
 
 Full spec in [`docs/a2a-protocol.md`](docs/a2a-protocol.md).
@@ -245,7 +245,7 @@ When picking how to dispatch work:
 
 | File | What it does |
 |------|--------------|
-| `src/mcp-server.cjs` | MCP server exposing `mcp__wezbridge__*` tools (`discover_sessions`, `send_prompt`, `send_key`, `read_output`, `spawn_session`, `kill_session`, `auto_handoff`, `split_pane`, `bridge_health`, …) |
+| `src/mcp-server.cjs` | MCP server exposing `mcp__wezbridge__*` tools (`discover_sessions`, `send_prompt`, `send_key`, `read_output`, `spawn_session`, `kill_session`, `auto_handoff`, `split_pane`, `bridge_health`, `a2a_send`, …) |
 | `src/wezterm.cjs` | Wrapper around `wezterm cli` with TTL caches — pane spawning, text injection, scrollback reads, socket discovery |
 | `src/pane-discovery.cjs` | Claude/Codex pane detection, status classification (idle / working / permission / stuck), Ctx% + persona + model extraction |
 | `src/dashboard-server.cjs` | Headless REST/SSE backend on :4200 (thin shim over `dashboard-server-routes.cjs` + `handlers/`). Binds `127.0.0.1`. Needed only for `auto_handoff` + background services — core MCP tools work without it. No UI is served. |

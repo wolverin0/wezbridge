@@ -24,14 +24,24 @@ Do NOT invent new envelope fields silently. Extend this spec in a PR first.
 
 ## Sending
 
+Preferred (v3.5+) — one call that builds the envelope, sends it, and VERIFIES submission:
+
 ```js
-await mcp__wezbridge__send_prompt(target, "[A2A from pane-10 to pane-1 | corr=T-019 | type=request]\nHello\n");
+await mcp__wezbridge__a2a_send({ to_pane: 1, corr: "T-019", type: "request", body: "Hello" });
+// -> { ok, submitted: "submitted"|"stuck"|"unknown", corr, ... }
+```
+
+Raw form (also verified on v3.5+ servers):
+
+```js
+const r = await mcp__wezbridge__send_prompt(target, "[A2A from pane-10 to pane-1 | corr=T-019 | type=request]\nHello\n");
+// only if r reports submitted === "stuck":
 await mcp__wezbridge__send_key(target, "enter");
 ```
 
 Two hard rules:
 
-1. **Always follow `send_prompt` with `send_key("enter")`.** The Enter after typing is unreliable; if no response, send a SECOND `enter` — never re-send the prompt (that double-types the body).
+1. **Check the `submitted` field.** `send_prompt`/`a2a_send` (v3.5+) read the pane back and retry Enter automatically; only send `send_key("enter")` when the result reports `stuck`. On PRE-v3.5 servers there is no verification — there, always follow `send_prompt` with `send_key("enter")`; if no response, send a SECOND `enter` — never re-send the prompt (that double-types the body).
 2. **Never send bash via `send_text` into a running TUI.** If the pane shows a live `Ctx:` or `gpt-X` status bar, your text is typed as a user prompt, not executed. Ctrl+C first or pick a real shell pane.
 
 ## Receiving
