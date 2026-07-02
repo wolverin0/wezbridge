@@ -113,11 +113,35 @@ function _ensureDir(filePath) {
  *
  * Returns true if any entries were written.
  */
+// Retention window: entries older than this are dropped on append so the log
+// (and the LEADER+R restore picker) never fills with dead history again —
+// 2,607 stale entries had accumulated by 2026-07-02. Override with
+// WEZBRIDGE_SNAPSHOT_RETENTION_H (hours, 0 disables trimming).
+const RETENTION_MS = (() => {
+  const h = Number(process.env.WEZBRIDGE_SNAPSHOT_RETENTION_H);
+  if (Number.isFinite(h)) return h <= 0 ? 0 : h * 3600 * 1000;
+  return 24 * 3600 * 1000;
+})();
+
+function _trimOldEntries(logPath, now) {
+  if (!RETENTION_MS || !fs.existsSync(logPath)) return;
+  const cutoff = now - RETENTION_MS;
+  const kept = fs.readFileSync(logPath, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .filter((line) => {
+      try { return Date.parse(JSON.parse(line).snapshot_ts) >= cutoff; }
+      catch { return false; }
+    });
+  fs.writeFileSync(logPath, kept.length ? kept.join('\n') + '\n' : '', 'utf8');
+}
+
 function appendSnapshot(entries, opts = {}) {
   if (!Array.isArray(entries) || entries.length === 0) return false;
   const logPath = opts.logPath || DEFAULT_LOG;
   try {
     _ensureDir(logPath);
+    _trimOldEntries(logPath, Date.now());
     const lines = entries.map((e) => JSON.stringify(e)).join('\n') + '\n';
     fs.appendFileSync(logPath, lines, 'utf8');
     return true;

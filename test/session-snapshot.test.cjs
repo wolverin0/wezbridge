@@ -207,6 +207,19 @@ test('snapshotOnce: cmdline_hint captures Claude panes with TOPIC titles (2026-0
   assert.equal(all[0].ai, 'claude');
 });
 
+test('appendSnapshot: retention trims entries older than the window on append', () => {
+  const logPath = tmpLog();
+  const now = Date.now();
+  const old = { snapshot_ts: new Date(now - 48 * 3600 * 1000).toISOString(), pane_id: 1, ai: 'claude' };
+  const recent = { snapshot_ts: new Date(now - 3600 * 1000).toISOString(), pane_id: 2, ai: 'claude' };
+  require('node:fs').writeFileSync(logPath, JSON.stringify(old) + '\n' + JSON.stringify(recent) + '\n', 'utf8');
+  const fresh = { snapshot_ts: new Date(now).toISOString(), pane_id: 3, ai: 'claude' };
+  snap.appendSnapshot([fresh], { logPath });
+  const all = snap.readAllSnapshots({ logPath });
+  // default window is 24h: the 48h-old entry is purged, recent + fresh remain
+  assert.deepEqual(all.map((e) => e.pane_id).sort(), [2, 3]);
+});
+
 test('snapshotOnce: writes nothing when no AI panes', () => {
   const logPath = tmpLog();
   const panes = [{ pane_id: 1, pid: 100, title: 'bash.exe', tab_title: '', cwd: '/a' }];
