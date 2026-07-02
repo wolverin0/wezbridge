@@ -13,6 +13,17 @@ const { createHandlers } = require('./handlers/index.cjs');
 const PORT = parseInt(process.env.DASHBOARD_PORT || '4200', 10);
 const STATIC_DIR = path.join(__dirname, '..', 'dashboard', 'dist');
 
+// SEC-2026-07-02: bind loopback by default so the daemon is never LAN-reachable
+// out of the box. The Origin/CSRF gate only stops browsers — a raw LAN client
+// (curl) sends no Origin and would otherwise be able to POST prompts into panes,
+// including shell panes (RCE). Operators who genuinely need LAN access set
+// WEZBRIDGE_BIND (e.g. 0.0.0.0), and in that case a token becomes mandatory.
+const BIND_HOST = process.env.WEZBRIDGE_BIND || '127.0.0.1';
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
+function isLoopbackBind(host) {
+  return LOOPBACK_HOSTS.has(String(host).toLowerCase());
+}
+
 function getCorsOrigin(req) {
   // AXIS-3: use ALLOWED_ORIGINS (same set as CSRF) so CORS and CSRF never diverge.
   const origin = req.headers.origin;
@@ -281,10 +292,19 @@ function startServer() {
     process.stderr.write('[dashboard] FATAL: WEZBRIDGE_API_TOKEN must be set in production. Aborting.\n');
     process.exit(1);
   }
+  // SEC-2026-07-02: a non-loopback bind exposes the pane-control API to the
+  // network. Refuse to start wide-open — require a token so the CSRF gate is
+  // backed by real auth for no-Origin (curl/CLI) clients.
+  if (!isLoopbackBind(BIND_HOST) && !process.env.WEZBRIDGE_API_TOKEN) {
+    process.stderr.write(
+      `[dashboard] FATAL: WEZBRIDGE_BIND=${BIND_HOST} exposes the pane-control API to the network but WEZBRIDGE_API_TOKEN is unset. ` +
+      'Set a token or bind to 127.0.0.1. Aborting.\n');
+    process.exit(1);
+  }
   log(`allowed origins (CSRF): ${Array.from(ALLOWED_ORIGINS).join(', ')}`);
   handlers.startAutoHandoffMonitor();
-  server.listen(PORT, () => {
-    log(`theorchestra dashboard server listening on http://localhost:${PORT}`);
+  server.listen(PORT, BIND_HOST, () => {
+    log(`theorchestra dashboard server listening on http://${BIND_HOST}:${PORT}`);
     log('API: /api/panes, /api/tasks, /api/events (SSE)');
     log(`Static: ${fs.existsSync(STATIC_DIR) ? STATIC_DIR : '(dashboard not built yet)'}`);
     handlers.startBackgroundServices();
@@ -294,4 +314,4 @@ function startServer() {
   return server;
 }
 
-module.exports = { startServer, server };
+module.exports = { startServer, server, BIND_HOST, isLoopbackBind };
