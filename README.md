@@ -10,7 +10,7 @@ The repo ships in three opt-in tiers — install the core, add the others if you
 
 | Layer | What it gives you | Status |
 |---|---|---|
-| **Core** | `mcp__wezbridge__*` tool surface — `discover_sessions`, `read_output`, `send_prompt`, `send_key`, `spawn_session`, `split_pane`, `set_tab_title`, `kill_session`, `auto_handoff`, `spawn_ssh_domain`, plus the safety policy + command guard | **Stable.** This is the product. |
+| **Core** | `mcp__wezbridge__*` tool surface — `discover_sessions`, `read_output`, `send_prompt`, `send_key`, `spawn_session`, `split_pane`, `set_tab_title`, `kill_session`, `auto_handoff`, `spawn_ssh_domain`, `bridge_health`, plus the safety policy + command guard | **Stable.** This is the product. |
 | **Telegram remote** (optional) | Per-pane forum-topic streaming, inbound DMs to your OmniClaude pane via the official channel plugin, voice/media forwarding, ntfy backup, diff reporter | **Stable, opt-in.** Set up `~/.claude/channels/telegram/.env` + `~/.omniclaude/telegram-topics.json`. |
 | **Multi-agent layer** (experimental) | A2A envelope protocol, agency mode (persona spawning), PRD-driven team bootstrap, auto-handoff at Ctx threshold, MA-backfill modules (rubric grader, A2A heartbeat, sidecar audit pane) | **Experimental.** Useful but evolving. Default OFF. |
 
@@ -138,7 +138,7 @@ Restart WezTerm so the new instance inherits it. macOS / Linux can skip.
 npm run dashboard
 ```
 
-This is a **headless backend**, not a UI. It serves `/api/panes`, `/api/events` (SSE), `/api/grades`, etc. that the wezbridge MCP server depends on. Opening `http://localhost:4200` in a browser returns 404 — that's intentional. Verify it's up with `curl http://localhost:4200/api/panes`.
+This is a **headless backend**, not a UI. It serves `/api/panes`, `/api/events` (SSE), `/api/grades`, etc. **The core MCP tools do NOT need it — they drive the WezTerm CLI directly.** Only `auto_handoff` and the background services (SSE, telegram-streamer, session-snapshot crash-restore, grades) require it. It binds `127.0.0.1` only; opening `http://127.0.0.1:4200` in a browser returns 404 — that's intentional. Verify it's up with `curl http://127.0.0.1:4200/api/panes`, or call the `bridge_health` MCP tool from any session. To expose it on a LAN set `WEZBRIDGE_BIND=0.0.0.0` — a `WEZBRIDGE_API_TOKEN` then becomes mandatory or the daemon refuses to start.
 
 ### 8. (Optional) Telegram + OmniClaude pattern
 
@@ -163,6 +163,8 @@ export WEZBRIDGE_GRADER_BACKEND=claude           # outcome-grader backend
 ```
 
 Bypass-once override env vars: `WEZBRIDGE_GUARD_OVERRIDE`, `WEZBRIDGE_SAFETY_OVERRIDE`, `WEZBRIDGE_PREPUSH_OVERRIDE`. See [`docs/USAGE-guard.md`](docs/USAGE-guard.md).
+
+**Network exposure:** the daemon binds `127.0.0.1` by default. Set `WEZBRIDGE_BIND=0.0.0.0` (or a specific interface) to reach it from another machine — a `WEZBRIDGE_API_TOKEN` is then **required** or startup aborts, since the pane-control API can type into (and spawn) sessions.
 
 ### 10. Session snapshot + crash recovery (default ON)
 
@@ -243,10 +245,10 @@ When picking how to dispatch work:
 
 | File | What it does |
 |------|--------------|
-| `src/mcp-server.cjs` | MCP server exposing `mcp__wezbridge__*` tools (`discover_sessions`, `send_prompt`, `send_key`, `read_output`, `spawn_session`, `kill_session`, `auto_handoff`, `split_pane`, …) |
+| `src/mcp-server.cjs` | MCP server exposing `mcp__wezbridge__*` tools (`discover_sessions`, `send_prompt`, `send_key`, `read_output`, `spawn_session`, `kill_session`, `auto_handoff`, `split_pane`, `bridge_health`, …) |
 | `src/wezterm.cjs` | Wrapper around `wezterm cli` with TTL caches — pane spawning, text injection, scrollback reads, socket discovery |
 | `src/pane-discovery.cjs` | Claude/Codex pane detection, status classification (idle / working / permission / stuck), Ctx% + persona + model extraction |
-| `src/dashboard-server.cjs` | Headless REST/SSE backend on :4200. Required by the MCP server. No UI is served. |
+| `src/dashboard-server.cjs` | Headless REST/SSE backend on :4200 (thin shim over `dashboard-server-routes.cjs` + `handlers/`). Binds `127.0.0.1`. Needed only for `auto_handoff` + background services — core MCP tools work without it. No UI is served. |
 | `src/telegram-streamer.cjs` | Outbound: streams each pane's live text to a Telegram forum topic. Inbound polling is deliberately disabled (the channel plugin owns DM ingestion). |
 | `src/tasks-watcher.cjs` + `src/task-parser.cjs` | Watches `active_tasks.md` for follow-ups, stuck tasks, status transitions |
 | `src/safety-policy.cjs` | 5-rule action gate wired into MCP + dashboard handlers (no-self-kill, no-destructive-prompt-injection, worktree-outside-dotworktrees, broadcast-too-wide, send-key-ctrl-c-to-self) |
