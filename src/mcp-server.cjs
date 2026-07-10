@@ -128,7 +128,8 @@ function inputBoxContent(tailLines) {
 const { makeReadCursor, sliceAfterCursor } = require('./read-cursor.cjs');
 
 async function verifyPromptSubmission(paneId, text, { retries = 2, settleMs = 700 } = {}) {
-  const probe = String(text).replace(/\s+/g, ' ').trim().slice(0, 60).toLowerCase();
+  const norm = String(text).replace(/\s+/g, ' ').trim().toLowerCase();
+  const probe = norm.slice(0, 60);
   if (!probe) return 'unknown';
   for (let attempt = 0; attempt <= retries; attempt++) {
     await sleep(attempt === 0 ? settleMs : 900);
@@ -140,14 +141,35 @@ async function verifyPromptSubmission(paneId, text, { retries = 2, settleMs = 70
       return 'unknown';
     }
     const content = inputBoxContent(tailLines);
-    const stuck = content.length > 0 &&
-      (probe.startsWith(content.slice(0, 40)) || content.startsWith(probe.slice(0, 40)));
+    // MULTI-LINE fix (operator-observed 2026-07-10, new codex composer): with
+    // a multi-line prompt the visible composer line is the LAST line of the
+    // paste (or a "[pasted …]" placeholder), NOT the head — comparing only
+    // against the head reported 'submitted' while the whole envelope sat
+    // unsubmitted. Stuck if the composer shows the head, ANY slice of our
+    // text, or a paste placeholder.
+    const stuck = content.length > 0 && (
+      probe.startsWith(content.slice(0, 40)) ||
+      content.startsWith(probe.slice(0, 40)) ||
+      (content.length >= 8 && norm.includes(content.slice(0, 60))) ||
+      /\[?pasted (text|content)|\+\s*\d+\s+lines?\]?/i.test(content)
+    );
     if (!stuck) return 'submitted';
     // Text still in the input box — a fresh, time-separated enter (empty
     // send-text + appended \r, same path as send_key('enter')) unsticks it.
     try { wez.sendText(paneId, ''); } catch { /* ignore */ }
   }
   return 'stuck';
+}
+
+// Composers (Claude Code TUI, codex TUI) treat keys arriving in one stdin
+// burst as a PASTE — a \r inside the burst becomes a soft newline in the
+// composer instead of a submit. Sending the body WITHOUT a trailing CR, then
+// a time-separated CR, lands the Enter as a real keypress in both TUIs.
+// (Root cause of "pasted but never pushed", pane-2 codex, 2026-07-10.)
+async function sendPromptDeferredEnter(paneId, text) {
+  wez.sendTextNoEnter(paneId, text);
+  await sleep(400);
+  wez.sendTextNoEnter(paneId, '\r');
 }
 
 function mcpError(message) {
@@ -641,8 +663,7 @@ function handleToolCall(name, args) {
 
       return (async () => {
         try {
-          wez.sendText(paneId, text);
-          try { wez.sendTextNoEnter(paneId, '\r'); } catch { /* ignore */ }
+          await sendPromptDeferredEnter(paneId, text);
           // Read back instead of firing blind extra enters (claim-8945 fix):
           // confirm the text actually left the input box, retry enter if not.
           const submitted = await verifyPromptSubmission(paneId, text);
@@ -1016,8 +1037,7 @@ function handleToolCall(name, args) {
             finalPrompt = header + args.prompt;
           }
 
-          wez.sendText(newPaneId, finalPrompt);
-          try { wez.sendTextNoEnter(newPaneId, '\r'); } catch { /* ignore */ }
+          await sendPromptDeferredEnter(newPaneId, finalPrompt);
           // Verified submission (claim-8945 fix) — read the input box back
           // and retry enter until the prompt actually leaves it.
           promptSubmitted = await verifyPromptSubmission(newPaneId, finalPrompt);
@@ -1310,8 +1330,7 @@ function handleToolCall(name, args) {
       }
 
       try {
-        wez.sendText(toPane, envelope);
-        try { wez.sendTextNoEnter(toPane, '\r'); } catch { /* ignore */ }
+        await sendPromptDeferredEnter(toPane, envelope);
         const submitted = await verifyPromptSubmission(toPane, envelope);
         log(`a2a_send pane-${fromPane} -> pane-${toPane} corr=${corr} type=${msgType} [${submitted}]`);
         return {
