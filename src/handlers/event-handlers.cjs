@@ -343,15 +343,18 @@ function createEventHandlers(ctx) {
         // classifier alone captures nothing (snapshot gap found 2026-07-02).
         listPanes: () => {
           const raw = ipc.wez.listPanes() || [];
-          const detected = new Set();
+          // Claude Code AND Codex set topic/model titles with no "claude"/"codex"
+          // in them, so title-regex classification misses both. Enrich each pane
+          // with pane-discovery's agent detection (codex support added 2026-07-15).
+          const agentOf = new Map();
           try {
             for (const d of ipc.discoverPanes()) {
-              if (d.isClaude) detected.add(d.paneId);
+              if (d.agent) agentOf.set(d.paneId, d.agent); // 'claude' | 'codex'
             }
           } catch (err) {
             log(`snapshot discovery enrichment failed (falling back to titles): ${err.message}`);
           }
-          return raw.map((p) => detected.has(p.pane_id) ? { ...p, cmdline_hint: 'claude' } : p);
+          return raw.map((p) => agentOf.has(p.pane_id) ? { ...p, cmdline_hint: agentOf.get(p.pane_id) } : p);
         },
         intervalMs,
         log,

@@ -62,31 +62,46 @@ function splitCmdline(cmdline) {
   return out;
 }
 
+// The resume command per agent. Snapshots capture ai via title/discovery hint
+// and usually have a null cmdline (headless pid unknown), so we reconstruct the
+// launch from `ai` rather than replaying a captured process line.
+function resumeCommandFor(ai) {
+  if (ai === 'codex') return 'codex resume';                       // opens codex's session picker
+  return 'claude --continue --dangerously-skip-permissions';       // default: claude
+}
+
 function spawnPane(entry, opts = {}) {
-  const cwd = entry.cwd;
+  const cwd = entry.cwd ? entry.cwd.replace(/^file:\/\/[^/]*/, '').replace(/%20/g, ' ') : '';
   const parts = splitCmdline(entry.cmdline);
-  if (parts.length === 0) {
-    console.error(`[restore] skipping pane ${entry.pane_id}: empty cmdline`);
-    return false;
-  }
-  const args = ['cli', 'spawn'];
-  if (cwd) { args.push('--cwd', cwd); }
-  args.push('--', ...parts);
-  if (opts.dryRun) {
-    console.log(`[dry-run] wezterm ${args.join(' ')}`);
+
+  // Path A: a real captured cmdline → replay it verbatim (legacy snapshots).
+  if (parts.length > 0) {
+    const args = ['cli', 'spawn'];
+    if (cwd) args.push('--cwd', cwd);
+    args.push('--', ...parts);
+    if (opts.dryRun) { console.log(`[dry-run] wezterm ${args.join(' ')}`); return true; }
+    const res = spawnSync('wezterm', args, { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' });
+    if (res.error || res.status !== 0) {
+      console.error(`[restore] failed pane ${entry.pane_id}: ${res.error ? res.error.message : 'exit ' + res.status + ' ' + (res.stderr || '').trim()}`);
+      return false;
+    }
+    console.log(`[restore] spawned ${entry.ai} pane (was ${entry.pane_id}, now ${(res.stdout || '').trim()}) cwd=${cwd}`);
     return true;
   }
-  const res = spawnSync('wezterm', args, { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' });
-  if (res.error) {
-    console.error(`[restore] failed pane ${entry.pane_id}: ${res.error.message}`);
-    return false;
-  }
-  if (res.status !== 0) {
-    console.error(`[restore] failed pane ${entry.pane_id}: exit ${res.status} ${(res.stderr || '').trim()}`);
+
+  // Path B: no cmdline → spawn a shell, then type the agent's resume command.
+  const cmd = resumeCommandFor(entry.ai);
+  if (opts.dryRun) { console.log(`[dry-run] spawn shell @ ${cwd} → "${cmd}"`); return true; }
+  const spawnArgs = ['cli', 'spawn'];
+  if (cwd) spawnArgs.push('--cwd', cwd);
+  const res = spawnSync('wezterm', spawnArgs, { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' });
+  if (res.error || res.status !== 0) {
+    console.error(`[restore] failed pane ${entry.pane_id}: ${res.error ? res.error.message : 'exit ' + res.status}`);
     return false;
   }
   const newPaneId = (res.stdout || '').trim();
-  console.log(`[restore] spawned ${entry.ai} pane (was ${entry.pane_id}, now ${newPaneId}) cwd=${cwd}`);
+  spawnSync('wezterm', ['cli', 'send-text', '--pane-id', newPaneId, '--no-paste'], { input: cmd + '\r', encoding: 'utf8' });
+  console.log(`[restore] spawned ${entry.ai || 'shell'} pane (was ${entry.pane_id}, now ${newPaneId}) cwd=${cwd} → ${cmd}`);
   return true;
 }
 

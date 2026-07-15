@@ -12,6 +12,20 @@ const wez = require('./wezterm.cjs');
 const { parseStatusBar } = require('./status-parser.cjs');
 
 // Patterns that indicate a pane is running Claude Code
+// Codex TUI markers — distinct from Claude Code's. A codex pane's title shows
+// the model ("gpt-5.6-sol"), not the word "codex", so title-regex never caught
+// it and codex panes were NEVER snapshotted (fixed 2026-07-15). These target
+// codex's status bar: `gpt-5.6-sol high · <cwd> · Full Access · Ready ·
+// Context 75% left · … · 0.144.4 · 258K window · Fast off`.
+const CODEX_INDICATORS = [
+  /\bgpt-[0-9]/i,                        // model name in the status bar
+  /Full Access|Read Only|Ask for approval/, // codex approval modes (Claude has none)
+  /Context \d+% left/i,                  // codex's "N% left / N% used" double format
+  /window\b.*Fast o(n|ff)/i,            // status-bar tail "… window · Fast off"
+  /usage limit reset available/i,        // codex usage banner
+  /Run \/usage to use/i,                 // codex usage hint
+];
+
 const CLAUDE_INDICATORS = [
   /❯/,                                   // Claude prompt character (anywhere)
   /\? \(y\/n\)/,                         // Permission prompt
@@ -115,7 +129,7 @@ function discoverPanes() {
     } catch {
       // Pane may be dead or inaccessible
       discovered.push({
-        paneId, isClaude: false, status: 'error', project: null,
+        paneId, isClaude: false, isCodex: false, agent: null, status: 'error', project: null,
         projectName: null, title, workspace, lastLines: '', confidence: 0,
         persona: null, ctx: null, sessionPct: null, weeklyPct: null, model: null,
       });
@@ -135,6 +149,13 @@ function discoverPanes() {
 
     // Title hints boost confidence
     if (/claude/i.test(title)) confidence = Math.min(100, confidence + 20);
+
+    // Codex detection — independent of the Claude score. 2+ markers required to
+    // avoid false positives (goal/usage lines can appear in either tool).
+    let codexMatch = 0;
+    for (const pattern of CODEX_INDICATORS) if (pattern.test(text)) codexMatch++;
+    if (/\bcodex\b/i.test(title)) codexMatch++;
+    const isCodex = codexMatch >= 2;
 
     // Detect status
     const checkPatterns = (patterns) => patterns.some(p => p.test(lastLines));
@@ -180,8 +201,12 @@ function discoverPanes() {
     const weeklyPct = typeof metrics.weekly === 'number' ? metrics.weekly : null;
     const model = metrics.model || null;
 
+    // agent: which CLI this pane runs. Codex wins if detected (a codex pane
+    // never trips the ❯/bypass-permissions Claude markers, but be explicit).
+    const agent = isCodex ? 'codex' : (isClaude ? 'claude' : null);
+
     discovered.push({
-      paneId, isClaude, status, project, projectName,
+      paneId, isClaude, isCodex, agent, status, project, projectName,
       title, workspace, lastLines, confidence, rawText: text, persona,
       ctx, sessionPct, weeklyPct, model,
     });
