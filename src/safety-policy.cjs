@@ -40,10 +40,16 @@ const DESTRUCTIVE_TEXT_PATTERNS = [
   // Retired the previous Remove-Item lookahead because a word boundary before
   // "-" never fires; these replacements match explicit PowerShell flags.
   /\bRemove-Item\b(?=.*(?:^|\s)-(?:Recurse|Rec|r)\b)(?=.*(?:^|\s)-(?:Force|Fo|f)\b)/i,
-  // AXIS-1: PowerShell abbreviated recursive/force params (Remove-Item -Rec -Fo)
-  /\bRemove-Item\b.*-(?:Rec|Fo)/i,
-  // AXIS-1: PowerShell built-in aliases ri/del/erase with recursive or force flags
-  /\b(?:ri|del|erase)\b.*-(?:Recurse|Rec|r|Force|Fo|f)/i,
+  // AXIS-1: PowerShell abbreviated recursive/force params (Remove-Item -Rec -Fo).
+  // Anchored to command position — bare `.*-(?:Rec|Fo)` matched prose like
+  // "Remove-Item docs … Instant-Form" (2026-07-16 A2A false positive family).
+  /(?:^|[;&|]\s*|[$>]\s+|\b(?:run|execute|type|paste)\s+)Remove-Item\b[^\n]*\s-(?:Rec|Fo)/im,
+  // AXIS-1: PowerShell built-in aliases ri/del/erase with recursive or force flags.
+  // Anchored to command position + whitespace-delimited word-bounded flag:
+  // the old `\b(?:ri|del|erase)\b.*-(?:…|r|f)` matched Spanish prose — "del"
+  // (the preposition) plus any later hyphenated word ("keyword-first",
+  // "auto-rankeado") blocked legitimate A2A bodies (observed 2026-07-16).
+  /(?:^|[;&|]\s*|[$>]\s+|\b(?:run|execute|type|paste)\s+)(?:ri|del|erase)\b[^\n]*\s-(?:Recurse|Rec|Force|Fo|[rf]{1,2})\b/im,
   /\bDROP\s+(TABLE|DATABASE|SCHEMA)\b/i,
   /\bTRUNCATE\s+TABLE\b/i,
   /\btruncate\s+(?:[^\n;]*\s)?--size\s*=\s*0\b/i,

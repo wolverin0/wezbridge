@@ -109,6 +109,40 @@ test('allows: benign send_prompt', () => {
   assert.equal(r.allowed, true);
 });
 
+// Spanish-prose false positives (observed 2026-07-16: long A2A bodies with the
+// preposition "del" + any later hyphenated word were blocked as `del -r/-f`).
+test('allows: Spanish prose with "del" + hyphenated words (A2A envelope body)', () => {
+  const prompts = [
+    'El título del sitio debe ser keyword-first y el copy del hero operator-gated.',
+    'Del lado del servidor, aplicar el schema auto-rankeado del playbook.',
+    'la corrección del listicle -- ver marketing-first y el gap del pricing',
+    '[A2A from pane-33 to pane-4 | corr=x | type=progress]\nresumen del run: title keyword-first (48ch), 301 del www al apex — deploy operator-gated. Falta el fix del -force-with... no, solo prosa.',
+    // NOTE: a line STARTING with "Remove-Item ..." stays blocked by the
+    // shell-intent gate (conservative, correct) — prose mentions mid-sentence pass:
+    'En el doc del Instant-Form se menciona Remove-Item pero no es un comando.',
+  ];
+  for (const prompt of prompts) {
+    const r = evaluate({ action: 'send_prompt', paneId: 1, prompt });
+    assert.equal(r.allowed, true, prompt);
+  }
+});
+
+test('blocks: real del/ri/erase destructive commands still caught', () => {
+  const prompts = [
+    'del -Recurse C:\\temp',
+    'del C:\\temp -r',
+    'ri -rf .; echo done',
+    'echo hi; del C:\\data -Force',
+    'run del -Recurse C:\\Users\\x',
+    '$ erase secrets.txt -f',
+    'please execute del C:\\backup -Rec',
+  ];
+  for (const prompt of prompts) {
+    const r = evaluate({ action: 'send_prompt', paneId: 1, prompt });
+    assert.equal(r.allowed, false, prompt);
+  }
+});
+
 test('allows: send_prompt mentioning git push to feature branch', () => {
   const r = evaluate({ action: 'send_prompt', paneId: 1, prompt: 'run git push origin feat/x' });
   assert.equal(r.allowed, true);
