@@ -85,6 +85,10 @@ Restart-on-port-conflict gotcha: if the daemon won't rebind to `:4200`, find eve
 for pid in $(wmic process where "Name='node.exe' and CommandLine like '%dashboard-server%'" get ProcessId /format:value 2>/dev/null | grep -oE "[0-9]+"); do taskkill //PID $pid //F; done
 ```
 
+**WSL latitude:** the user does not use WSL personally — agents have full latitude to spawn WezTerm panes running `wsl` for Linux-only testing (codex install variants, POSIX-only paths) without asking. `spawn_session` + send `wsl` as first command, or `agent: "shell"`.
+
+**On any wezterm crash:** don't hand-diagnose — run `npm run restore-session` (or tell the user: `LEADER+R` / CTRL+B,R picker). Snapshots capture every 60s with 24h retention while the daemon runs.
+
 **Mux-wedge gotcha (observed 2026-07-02, wezterm 20240203):** rapid pane spawn/kill churn (e.g. e2e loops) can wedge the GUI's mux listener — every `wezterm cli` call then ETIMEDOUTs while the GUI window itself keeps working fine. Symptoms: `bridge_health` reports `wezterm.reachable: false`, wezterm's own log shows `failed to connect to Socket("gui-sock-<pid>")`, no zombie wezterm.exe processes, and quiet periods do NOT recover it. Only fix: restart WezTerm (Claude sessions are resumable per-project with `claude --continue`; pane layout is lost unless `vault/_wezbridge/session-snapshot.jsonl` has a fresh capture for `npm run restore-session`). Avoid tight spawn/kill loops against a live swarm; consider upgrading the wezterm build.
 
 ## API endpoints (consumed by the MCP server)
