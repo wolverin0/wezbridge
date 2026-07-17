@@ -65,8 +65,13 @@ function splitCmdline(cmdline) {
 // The resume command per agent. Snapshots capture ai via title/discovery hint
 // and usually have a null cmdline (headless pid unknown), so we reconstruct the
 // launch from `ai` rather than replaying a captured process line.
+//
+// Codex: NEVER pin to an exact session id — codex resume <uuid> is fragile (a
+// corrupt/oversized session kills the pane, e.g. pedrito 2026-07-15). Use
+// `codex resume --yolo`: full-access (bypass approvals/sandbox) and codex picks
+// the right session for the pane's cwd (its picker defaults to the Cwd filter).
 function resumeCommandFor(ai) {
-  if (ai === 'codex') return 'codex resume';                       // opens codex's session picker
+  if (ai === 'codex') return 'codex resume --yolo';
   return 'claude --continue --dangerously-skip-permissions';       // default: claude
 }
 
