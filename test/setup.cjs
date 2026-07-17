@@ -6,7 +6,9 @@ const path = require('path');
 const mockPath = path.join(__dirname, 'mocks', 'wezterm-mock.cjs');
 process.env.WEZBRIDGE_WEZTERM_BIN = mockPath;
 
-const requireArg = `--require=${__filename.replace(/\\/g, '/')}`;
+// Quote the path — NODE_OPTIONS splits on spaces, and this repo lives under
+// "Py Apps" (child test processes died with MODULE_NOT_FOUND 'G:/.../Py').
+const requireArg = `--require="${__filename.replace(/\\/g, '/')}"`;
 if (!process.env.NODE_OPTIONS || !process.env.NODE_OPTIONS.includes(requireArg)) {
   process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, requireArg].filter(Boolean).join(' ');
 }
