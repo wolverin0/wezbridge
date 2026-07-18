@@ -1,3 +1,12 @@
+<!-- doc-head: triaged 2026-07-18, greppable summary. Edit body => update this. -->
+Defines the theorchestra plugin runtime, a zero-dependency system bridging omni-watcher events to Node plugins via plugin-host.cjs.
+Plugins export a name and register(ctx) hook to subscribe to events like session_started or emit custom events.
+The context API provides ctx.on, ctx.emit, ctx.log, and read-only WezTerm introspection via ctx.wezterm.
+Plugins run with host OS privileges, load once at startup, and are isolated from bot actions (OmniClaude owns Telegram).
+PM2 configuration is provided for production usage; safety notes emphasize catching exceptions per dispatch.
+Read when: extending the observer with custom event handlers or writing integrations for the WezTerm stream.
+<!-- /doc-head -->
+
 # theorchestra plugin system
 
 A zero-dependency, observe-and-emit plugin runtime. Plugins hook into watcher events, run arbitrary Node code, and publish their own events back to the theorchestra stream.

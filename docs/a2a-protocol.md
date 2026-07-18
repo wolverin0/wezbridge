@@ -1,3 +1,13 @@
+<!-- doc-head: triaged 2026-07-18, greppable summary. Edit body => update this. -->
+Defines the A2A envelope protocol for peer-to-peer pane communication via wezbridge.
+Envelope syntax: [A2A from pane-N to pane-M | corr=<id> | type=request|ack|progress|result|error].
+Sending uses mcp__wezbridge__a2a_send (v3.5+) or verified raw send_prompt with fallback.
+Receivers parse headers, send ack/progress, and return result/error; push asymmetry required.
+Watcher tracks pendingA2A correlations and emits peer_orphaned events if a session dies.
+Shared-repo safety uses git worktrees or explicit 'owns=' header to prevent conflicts.
+Read when: Implementing agents that must coordinate work across multiple WezTerm panes.
+<!-- /doc-head -->
+
 # A2A Protocol
 
 **Scope**: any two panes reachable via the `wezbridge` MCP (Claude Code ↔ Claude Code, Claude Code ↔ Codex, Codex ↔ Codex).

@@ -1,3 +1,11 @@
+<!-- doc-head: triaged 2026-07-18, greppable summary. Edit body => update this. -->
+Opt-in pre-execution block-layer for dangerous git/gh commands to prevent irreversible operations.
+Blocks force pushes, protected branch pushes, hard resets, and auto-merges via PATH shims.
+Activate via WEZBRIDGE_GUARD_SHIMS=1 env var or by adding bin/guard-shims to shell PATH.
+Bypass single commands with WEZBRIDGE_GUARD_OVERRIDE=1; custom patterns in scripts/command-guard.cjs.
+Read when: Configuring safety rails for Claude/Codex sessions or interactive shell usage.
+<!-- /doc-head -->
+
 # Destructive-Op Guard — Usage
 
 The guard is an opt-in pre-execution block-layer for dangerous git/gh

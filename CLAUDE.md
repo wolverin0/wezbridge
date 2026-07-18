@@ -134,3 +134,7 @@ node --test --test-reporter=spec test/*.test.cjs
 ```
 
 270 cases, all green at v3.4.3.
+
+## Docs map
+
+Doc triage map at `DOCS-MAP.md` (project root): every doc's verdict (CURRENT / SUPERSEDED / ABANDONED / GENERATED) and what replaced what. CURRENT docs carry a greppable 7-line header — grep heads before reading bodies; never base work on a doc the map marks superseded.

@@ -1,3 +1,13 @@
+<!-- doc-head: triaged 2026-07-18, greppable summary. Edit body => update this. -->
+Setup guide for OmniClaude control via Telegram DMs and worker topics
+WezTerm architecture with one OmniClaude pane and N worker panes
+Requires wezbridge MCP, Telegram bot token, and forum topics mapping
+Commands: scripts/start-telegram-streamer.cmd, start-omniclaude-pane.cmd
+Routing via message_thread_id using src/telegram-router.cjs
+Troubleshooting: race conditions in channel plugin and topic mapping
+Read when: setting up phone-based control of WezTerm/Claude sessions
+<!-- /doc-head -->
+
 # OmniClaude-via-Telegram setup
 
 The "best version" of wezbridge: control the swarm from your phone, no browser UI required.

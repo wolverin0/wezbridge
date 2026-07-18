@@ -1,3 +1,12 @@
+<!-- doc-head: triaged 2026-07-18, greppable summary. Edit body => update this. -->
+Engineering briefing on Autonomous Loop Engineering architecture for OmniClaude
+Details transition from synchronous prompting to stateless, event-driven loops
+Outlines Goal-Execute-Verify-Iterate cycle and Loop Primitives like ReAct
+Mandates Maker-Checker pattern to prevent self-approval and hallucinated success
+Defines backpressure mechanisms to counter failure modes like Spinning and Plan Drift
+Read when: Designing or auditing autonomous agent workflows and verification gates
+<!-- /doc-head -->
+
 # OmniClaude: Implementation Briefing on Autonomous Loop Engineering
 
 ## 1. The Paradigm Shift: From Synchronous Prompting to Loop Engineering

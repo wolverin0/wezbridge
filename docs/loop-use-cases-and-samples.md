@@ -1,3 +1,12 @@
+<!-- doc-head: triaged 2026-07-18, greppable summary. Edit body => update this. -->
+Guide defining architectural patterns for autonomous AI coding loops.
+Lists use cases like test-until-pass, CVE-burndown, and ship-PR-until-green.
+Explains the 'Maker != Checker' pattern and independent verifier architecture.
+Details context re-arming mechanics using progress.txt, prd.json, and git history.
+Defines deterministic gates, anti-patterns, and safety boundaries for loops.
+Read when: Designing or auditing automated agent workflows for code stability.
+<!-- /doc-head -->
+
 # Agent Loops in Practice — Use Cases & Best Samples
 
 ## 1. Catalog of Real-World Loop Use Cases

@@ -1,3 +1,11 @@
+<!-- doc-head: triaged 2026-07-18, greppable summary. Edit body => update this. -->
+Draft launch campaign copy and submission checklist for wezbridge.
+Content includes X thread drafts, Reddit posts, Show HN text, and Product Hunt copy.
+Key facts: zero npm deps, one-command install, crash isolation, multi-LLM.
+Target platforms include MCP registry, Awesome lists, HN, and Reddit.
+Read when: preparing to publicly release or announce wezbridge v3.5.
+<!-- /doc-head -->
+
 # wezbridge — Open-Source Launch Campaign (DRAFTS)
 
 > **Status: DRAFTS for operator review. Nothing here has been posted.** The operator approves + posts each item.

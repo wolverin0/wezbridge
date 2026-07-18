@@ -63,3 +63,7 @@ Read these before changing orchestration behavior:
 - Do not revive the old browser dashboard/orchestrator-worker system.
 - Do not treat pane IDs as stable user-facing names; resolve visible tabs and
   aliases through the pane identity helpers.
+
+## Docs map
+
+Doc triage map at `DOCS-MAP.md` (project root): every doc's verdict (CURRENT / SUPERSEDED / ABANDONED / GENERATED) and what replaced what. CURRENT docs carry a greppable 7-line header — grep heads before reading bodies; never base work on a doc the map marks superseded.
