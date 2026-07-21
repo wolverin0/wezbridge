@@ -161,15 +161,43 @@ async function verifyPromptSubmission(paneId, text, { retries = 2, settleMs = 70
   return 'stuck';
 }
 
-// Composers (Claude Code TUI, codex TUI) treat keys arriving in one stdin
-// burst as a PASTE — a \r inside the burst becomes a soft newline in the
-// composer instead of a submit. Sending the body WITHOUT a trailing CR, then
-// a time-separated CR, lands the Enter as a real keypress in both TUIs.
-// (Root cause of "pasted but never pushed", pane-2 codex, 2026-07-10.)
+// Two-phase send: BODY as a bracketed paste, then a SEPARATE real Enter.
+//
+// The body MUST go via bracketed paste (sendTextBracketed), NOT --no-paste.
+// --no-paste injects raw key events, so every internal `\n` fires an Enter —
+// which fragments any multi-line payload (an A2A envelope always has a `\n`
+// after the header) into multiple partial deliveries: the recipient composer
+// submits at the first newline (truncation) and later lines land as separate
+// inputs (the "spliced-in / replaced by a different part of the message"
+// corruption reported by two panes 2026-07-21, incl. a corrupted credential).
+// Bracketed paste wraps the whole payload in paste markers, so internal
+// newlines stay soft (literal) and the composer holds it atomically. The
+// trailing CR is still sent separately (a bracketed paste's own newline is
+// soft and won't submit — the original "pasted but never pushed" fix, 07-10).
+//
+// Returns a delivery-integrity verdict: 'ok' if the composer visibly holds the
+// tail of our payload before we submit, 'truncated' if the tail is missing,
+// 'unknown' if the pane is unreadable. This is real delivery verification —
+// distinct from verifyPromptSubmission, which only checks the box CLEARED
+// (a truncated message clears too, so submission != integrity).
+function composerHoldsTail(paneId, text) {
+  const norm = String(text).replace(/\s+/g, ' ').trim();
+  const tail = norm.slice(-40).toLowerCase();
+  if (tail.length < 8) return 'ok'; // too short to meaningfully verify
+  let rendered;
+  try {
+    wez.invalidateGetTextCache(paneId);
+    rendered = wez.getFullText(paneId, 40).replace(/\s+/g, ' ').toLowerCase();
+  } catch { return 'unknown'; }
+  return rendered.includes(tail) ? 'ok' : 'truncated';
+}
+
 async function sendPromptDeferredEnter(paneId, text) {
-  wez.sendTextNoEnter(paneId, text);
+  wez.sendTextBracketed(paneId, text); // atomic; internal newlines stay soft
   await sleep(400);
-  wez.sendTextNoEnter(paneId, '\r');
+  const delivered = composerHoldsTail(paneId, text);
+  wez.sendTextNoEnter(paneId, '\r'); // separate real Enter = single submit
+  return delivered;
 }
 
 function mcpError(message) {
@@ -1330,22 +1358,26 @@ function handleToolCall(name, args) {
       }
 
       try {
-        await sendPromptDeferredEnter(toPane, envelope);
+        const delivered = await sendPromptDeferredEnter(toPane, envelope);
         const submitted = await verifyPromptSubmission(toPane, envelope);
-        log(`a2a_send pane-${fromPane} -> pane-${toPane} corr=${corr} type=${msgType} [${submitted}]`);
+        log(`a2a_send pane-${fromPane} -> pane-${toPane} corr=${corr} type=${msgType} [submit:${submitted} deliver:${delivered}]`);
+        const truncated = delivered === 'truncated';
         return {
           content: [{
             type: 'text',
             text: JSON.stringify({
-              ok: submitted !== 'stuck',
+              ok: submitted !== 'stuck' && !truncated,
               submitted,
+              delivered, // 'ok' | 'truncated' | 'unknown' — real integrity, not just box-cleared
               corr,
               from_pane: fromPane,
               to_pane: toPane,
               type: msgType,
-              note: submitted === 'stuck'
-                ? 'Envelope typed but STUCK in the input box after retries — send send_key("enter") to the pane.'
-                : `Envelope delivered. Reuse corr=${corr} for the rest of this thread; the responder should reply with type=ack/progress/result.`,
+              note: truncated
+                ? 'DELIVERY INTEGRITY FAILURE: the recipient composer did not hold the tail of your envelope before submit — it was likely truncated. Do NOT assume it arrived. Re-send shorter, or write the value to a repo file and send only a pointer.'
+                : submitted === 'stuck'
+                  ? 'Envelope typed but STUCK in the input box after retries — send send_key("enter") to the pane.'
+                  : `Envelope delivered. Reuse corr=${corr} for the rest of this thread; the responder should reply with type=ack/progress/result.`,
             }, null, 2),
           }],
           isError: false,

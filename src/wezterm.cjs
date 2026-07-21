@@ -316,6 +316,35 @@ function sendTextNoEnter(paneId, text) {
   });
 }
 
+/**
+ * Send text as a BRACKETED PASTE (no --no-paste). The whole payload is wrapped
+ * in the terminal's paste markers, so a TUI composer treats it atomically:
+ * internal newlines stay SOFT (literal characters), never firing an Enter.
+ *
+ * This is the correct primitive for multi-line content. `--no-paste` injects
+ * raw key events, which turns every `\n` into a submit — fragmenting an A2A
+ * envelope (header `\n` body) into multiple partial deliveries (the truncation/
+ * splice bug reported 2026-07-21). Pair with a SEPARATE `sendTextNoEnter('\r')`
+ * to submit once, after the paste has landed.
+ *
+ * Timeout scales with size (large pastes take longer to stream to the mux).
+ */
+function sendTextBracketed(paneId, text) {
+  const guiSocket = findGuiSocket();
+  const cliArgs = guiSocket
+    ? ['cli', 'send-text', '--pane-id', String(paneId)]
+    : ['cli', '--no-auto-start', 'send-text', '--pane-id', String(paneId)];
+  const env = guiSocket ? { ...process.env, WEZTERM_UNIX_SOCKET: guiSocket } : process.env;
+  const bytes = Buffer.byteLength(String(text), 'utf8');
+  execFileSync(WEZTERM, cliArgs, {
+    input: text,
+    encoding: 'utf-8',
+    timeout: Math.max(5000, Math.ceil(bytes / 1024) * 1000), // ~1s per KB, floor 5s
+    windowsHide: true,
+    env,
+  });
+}
+
 // Per-pane text cache added 2026-04-19. getFullText is called from 3+ services
 // (telegram-streamer, omni-watcher, dashboard handlers) — bursts where all
 // three read the same pane within ms are common. TTL 1.5s dedups those bursts
@@ -490,6 +519,7 @@ module.exports = {
   spawnPane,
   sendText,
   sendTextNoEnter,
+  sendTextBracketed,
   getText,
   getFullText,
   killPane,
