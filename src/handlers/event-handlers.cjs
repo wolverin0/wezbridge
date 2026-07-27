@@ -371,6 +371,21 @@ function createEventHandlers(ctx) {
     } catch (e) {
       log(`team-manifest replay failed: ${e.message}`);
     }
+    // ClawTrol control-plane v1 (2026-07-27): outbound-only cockpit bridge +
+    // orchestrator watchdog. Both fail-soft: bridge no-ops without
+    // CLAWTROL_URL/TOKEN; watchdog disabled via WEZBRIDGE_WATCHDOG=0.
+    try {
+      const bridge = require('../clawtrol-bridge.cjs');
+      log(bridge.start() ? 'clawtrol-bridge armed (outbound sync loop)' : 'clawtrol-bridge disabled (CLAWTROL_URL/TOKEN unset)');
+    } catch (e) {
+      log(`clawtrol-bridge failed to start: ${e.message}`);
+    }
+    try {
+      const watchdog = require('../pane0-watchdog.cjs');
+      log(watchdog.start() ? 'pane0-watchdog armed (60s check, 15min stale, 10min cooldown, 3-strike disable)' : 'pane0-watchdog disabled (WEZBRIDGE_WATCHDOG=0)');
+    } catch (e) {
+      log(`pane0-watchdog failed to start: ${e.message}`);
+    }
   }
 
   return {
