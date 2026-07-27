@@ -279,3 +279,17 @@ test('canary allowlist: unset ships nothing task-scoped; allowlisted repo ships;
   assert.strictEqual((seen[0].events || []).length, 0); // fail-closed
   assert.ok((seen[1].events || []).some((e) => e.task_id === taskId)); // canary ships
 });
+
+test('canary boundary: task-less messages NEVER ship, even with a non-empty allowlist', async () => {
+  bridge.appendTaskMessage({ task_id: null, message_type: 'note', content: 'fleet prose must not leak', provenance: 'orchestrator' });
+  bridge.writeCursors({});
+  const seen = [];
+  const srv = http.createServer((req, res) => {
+    let raw = ''; req.on('data', (d) => { raw += d; });
+    req.on('end', () => { seen.push(JSON.parse(raw)); res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ intents: [] })); });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  await bridge.syncOnce({ url: `http://127.0.0.1:${srv.address().port}`, token: 't', profile: 'p', projects: new Set(['fakerepo']) }, { fullSnapshot: false });
+  srv.close();
+  assert.ok(!(seen[0].messages || []).some((m) => /fleet prose/.test(m.content)));
+});

@@ -430,9 +430,10 @@ async function syncOnce(cfg, { fullSnapshot }) {
     const { entries, nextOffset } = readDelta(MESSAGE_FILE, cursors);
     for (const e of entries) {
       const m = toWireMessage(e);
-      // Messages with a known task ship only for canary tasks; task-less
-      // orchestrator notes ship only when at least one project is allowlisted.
-      if (m && (m.task_id ? canaryIds.has(m.task_id) : cfg.projects && cfg.projects.size > 0)) messages.push(m);
+      // Canary boundary: ONLY messages tied to an allowlisted task ship.
+      // Task-less notes are dropped entirely — unrelated fleet prose must
+      // never leak into the canary (review round 3 correction).
+      if (m && m.task_id && canaryIds.has(m.task_id)) messages.push(m);
     }
     nextCursors[MESSAGE_FILE] = nextOffset;
   }
