@@ -226,3 +226,22 @@ test('sync retry: failed POST leaves cursors unpersisted so the delta replays', 
   const replay = bridge.readDelta('events.jsonl', bridge.readCursors());
   assert.strictEqual(replay.entries.length, 1); // delta still there
 });
+
+test('env-file loader: CLAWTROL_ keys load from owner file, other keys ignored, env wins', () => {
+  const envDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clawtrol-env-'));
+  const envFile = path.join(envDir, 'clawtrol.env');
+  fs.writeFileSync(envFile, '# comment\nCLAWTROL_URL=http://vm.example:3000\nCLAWTROL_TOKEN=tok-from-file\nCLAWTROL_PROFILE=prof1\nPATH=EVIL\nNOT_CLAWTROL=x\n');
+  delete process.env.CLAWTROL_URL; delete process.env.CLAWTROL_TOKEN; delete process.env.CLAWTROL_PROFILE;
+  const prevPath = process.env.PATH;
+  process.env.WEZBRIDGE_CLAWTROL_ENV = envFile;
+  // config() triggers the loader (module re-read of env each call).
+  const cfgTest = require('../src/clawtrol-bridge.cjs');
+  const h = cfgTest.health(); // health() calls config()
+  assert.strictEqual(h.enabled, true);
+  assert.strictEqual(process.env.CLAWTROL_URL, 'http://vm.example:3000');
+  assert.strictEqual(process.env.CLAWTROL_TOKEN, 'tok-from-file');
+  assert.strictEqual(process.env.PATH, prevPath); // non-CLAWTROL keys never touched
+  assert.strictEqual(process.env.NOT_CLAWTROL, undefined);
+  delete process.env.CLAWTROL_URL; delete process.env.CLAWTROL_TOKEN; delete process.env.CLAWTROL_PROFILE;
+  delete process.env.WEZBRIDGE_CLAWTROL_ENV;
+});

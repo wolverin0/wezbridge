@@ -61,7 +61,27 @@ function stateDir() {
   return d;
 }
 
+/**
+ * Load CLAWTROL_* keys from the owner-only env file if they are not already in
+ * the process env. Default location: <home>/.wezbridge/clawtrol.env (override
+ * with WEZBRIDGE_CLAWTROL_ENV). KEY=VALUE lines, # comments. Values are never
+ * logged. Only CLAWTROL_-prefixed keys are honored — this is a scoped secret
+ * file, not a general dotenv.
+ */
+function loadEnvFile() {
+  if (process.env.CLAWTROL_URL && process.env.CLAWTROL_TOKEN) return;
+  const p = process.env.WEZBRIDGE_CLAWTROL_ENV
+    || path.join(require('node:os').homedir(), '.wezbridge', 'clawtrol.env');
+  let text;
+  try { text = fs.readFileSync(p, 'utf8'); } catch { return; }
+  for (const line of text.split('\n')) {
+    const m = line.match(/^\s*(CLAWTROL_[A-Z_]+)\s*=\s*(.*?)\s*$/);
+    if (m && !line.trim().startsWith('#') && process.env[m[1]] === undefined) process.env[m[1]] = m[2];
+  }
+}
+
 function config() {
+  loadEnvFile();
   const url = process.env.CLAWTROL_URL;
   const token = process.env.CLAWTROL_TOKEN;
   if (!url || !token) return null;
