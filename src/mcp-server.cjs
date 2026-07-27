@@ -23,6 +23,7 @@ require('./guard-bootstrap.cjs');
 const safetyPolicy = require('./safety-policy.cjs');
 const discovery = require('./pane-discovery.cjs');
 const wez = require('./wezterm.cjs');
+const a2aIntel = require('./a2a-intel.cjs');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
@@ -189,7 +190,13 @@ function composerHoldsTail(paneId, text) {
     wez.invalidateGetTextCache(paneId);
     rendered = wez.getFullText(paneId, 40).replace(/\s+/g, ' ').toLowerCase();
   } catch { return 'unknown'; }
-  return rendered.includes(tail) ? 'ok' : 'truncated';
+  if (rendered.includes(tail)) return 'ok';
+  // Claude Code collapses long pastes in the composer ("[Pasted text #N ...]" /
+  // "paste again to expand") — the content is intact but its literal tail is not
+  // rendered, which read as a FALSE truncation (first seen 2026-07-25, T-0002
+  // dispatch). Collapsed paste = integrity unverifiable, not failed.
+  if (/\[pasted text|paste again to expand/.test(rendered)) return 'unknown';
+  return 'truncated';
 }
 
 async function sendPromptDeferredEnter(paneId, text) {
@@ -1362,6 +1369,22 @@ function handleToolCall(name, args) {
         const submitted = await verifyPromptSubmission(toPane, envelope);
         log(`a2a_send pane-${fromPane} -> pane-${toPane} corr=${corr} type=${msgType} [submit:${submitted} deliver:${delivered}]`);
         const truncated = delivered === 'truncated';
+        // Control-plane enforcement (fail-soft, never blocks delivery):
+        // v2 shape check on results, audit every envelope, track open threads.
+        const v2 = msgType === 'result' ? a2aIntel.detectV2(body) : undefined;
+        a2aIntel.recordEvent({ from_pane: fromPane, to_pane: toPane, corr, type: msgType, submitted, delivered, ...(v2 ? { v2 } : {}) });
+        const unackedInbound = a2aIntel.updateThreads({ fromPane, toPane, corr, type: msgType, body });
+        let note = truncated
+          ? 'DELIVERY INTEGRITY FAILURE: the recipient composer did not hold the tail of your envelope before submit — it was likely truncated. Do NOT assume it arrived. Re-send shorter, or write the value to a repo file and send only a pointer.'
+          : submitted === 'stuck'
+            ? 'Envelope typed but STUCK in the input box after retries — send send_key("enter") to the pane.'
+            : `Envelope delivered. Reuse corr=${corr} for the rest of this thread; the responder should reply with type=ack/progress/result.`;
+        if (v2 === 'missing') {
+          note += ' PROTOCOL WARNING: this type=result body has no v2 criteria block (criteria: <criterion>: pass|fail — evidence). Machine-checkable results are the fleet contract; include one next time.';
+        }
+        if (unackedInbound.length > 0) {
+          note += ` OUTSTANDING: results sent TO YOU still await your ack — corr(s): ${unackedInbound.join(', ')}. Ack them now (type=ack) or the sender may re-send in a loop.`;
+        }
         return {
           content: [{
             type: 'text',
@@ -1373,11 +1396,9 @@ function handleToolCall(name, args) {
               from_pane: fromPane,
               to_pane: toPane,
               type: msgType,
-              note: truncated
-                ? 'DELIVERY INTEGRITY FAILURE: the recipient composer did not hold the tail of your envelope before submit — it was likely truncated. Do NOT assume it arrived. Re-send shorter, or write the value to a repo file and send only a pointer.'
-                : submitted === 'stuck'
-                  ? 'Envelope typed but STUCK in the input box after retries — send send_key("enter") to the pane.'
-                  : `Envelope delivered. Reuse corr=${corr} for the rest of this thread; the responder should reply with type=ack/progress/result.`,
+              ...(v2 ? { v2 } : {}),
+              ...(unackedInbound.length > 0 ? { unacked_inbound: unackedInbound } : {}),
+              note,
             }, null, 2),
           }],
           isError: false,

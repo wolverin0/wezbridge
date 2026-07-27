@@ -1,11 +1,13 @@
-<!-- doc-head: triaged 2026-07-18, greppable summary. Edit body => update this. -->
+<!-- doc-head: updated 2026-07-27 (envelope v2 + programmatic enforcement + GATE lines). Edit body => update this. -->
 Defines the A2A envelope protocol for peer-to-peer pane communication via wezbridge.
 Envelope syntax: [A2A from pane-N to pane-M | corr=<id> | type=request|ack|progress|result|error].
-Sending uses mcp__wezbridge__a2a_send (v3.5+) or verified raw send_prompt with fallback.
-Receivers parse headers, send ack/progress, and return result/error; push asymmetry required.
-Watcher tracks pendingA2A correlations and emits peer_orphaned events if a session dies.
-Shared-repo safety uses git worktrees or explicit 'owns=' header to prevent conflicts.
-Read when: Implementing agents that must coordinate work across multiple WezTerm panes.
+Gate-state (2026-07-27): operator gates declared via progress body first-line GATE:<kind>:<state> — parsed
+by a2a-intel into a2a-threads.json, beaconed verbatim to pane-events.jsonl (no prose parsing).
+v2 (2026-07-23): result bodies carry a machine-checkable criteria block; ENFORCED IN CODE, not prose —
+server (a2a-intel.cjs) validates v2 + audits every envelope to _intel/events.jsonl + tracks acks;
+Claude hooks a2a-protocol-inject (contract injected per envelope) + a2a-thread-gate (Stop blocked on open threads).
+Shared-repo safety uses git worktrees or explicit 'owns=' header; push asymmetry required.
+Read when: Implementing agents that coordinate across panes, or auditing where each rule is enforced.
 <!-- /doc-head -->
 
 # A2A Protocol
@@ -31,6 +33,64 @@ Every peer-to-peer message uses this header on its first line:
   - `error` — aborted; include `reason=…` and whatever diagnostics fit.
 
 Do NOT invent new envelope fields silently. Extend this spec in a PR first.
+
+## Envelope v2 — machine-checkable results (2026-07-23)
+
+A `type=result` body MUST include a criteria block so the requester can VALIDATE
+instead of trust:
+
+```
+<summary prose — short>
+criteria:
+- <criterion 1>: pass — <evidence: file:line, test name, URL, command output>
+- <criterion 2>: fail — <what happened>
+files_changed:
+- <path>
+validated_by: <command(s) run>
+next_action: <what the requester should do next, or "none">
+```
+
+**This is enforced programmatically, not by convention** (principle: prose is
+hope; a rule exists only if something deterministic fails when it's violated):
+
+| Rule | Enforced by | Behavior |
+|---|---|---|
+| v2 shape on results | `src/a2a-intel.cjs` inside `a2a_send` | Response gains `v2: ok\|missing` + warning note (WARN-only rollout; hard-reject is a future operator call) |
+| Every envelope audited | same, server-side | Metadata (never bodies) appended to `Py Apps/_intel/events.jsonl` |
+| Open-thread tracking | same, server-side | `_intel/a2a-threads.json`: request opens corr → result awaits ack → ack closes; every send response lists `unacked_inbound` corrs the CALLER still owes acks for |
+| Contract recall on receive | `~/.claude/hooks/a2a-protocol-inject.cjs` (UserPromptSubmit) | Protocol contract injected next to every inbound envelope — immune to context rot |
+| No finishing with open threads | `~/.claude/hooks/a2a-thread-gate.cjs` (Stop) | Session cannot end with an unanswered request or unacked result (max 2 blocks per corr, then warn-only) |
+
+Server enforcement loads when a pane's wezbridge MCP restarts. Hook enforcement
+loads at Claude session start. Codex panes: server-side enforcement applies
+regardless; codex-native hook ports are tracked in
+`docs/PLAN-control-plane-2026-07-23.md` (Phase 1.3).
+
+## Structured gate-state lines (2026-07-27)
+
+Prose-keyword watching has a precision ceiling (negation-blind, state-blind —
+measured in the T-0008 oversight pilot). When a pane stops at an **operator gate**
+(deploy, customer-send, payment-change, or any approval wait), it MUST declare the
+gate machine-readably instead of relying on prose: send `type=progress` on the
+thread's corr with a body whose FIRST line is
+
+```
+GATE:<kind>:<state> — <one-line detail>
+```
+
+- **`kind`**: lowercase-kebab gate kind, matching the repo's
+  `.agent-workflow/graph.json` kinds where one exists (`customer-send`, `deploy`,
+  `payment-change`, …).
+- **`state`**: `waiting` (stopped, needs operator) | `cleared` (operator approved,
+  proceeding) | `abandoned` (gate withdrawn, work re-planned).
+- Example: `GATE:customer-send:waiting — 5 staged sends need operator command`.
+
+Enforcement/consumption: the server (`a2a-intel.cjs`) parses the line from
+`type=progress` bodies and records `{gate: {kind, state, detail, at}}` on the
+thread in `_intel/a2a-threads.json`; the pane-beacon hook passes `GATE:*:*`
+markers through verbatim to `_intel/pane-events.jsonl`, so an orchestrator's
+Monitor can wake on gates with zero prose parsing. The inject hook states this
+contract next to every inbound request.
 
 ## Sending
 
