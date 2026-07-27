@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleet Control Plane — how it all works (graph)</title>
+<style>
+  :root{--bg:#0b0f17;--panel:#121826;--panel2:#0e1420;--ink:#e8eef7;--mut:#8b98ad;
+    --good:#28c76f;--warn:#ffb020;--bad:#ff5a5a;--blue:#5b8cff;--purple:#b58cff}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.55 system-ui,Segoe UI,sans-serif;padding:30px 18px}
+  .wrap{max-width:1180px;margin:0 auto}
+  h1{font-size:23px;margin:0 0 4px} h2{font-size:18px;margin:30px 0 10px;border-bottom:1px solid #223;padding-bottom:5px}
+  .sub{color:var(--mut);margin-bottom:16px}
+  .card{background:var(--panel);border-radius:10px;padding:14px 16px;margin:10px 0}
+  code{background:#0a0e15;padding:1px 5px;border-radius:4px;font-size:12.5px;color:#a5c8ff}
+  .legend span{display:inline-block;margin-right:16px;font-size:13px}
+  .dot{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+  .scroll{overflow-x:auto;background:var(--panel2);border-radius:12px;padding:8px}
+  table{width:100%;border-collapse:collapse;background:var(--panel);border-radius:10px;overflow:hidden;font-size:13px}
+  th{background:var(--panel2);text-align:left;padding:8px 10px;color:var(--mut)}
+  td{padding:8px 10px;border-top:1px solid #1c2536;vertical-align:top}
+  .chain{font-size:14px;line-height:2.1}
+  .chain b{color:var(--blue)}
+  .step{display:inline-block;background:var(--panel2);border:1px solid #223;border-radius:8px;padding:2px 10px;margin:2px 2px}
+  .arr{color:var(--warn);font-weight:700;margin:0 4px}
+  .g{color:var(--good)}.w{color:var(--warn)}.p{color:var(--purple)}.b2{color:var(--blue)}
+</style>
+</head>
+<body><div class="wrap">
+<h1>Fleet Control Plane — how everything works together</h1>
+<div class="sub">2026-07-23 · The target architecture from the graph-orchestration review, drawn. Color = build status.</div>
+
+<div class="card legend">
+<span><span class="dot" style="background:var(--good)"></span><b>GREEN = shipped &amp; running today</b></span>
+<span><span class="dot" style="background:var(--warn)"></span><b>YELLOW = P0</b> (prose only, ~1h)</span>
+<span><span class="dot" style="background:var(--purple)"></span><b>PURPLE = P1</b> (the build, ~1 day)</span>
+<span><span class="dot" style="background:var(--blue)"></span><b>BLUE = existing infra</b> (wezbridge, panes, MM)</span>
+</div>
+
+<h2>The graph</h2>
+<div class="scroll">
+<svg viewBox="0 0 1160 1010" width="1160" height="1010" style="min-width:1000px;font-family:system-ui,'Segoe UI',sans-serif">
+  <defs>
+    <marker id="a" markerWidth="10" markerHeight="8" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#8b98ad"/></marker>
+    <marker id="ag" markerWidth="10" markerHeight="8" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#28c76f"/></marker>
+    <marker id="aw" markerWidth="10" markerHeight="8" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ffb020"/></marker>
+    <marker id="ap" markerWidth="10" markerHeight="8" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#b58cff"/></marker>
+    <marker id="ab" markerWidth="10" markerHeight="8" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#ff5a5a"/></marker>
+  </defs>
+
+  <!-- ============ OPERATOR ============ -->
+  <rect x="430" y="15" width="300" height="72" rx="12" fill="#121e30" stroke="#5b8cff" stroke-width="2"/>
+  <text x="580" y="42" text-anchor="middle" fill="#e8eef7" font-size="16" font-weight="700">OPERATOR (you)</text>
+  <text x="580" y="62" text-anchor="middle" fill="#8b98ad" font-size="12">owns gates: deploy · merge · commit · spend</text>
+  <text x="580" y="78" text-anchor="middle" fill="#8b98ad" font-size="12">talks to any orchestrator session · gets Telegram</text>
+
+  <!-- Telegram escalation up -->
+  <path d="M 940 200 C 1010 150 900 70 733 55" stroke="#ff5a5a" stroke-width="2" fill="none" marker-end="url(#ab)"/>
+  <text x="985" y="120" fill="#ff5a5a" font-size="12" font-weight="700">Telegram: CRITICAL only</text>
+  <text x="985" y="136" fill="#8b98ad" font-size="11">(rule says "can't decide myself")</text>
+
+  <!-- operator <-> orchestrator -->
+  <path d="M 540 87 L 540 150" stroke="#8b98ad" stroke-width="2" marker-end="url(#a)"/>
+  <path d="M 620 150 L 620 87" stroke="#8b98ad" stroke-width="2" marker-end="url(#a)"/>
+  <text x="447" y="122" fill="#8b98ad" font-size="12">requests / "go"</text>
+  <text x="632" y="122" fill="#8b98ad" font-size="12">reports + gated asks</text>
+
+  <!-- ============ ORCHESTRATOR SESSION ============ -->
+  <rect x="330" y="150" width="500" height="96" rx="12" fill="#121826" stroke="#5b8cff" stroke-width="2"/>
+  <text x="580" y="175" text-anchor="middle" fill="#e8eef7" font-size="15" font-weight="700">ORCHESTRATOR SESSION — disposable, any pane</text>
+  <text x="580" y="194" text-anchor="middle" fill="#8b98ad" font-size="12">a fresh Claude session reads dashboard.md + flags.json + tasks/ → IS the</text>
+  <text x="580" y="210" text-anchor="middle" fill="#8b98ad" font-size="12">orchestrator in ~30s. No 40-message warmup. No heroic /handoffs.</text>
+  <text x="580" y="230" text-anchor="middle" fill="#28c76f" font-size="12" font-weight="700">dispatches · monitors · pokes stalls · acks · validates envelopes · escalates</text>
+
+  <!-- /intel-refresh -->
+  <rect x="30" y="158" width="230" height="80" rx="10" fill="#121826" stroke="#28c76f" stroke-width="2"/>
+  <text x="145" y="182" text-anchor="middle" fill="#28c76f" font-size="13" font-weight="700">/intel-refresh (skill) ✅</text>
+  <text x="145" y="200" text-anchor="middle" fill="#8b98ad" font-size="11">your on-demand button:</text>
+  <text x="145" y="215" text-anchor="middle" fill="#8b98ad" font-size="11">run sweeper → read flags →</text>
+  <text x="145" y="230" text-anchor="middle" fill="#8b98ad" font-size="11">dispatch only flagged work</text>
+  <path d="M 260 198 L 330 198" stroke="#28c76f" stroke-width="2" marker-end="url(#ag)"/>
+
+  <!-- orchestrator <-> control plane -->
+  <path d="M 500 246 L 500 310" stroke="#8b98ad" stroke-width="2" marker-end="url(#a)"/>
+  <text x="358" y="280" fill="#8b98ad" font-size="12">writes: task states, acks, events</text>
+  <path d="M 660 310 L 660 246" stroke="#8b98ad" stroke-width="2" marker-end="url(#a)"/>
+  <text x="672" y="280" fill="#8b98ad" font-size="12">reads: dashboard, flags, edge rules</text>
+
+  <!-- ============ CONTROL PLANE ============ -->
+  <rect x="60" y="310" width="1040" height="235" rx="14" fill="#0e1420" stroke="#b58cff" stroke-width="2" stroke-dasharray="0"/>
+  <text x="580" y="336" text-anchor="middle" fill="#b58cff" font-size="15" font-weight="700">CONTROL PLANE — durable files in Py Apps/_intel/ · deterministic · NO LLM · survives everything</text>
+
+  <!-- sweeper -->
+  <rect x="85" y="355" width="235" height="170" rx="10" fill="#121826" stroke="#28c76f" stroke-width="2"/>
+  <text x="202" y="378" text-anchor="middle" fill="#28c76f" font-size="13" font-weight="700">SWEEPER ✅ shipped</text>
+  <text x="202" y="396" text-anchor="middle" fill="#8b98ad" font-size="11">schtasks daily 08:00 + on-demand</text>
+  <text x="202" y="414" text-anchor="middle" fill="#e8eef7" font-size="11">· gitnexus analyze × 11 repos (~1s ea)</text>
+  <text x="202" y="430" text-anchor="middle" fill="#e8eef7" font-size="11">· graphify: scoped commits-behind ≥ 20?</text>
+  <text x="202" y="446" text-anchor="middle" fill="#e8eef7" font-size="11">· health: commits since touch ≥ 60?</text>
+  <text x="202" y="466" text-anchor="middle" fill="#8b98ad" font-size="11">flags LLM work — never runs it</text>
+  <text x="202" y="488" text-anchor="middle" fill="#8b98ad" font-size="11">never a git hook (plague rule)</text>
+  <text x="202" y="510" text-anchor="middle" fill="#28c76f" font-size="11" font-weight="700">first node of this plane</text>
+
+  <!-- flags/dashboard -->
+  <rect x="345" y="355" width="220" height="80" rx="10" fill="#121826" stroke="#28c76f" stroke-width="2"/>
+  <text x="455" y="378" text-anchor="middle" fill="#28c76f" font-size="13" font-weight="700">flags.json + dashboard.md ✅</text>
+  <text x="455" y="396" text-anchor="middle" fill="#8b98ad" font-size="11">machine twin + human twin</text>
+  <text x="455" y="412" text-anchor="middle" fill="#8b98ad" font-size="11">regenerated every sweep</text>
+  <text x="455" y="428" text-anchor="middle" fill="#8b98ad" font-size="11">events.jsonl = append-only audit</text>
+  <path d="M 320 400 L 345 400" stroke="#28c76f" stroke-width="2" marker-end="url(#ag)"/>
+
+  <!-- task ledger -->
+  <rect x="345" y="450" width="220" height="80" rx="10" fill="#121826" stroke="#b58cff" stroke-width="2"/>
+  <text x="455" y="472" text-anchor="middle" fill="#b58cff" font-size="13" font-weight="700">TASK LEDGER 🟣 P1</text>
+  <text x="455" y="490" text-anchor="middle" fill="#8b98ad" font-size="11">tasks/T-NNNN.json · FSM:</text>
+  <text x="455" y="505" text-anchor="middle" fill="#e8eef7" font-size="10.5">queued→ready→running→review→done</text>
+  <text x="455" y="521" text-anchor="middle" fill="#8b98ad" font-size="11">+ blocked/failed · leases · criteria</text>
+
+  <!-- edge rules -->
+  <rect x="590" y="450" width="230" height="80" rx="10" fill="#121826" stroke="#b58cff" stroke-width="2"/>
+  <text x="705" y="472" text-anchor="middle" fill="#b58cff" font-size="13" font-weight="700">EDGE RULES 🟣 P1</text>
+  <text x="705" y="490" text-anchor="middle" fill="#8b98ad" font-size="11">(the looperators steal)</text>
+  <text x="705" y="506" text-anchor="middle" fill="#e8eef7" font-size="11">on result(T-X) → dispatch T-Y</text>
+  <text x="705" y="522" text-anchor="middle" fill="#e8eef7" font-size="11">to pane-Z · with gate? · max laps</text>
+
+  <!-- envelope v2 spec -->
+  <rect x="590" y="355" width="230" height="80" rx="10" fill="#121826" stroke="#ffb020" stroke-width="2"/>
+  <text x="705" y="375" text-anchor="middle" fill="#ffb020" font-size="13" font-weight="700">A2A ENVELOPE v2 🟡 Phase 1</text>
+  <text x="705" y="391" text-anchor="middle" fill="#e8eef7" font-size="11">ENFORCED IN CODE, not prose:</text>
+  <text x="705" y="406" text-anchor="middle" fill="#e8eef7" font-size="11">server validates v2 + audits every</text>
+  <text x="705" y="420" text-anchor="middle" fill="#e8eef7" font-size="11">envelope → events.jsonl + tracks acks</text>
+  <text x="705" y="433" text-anchor="middle" fill="#8b98ad" font-size="10.5">hooks: inject contract per envelope · Stop-gate blocks unfinished threads</text>
+
+  <!-- knowledge compiler -->
+  <rect x="845" y="355" width="230" height="175" rx="10" fill="#121826" stroke="#ffb020" stroke-width="2"/>
+  <text x="960" y="378" text-anchor="middle" fill="#ffb020" font-size="13" font-weight="700">KNOWLEDGE COMPILER 🟡 P0</text>
+  <text x="960" y="398" text-anchor="middle" fill="#8b98ad" font-size="11">correction seen 2× or explicit?</text>
+  <text x="960" y="416" text-anchor="middle" fill="#e8eef7" font-size="11">→ MUST become enforcement:</text>
+  <text x="960" y="434" text-anchor="middle" fill="#e8eef7" font-size="11">test · lint · hook · guard · skill</text>
+  <text x="960" y="452" text-anchor="middle" fill="#8b98ad" font-size="11">MM claim = fallback, not destination</text>
+  <text x="960" y="474" text-anchor="middle" fill="#8b98ad" font-size="11">precedent: a2a fix at source,</text>
+  <text x="960" y="490" text-anchor="middle" fill="#8b98ad" font-size="11">safety-policy regex, guard shims</text>
+  <text x="960" y="512" text-anchor="middle" fill="#ffb020" font-size="11" font-weight="700">memory remembers; code enforces</text>
+
+  <!-- control plane -> orchestrator edge-rule trigger -->
+  <path d="M 705 450 C 705 420 720 260 700 246" stroke="#b58cff" stroke-width="2" fill="none" marker-end="url(#ap)"/>
+  <text x="740" y="300" fill="#b58cff" font-size="11">auto-trigger next dispatch</text>
+
+  <!-- ============ WORKER PANES ============ -->
+  <rect x="60" y="610" width="1040" height="150" rx="14" fill="#0e1420" stroke="#5b8cff" stroke-width="1.5"/>
+  <text x="580" y="636" text-anchor="middle" fill="#5b8cff" font-size="15" font-weight="700">WORKER PANES — long-lived sessions = the graph's nodes (wezbridge/WezTerm) · disposable, restorable</text>
+
+  <rect x="90" y="655" width="150" height="80" rx="10" fill="#121826" stroke="#28c76f" stroke-width="1.5"/>
+  <text x="165" y="678" text-anchor="middle" fill="#e8eef7" font-size="12" font-weight="700">whatsappbot pane</text>
+  <text x="165" y="695" text-anchor="middle" fill="#8b98ad" font-size="11">claude · 💰 main income</text>
+  <text x="165" y="712" text-anchor="middle" fill="#8b98ad" font-size="11">/project-health,</text>
+  <text x="165" y="727" text-anchor="middle" fill="#8b98ad" font-size="11">/graphify (root scope)</text>
+
+  <rect x="260" y="655" width="150" height="80" rx="10" fill="#121826" stroke="#28c76f" stroke-width="1.5"/>
+  <text x="335" y="678" text-anchor="middle" fill="#e8eef7" font-size="12" font-weight="700">pedrito pane</text>
+  <text x="335" y="695" text-anchor="middle" fill="#8b98ad" font-size="11">codex · scope: app/</text>
+  <text x="335" y="712" text-anchor="middle" fill="#8b98ad" font-size="11">builder role — never</text>
+  <text x="335" y="727" text-anchor="middle" fill="#8b98ad" font-size="11">reviews its own work</text>
+
+  <rect x="430" y="655" width="150" height="80" rx="10" fill="#121826" stroke="#28c76f" stroke-width="1.5"/>
+  <text x="505" y="678" text-anchor="middle" fill="#e8eef7" font-size="12" font-weight="700">…9 more panes</text>
+  <text x="505" y="695" text-anchor="middle" fill="#8b98ad" font-size="11">a-s-h/futuracrm, nereidas,</text>
+  <text x="505" y="712" text-anchor="middle" fill="#8b98ad" font-size="11">elbraserito, mutual, rifas,</text>
+  <text x="505" y="727" text-anchor="middle" fill="#8b98ad" font-size="11">venezia, gimnasio, bajon., omni</text>
+
+  <rect x="600" y="655" width="160" height="80" rx="10" fill="#121826" stroke="#5b8cff" stroke-width="1.5"/>
+  <text x="680" y="678" text-anchor="middle" fill="#e8eef7" font-size="12" font-weight="700">reviewer pane (codex)</text>
+  <text x="680" y="695" text-anchor="middle" fill="#8b98ad" font-size="11">adversarial gate:</text>
+  <text x="680" y="712" text-anchor="middle" fill="#8b98ad" font-size="11">builder ≠ reviewer,</text>
+  <text x="680" y="727" text-anchor="middle" fill="#8b98ad" font-size="11">"find every flaw"</text>
+
+  <rect x="780" y="655" width="150" height="80" rx="10" fill="#121826" stroke="#5b8cff" stroke-width="1.5"/>
+  <text x="855" y="678" text-anchor="middle" fill="#e8eef7" font-size="12" font-weight="700">subagents / Workflow</text>
+  <text x="855" y="695" text-anchor="middle" fill="#8b98ad" font-size="11">in-process graphs INSIDE</text>
+  <text x="855" y="712" text-anchor="middle" fill="#8b98ad" font-size="11">a node: fan-out, verify,</text>
+  <text x="855" y="727" text-anchor="middle" fill="#8b98ad" font-size="11">tiered models (haiku→top)</text>
+
+  <rect x="950" y="655" width="130" height="80" rx="10" fill="#121826" stroke="#5b8cff" stroke-width="1.5"/>
+  <text x="1015" y="678" text-anchor="middle" fill="#e8eef7" font-size="12" font-weight="700">Monitor +</text>
+  <text x="1015" y="695" text-anchor="middle" fill="#e8eef7" font-size="12" font-weight="700">heartbeat</text>
+  <text x="1015" y="712" text-anchor="middle" fill="#8b98ad" font-size="11">stall detection,</text>
+  <text x="1015" y="727" text-anchor="middle" fill="#8b98ad" font-size="11">5-min silence SLA</text>
+
+  <!-- orchestrator -> panes dispatch -->
+  <path d="M 420 246 C 300 290 220 560 200 655" stroke="#ffb020" stroke-width="2" fill="none" marker-end="url(#aw)"/>
+  <text x="120" y="580" fill="#ffb020" font-size="12" font-weight="700">a2a_send: bounded task packet</text>
+  <text x="120" y="596" fill="#8b98ad" font-size="11">goal + criteria + scope + forbidden</text>
+  <!-- panes -> orchestrator result -->
+  <path d="M 680 655 C 740 560 780 300 760 246" stroke="#ffb020" stroke-width="2" fill="none" marker-end="url(#aw)"/>
+  <text x="790" y="580" fill="#ffb020" font-size="12" font-weight="700">result envelope v2</text>
+  <text x="790" y="596" fill="#8b98ad" font-size="11">criteria pass/fail + evidence</text>
+
+  <!-- sweeper direct to repos -->
+  <path d="M 140 525 C 120 570 120 610 130 655" stroke="#28c76f" stroke-width="2" fill="none" marker-end="url(#ag)"/>
+  <text x="68" y="588" fill="#28c76f" font-size="11" font-weight="700">gitnexus refresh</text>
+  <text x="68" y="602" fill="#8b98ad" font-size="10.5">(direct, no LLM)</text>
+
+  <!-- ============ KNOWLEDGE / REPOS ============ -->
+  <rect x="60" y="800" width="1040" height="120" rx="14" fill="#0e1420" stroke="#8b98ad" stroke-width="1.5"/>
+  <text x="580" y="826" text-anchor="middle" fill="#8b98ad" font-size="15" font-weight="700">DURABLE KNOWLEDGE — what everything reads &amp; feeds</text>
+
+  <rect x="90" y="840" width="230" height="62" rx="10" fill="#121826" stroke="#5b8cff" stroke-width="1.5"/>
+  <text x="205" y="862" text-anchor="middle" fill="#e8eef7" font-size="12" font-weight="700">MemoryMaster</text>
+  <text x="205" y="879" text-anchor="middle" fill="#8b98ad" font-size="11">claims · steward · recall hooks</text>
+  <text x="205" y="894" text-anchor="middle" fill="#8b98ad" font-size="11">suggests where to look — not truth</text>
+
+  <rect x="345" y="840" width="250" height="62" rx="10" fill="#121826" stroke="#5b8cff" stroke-width="1.5"/>
+  <text x="470" y="862" text-anchor="middle" fill="#e8eef7" font-size="12" font-weight="700">per-repo intelligence</text>
+  <text x="470" y="879" text-anchor="middle" fill="#8b98ad" font-size="11">.gitnexus · graphify-out · monitoring.md</text>
+  <text x="470" y="894" text-anchor="middle" fill="#8b98ad" font-size="11">AGENTS.md/CLAUDE.md · DOCS-MAP</text>
+
+  <rect x="620" y="840" width="220" height="62" rx="10" fill="#121826" stroke="#ffb020" stroke-width="1.5"/>
+  <text x="730" y="862" text-anchor="middle" fill="#e8eef7" font-size="12" font-weight="700">enforcement artifacts 🟡</text>
+  <text x="730" y="879" text-anchor="middle" fill="#8b98ad" font-size="11">tests · lint · hooks · guards · skills</text>
+  <text x="730" y="894" text-anchor="middle" fill="#8b98ad" font-size="11">= compiled corrections (truth)</text>
+
+  <rect x="865" y="840" width="210" height="62" rx="10" fill="#121826" stroke="#5b8cff" stroke-width="1.5"/>
+  <text x="970" y="862" text-anchor="middle" fill="#e8eef7" font-size="12" font-weight="700">git · tests · code</text>
+  <text x="970" y="879" text-anchor="middle" fill="#8b98ad" font-size="11">the ultimate evidence —</text>
+  <text x="970" y="894" text-anchor="middle" fill="#8b98ad" font-size="11">nothing overrides it</text>
+
+  <!-- panes <-> knowledge -->
+  <path d="M 505 735 L 480 840" stroke="#8b98ad" stroke-width="1.5" marker-end="url(#a)"/>
+  <path d="M 300 840 L 320 735" stroke="#8b98ad" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="240" y="785" fill="#8b98ad" font-size="11">read intel first · write claims/handoffs</text>
+  <!-- compiler -> enforcement -->
+  <path d="M 960 530 C 990 600 850 780 745 840" stroke="#ffb020" stroke-width="2" fill="none" marker-end="url(#aw)"/>
+  <text x="920" y="620" fill="#ffb020" font-size="11" font-weight="700">compiled ↓</text>
+</svg>
+</div>
+
+<h2>One task's journey (the arrows version)</h2>
+<div class="card chain">
+<span class="step g">⏰ 08:00 sweeper runs</span><span class="arr">›</span>
+<span class="step g">flags.json: <code>whatsappbot: health-run</code></span><span class="arr">›</span>
+<span class="step">orchestrator session (or <b>/intel-refresh</b>) reads dashboard</span><span class="arr">›</span>
+<span class="step p">ledger: create <code>T-0007</code> state=ready + lease=whatsappbot-pane</span><span class="arr">›</span>
+<span class="step w">a2a_send task packet: goal + acceptance criteria + scope + forbidden</span><span class="arr">›</span>
+<span class="step">whatsappbot pane runs <code>/project-health --apply</code> (its own subagents/Workflow inside)</span><span class="arr">›</span>
+<span class="step w">returns envelope v2: criteria ✅/❌ + evidence + files_changed + next_action</span><span class="arr">›</span>
+<span class="step">orchestrator validates envelope (evidence present? criteria evaluated?) + acks immediately</span><span class="arr">›</span>
+<span class="step p">ledger: T-0007 → done · event appended · dashboard regenerated</span><span class="arr">›</span>
+<span class="step p">edge rule fires: on-done(T-0007) → dispatch review task to codex reviewer pane</span><span class="arr">›</span>
+<span class="step">reviewer (≠ builder) verdicts adversarially</span><span class="arr">›</span>
+<span class="step" style="border-color:#ff5a5a">gated action needed (commit/deploy)? → <b style="color:#ff5a5a">Telegram → you decide</b></span><span class="arr">›</span>
+<span class="step w">same correction seen twice this month? → knowledge compiler → guard/test/skill</span>
+</div>
+<div class="card chain" style="font-size:13px">
+<b>And when things die (the whole point):</b><br>
+<span class="step">orchestrator session depleted/killed</span><span class="arr">›</span><span class="step">any fresh session reads <code>_intel/</code></span><span class="arr">›</span><span class="step g">orchestrating again in ~30s — no handoff heroics</span><br>
+<span class="step">worker pane dies mid-task</span><span class="arr">›</span><span class="step p">lease expires</span><span class="arr">›</span><span class="step">task back to ready, re-dispatched — work isn't lost, it's re-runnable</span><br>
+<span class="step">WezTerm crashes</span><span class="arr">›</span><span class="step g">snapshot restore (LEADER+R / npm run restore-session)</span><span class="arr">›</span><span class="step">panes resume, ledger never noticed</span><br>
+<span class="step">PC reboots</span><span class="arr">›</span><span class="step g">schtasks re-arms the sweeper next 08:00</span><span class="arr">›</span><span class="step">plane self-heals</span>
+</div>
+
+<h2>Who does what (division of labor)</h2>
+<div class="scroll"><table>
+<tr><th>Layer</th><th>Nature</th><th>Decides</th><th>Never does</th></tr>
+<tr><td><b>Control plane</b> (_intel/ files + sweeper + ledger + edge rules)</td><td>Deterministic, durable, no LLM</td><td>WHAT is stale, WHAT is next, WHO owns it, WHEN to trigger</td><td>Judgment calls, code edits, talking to models</td></tr>
+<tr><td><b>Orchestrator session</b> (any pane, disposable)</td><td>LLM, stateless-by-design</td><td>HOW to phrase dispatches, validating evidence, escalation judgment within rules</td><td>Holding fleet state only in its context (that's the old failure)</td></tr>
+<tr><td><b>Worker panes</b> (long-lived sessions)</td><td>LLM, per-project context</td><td>HOW to do the task; internal subagent/Workflow graphs</td><td>Reviewing their own work; acting outside scope/lease; committing without gate</td></tr>
+<tr><td><b>Operator</b> (you)</td><td>Human</td><td>Gates: deploy, merge, commit, spend, project selection</td><td>Babysitting — only criticals reach Telegram</td></tr>
+<tr><td><b>Knowledge layer</b> (MM + intel files + enforcement)</td><td>Memory + compiled rules</td><td>Where to look (MM) · what is enforced (tests/hooks/guards)</td><td>MM overriding code/git truth</td></tr>
+</table></div>
+
+<h2>Build sequence — UPGRADED 2026-07-23: enforcement is CODE, not prose</h2>
+<div class="card">
+<b>Operator principle:</b> "LLMs forget even crucial CLAUDE.md rules — that's 'let's hope it works.' Do it programmatically through hooks." Full plan: <code>docs/PLAN-control-plane-2026-07-23.md</code> (enforcement-by-ownership map inside).<br><br>
+<b><span class="g">✅ Done:</span></b> sweeper + flags/dashboard/events + schtasks + /intel-refresh (Phase C = the plane's first node).<br>
+<b><span class="g">✅ Phase 1 (SHIPPED 2026-07-23, 294 tests/0 fail — code):</span></b> ① wezbridge server: v2 validation in <code>a2a_send</code> + every envelope audited to <code>_intel/events.jsonl</code> + open-thread/ack tracking (kills codex re-send loops at source) · ② Claude hooks: <code>a2a-protocol-inject</code> (UserPromptSubmit — the contract arrives WITH each envelope, immune to context rot) + <code>a2a-thread-gate</code> (Stop — blocks ending with an open thread, same proven mechanism as the MM checkpoint blocker) · ③ Codex-side hook ports · ④ docs describe what the code enforces.<br>
+<b><span class="g">✅ Phase 2 (SHIPPED 2026-07-23, same session):</span></b> <code>ledger.cjs</code> FSM+leases (failure paths verified) · sweeper auto-created <code>T-0002</code> from the real whatsappbot flag, dedupe proven · <code>/orchestrate</code> + <code>edges.json</code> v1 live. Acceptance test pending: fresh session resumes fleet from files in ≤2 min — runs at next orchestrator session start.<br>
+<b>Still open:</b> Phase 1.3 codex-native hook ports (codex panes covered server-side meanwhile).<br>
+<b>Phase 3 (after a week of ledger traffic):</b> lease-expiry pokes, Telegram escalation, heartbeat-per-corr — deterministic watchers, the full monitoring.md vision.
+</div>
+
+<div class="sub" style="margin-top:20px">Companion to: artifacts/2026-07-23-graph-orchestration-review.html (the verdict) · this file (the mechanics). Sources: your two ChatGPT threads + 0xRafy + looperators (executable-edges concept).</div>
+</div></body>
+</html>

@@ -1,3 +1,12 @@
+<!-- doc-head: triaged 2026-07-18, greppable summary. Edit body => update this. -->
+Research memo investigating WezTerm upstream changes, bugs, and native APIs.
+Identifies critical upstream issue #7527 (PDU OOM) matching 10054 disconnect symptoms.
+Documents mux-startup hook and get_foreground_process_info as alternatives to Node code.
+Records failed attempts to build WezTerm from source on Windows due to openssl-sys.
+Lists tiered recommendations: comment on #7527, migrate to Lua plugins, skip build.
+Read when: investigating Windows mux crashes, refactoring session capture, or proposing upstream contributions.
+<!-- /doc-head -->
+
 # Research — Upstream WezTerm: what we missed, what's broken in main, what to act on
 
 **Date:** 2026-05-08

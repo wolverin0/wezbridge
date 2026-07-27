@@ -1,3 +1,12 @@
+<!-- doc-head: triaged 2026-07-18, greppable summary. Edit body => update this. -->
+Inventory mapping global and project-local skills for orchestrator routing.
+Global roots located at .codex/skills and .agents/skills.
+Key families: Audit, Validation, UI/UX, Project Setup, and Coordination.
+wezbridge has 0 project skills; uses global orchestration/audit fallback.
+audit-loop skill is invalid YAML; do not route work until fixed.
+Read when: configuring skill routing or resolving orchestration errors.
+<!-- /doc-head -->
+
 # Skills Inventory - Orchestrator
 
 Snapshot: 2026-05-16.

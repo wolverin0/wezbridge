@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Saved links — adoption map (2026-07-18)</title>
+<style>
+  :root{--bg:#0b0f17;--panel:#121826;--panel2:#0e1420;--ink:#e8eef7;--mut:#8b98ad;
+    --blue:#2f6bff;--good:#28c76f;--warn:#ffb020;--bad:#ff5a5a;--vio:#9b6bff}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 system-ui,Segoe UI,Roboto,sans-serif;padding:32px 20px}
+  .wrap{max-width:1080px;margin:0 auto}
+  h1{font-size:26px;margin:0 0 6px} h2{font-size:19px;margin:34px 0 10px;border-bottom:1px solid #223;padding-bottom:6px}
+  .sub{color:var(--mut);margin-bottom:24px}
+  table{width:100%;border-collapse:collapse;background:var(--panel);border-radius:10px;overflow:hidden;font-size:13.5px}
+  th{background:var(--panel2);text-align:left;padding:9px 12px;color:var(--mut);font-weight:600;white-space:nowrap}
+  td{padding:9px 12px;border-top:1px solid #1c2536;vertical-align:top}
+  .tag{display:inline-block;padding:1px 9px;border-radius:99px;font-size:11.5px;font-weight:700;white-space:nowrap}
+  .p0{background:#173325;color:var(--good)} .p1{background:#332a14;color:var(--warn)} .p2{background:#1a2133;color:#7fa3ff}
+  .skip{background:#2a1620;color:var(--bad)} .have{background:#221a33;color:var(--vio)}
+  .card{background:var(--panel);border-radius:10px;padding:16px 18px;margin:12px 0}
+  .card h3{margin:0 0 6px;font-size:15.5px} .card .src{color:var(--mut);font-size:12.5px;margin-bottom:8px}
+  code{background:#0a0e15;padding:1px 6px;border-radius:5px;font-size:12.5px;color:#a5c8ff}
+  ul{margin:8px 0;padding-left:22px} li{margin:4px 0}
+  .scroll{overflow-x:auto}
+  a{color:#6ea0ff;text-decoration:none} a:hover{text-decoration:underline}
+  .verdict{font-weight:700}
+</style>
+</head>
+<body><div class="wrap">
+<h1>Saved links → adoption map</h1>
+<div class="sub">7 sources analyzed 2026-07-18 · ranked against what the Punto Futura stack already has (wezbridge panes + A2A, MemoryMaster, marketing brain, skill library, model tiering, guards)</div>
+
+<h2>The ranked verdict</h2>
+<div class="scroll"><table>
+<tr><th>Priority</th><th>Item</th><th>Source</th><th>What it gives us</th><th>Action</th></tr>
+<tr><td><span class="tag p0">P0 · minutes</span></td><td><b>resume-agents skill</b></td><td>@bttnns gist</td><td>Dead background agents (spend limit / API error / session exit) get RESUMED via SendMessage with context intact — never relaunched from zero. We lost 2 background tasks to session exits <i>this week</i>.</td><td>Install gist verbatim → <code>~/.claude/skills/resume-agents/</code></td></tr>
+<tr><td><span class="tag p0">P0 · minutes</span></td><td><b>Codex 5.6 guardrail lines</b></td><td>@dr_cintas</td><td>5.6 family eagerly self-spawns subagents + has an inheritance bug (children inherit parent model/effort — Sol@Ultra spawns Sol@Ultra). Our codex panes run 5.6.</td><td>Add to shared AGENTS.md: "only spawn subagents when asked, max 1-3, ask beyond that". Skip Ultra + fast-mode on codex panes.</td></tr>
+<tr><td><span class="tag p0">P0 · gated</span></td><td><b>dcg (destructive_command_guard)</b></td><td>Dicklesworthstone ★</td><td>Rust PreToolUse hook, sub-ms, 50+ packs, Windows-native (<code>del /s</code>, <code>Remove-Item -Recurse</code>, <code>format</code> blocked OOTB), <b>data-vs-execution context detection</b> — the exact FP class we hand-patched in safety-policy.cjs on 07-16. Covers Claude Code + Codex + Gemini + Cursor in one binary.</td><td>Trial install (PowerShell native). <b>Operator-gated</b>: it's a curl|bash-family installer + hook config. Keep our safety-policy for the A2A-text layer (dcg gates commands, not prompt text) — but retire the homegrown command regexes it duplicates.</td></tr>
+<tr><td><span class="tag p1">P1 · this week</span></td><td><b>Agent-Reach</b> ★57.7k</td><td>IG repo #4</td><td>Read/search Twitter, Reddit, YouTube, GitHub via one CLI, no API fees — the exact tool marketing's new <code>social-listening-playbook.md</code> (AR watering holes) and the monthly AEO cited-vs-recommended measurement need.</td><td>Route to marketing pane for eval on one product's listening pass.</td></tr>
+<tr><td><span class="tag p1">P1 · skill</span></td><td><b>False-confidence test audit</b></td><td>Jamon #14</td><td>Periodic skill hunting tests that pass without testing the requirement — codifies our existing "tests verify intent, not behavior" rule into a runnable sweep.</td><td>Build as a small global skill; run per-project monthly or pre-release.</td></tr>
+<tr><td><span class="tag p1">P1 · convention</span></td><td><b>Agent worksheets + git tags</b></td><td>Jamon #7</td><td>Per-session trace committed WITH the work + matching git tag → any agent can finish a dead agent's job. Complements our handoff skill (which is end-of-session only) and crash-restore.</td><td>Add to handoff skill: emit worksheet during long runs, tag on commit.</td></tr>
+<tr><td><span class="tag p1">P1 · convention</span></td><td><b>Greppable 7-line doc headers</b></td><td>Jamon #2</td><td>Every doc starts with a dense 7-line summary → agents find the right doc by grep instead of reading everything. Near-zero cost, compounds across the wiki/knowledge layers.</td><td>Adopt in CLAUDE.md/AGENTS.md authoring rules.</td></tr>
+<tr><td><span class="tag p1">P1 · wire-up</span></td><td><b>Animation skills → design-gate</b></td><td>@emilkowalski</td><td>His /improve-animations pattern (top model audits, cheap models execute) matches our tiering rule. The skills are ALREADY installed (<code>12-principles-of-animation</code>, <code>make-interfaces-feel-better</code>, <code>fixing-motion-performance</code>) — but nothing invokes them.</td><td>Reference them in design-gate + frontendesigner flow so UI deliverables get the animation audit pass.</td></tr>
+<tr><td><span class="tag p2">P2 · evaluate</span></td><td><b>codebase-memory-mcp</b> ★32.6k</td><td>IG repo #2</td><td>Code knowledge-graph MCP: 158 langs, ms indexing, sub-ms queries, "99% fewer tokens", single static binary. Direct overlap with GitNexus + graphify.</td><td>Bake-off on ONE repo vs GitNexus (index time, query quality, token cost). Only migrate if clearly better — our GitNexus hooks are wired everywhere.</td></tr>
+<tr><td><span class="tag p2">P2 · evaluate</span></td><td><b>OpenMontage</b> ★39.7k</td><td>IG repo #3</td><td>Agentic video production (12 pipelines, 500+ skills) — marketing's gap-audit flagged video as a missing capability for ads.</td><td>Route to marketing pane; try one product demo video.</td></tr>
+<tr><td><span class="tag p2">P2 · caution</span></td><td><b>OmniRoute</b> ★18.6k</td><td>IG repo #6</td><td>Multi-provider gateway (231 providers, free tiers, fallback, token compression). Could cheapen the low tiers.</td><td><b>Security review first</b> — routing our keys/prompts through a third-party gateway is a real exposure. Self-host only, non-production keys, if at all.</td></tr>
+<tr><td><span class="tag p2">P2 · ideas</span></td><td><b>orca (stablyai)</b> ★21.6k</td><td>IG repo #5</td><td>"ADE" for parallel agent fleets, desktop + mobile. This is wezbridge's competitor — same job (fleet of coding agents, remote control) with a product UI.</td><td>Mine for UX ideas (their mobile control vs our Telegram OmniClaude). Don't adopt — we'd lose the A2A/memory integration.</td></tr>
+<tr><td><span class="tag skip">SKIP</span></td><td><b>agency-agents</b> ★132k</td><td>IG repo #1</td><td>266 plug-and-play agent personas. We already have 80+ agent types + real per-project agents; persona packs add registry noise, not capability.</td><td>Maybe mine 2-3 marketing personas later. Nothing now.</td></tr>
+<tr><td><span class="tag skip">SKIP</span></td><td><b>Sol-behind-Claude proxy</b></td><td>@dr_cintas opt. 2</td><td>CLIProxyAPI to run Sol as the main Claude Code model.</td><td>We already get cross-model via codex panes + codex:rescue with verified A2A — the proxy adds a credential middleman for little gain.</td></tr>
+</table></div>
+
+<h2>What the posts validate (no action — we already have it)</h2>
+<div class="card">
+<ul>
+<li><span class="tag have">HAVE</span> <b>"Company brain first"</b> (@shannholmberg #2) — <code>marketing/knowledge/</code> + per-product <code>.marketing/</code> + MemoryMaster + the seo-geo-aeo central playbook ARE the brain. His "aim agents at good inputs or get slop faster" is the exact rationale behind the playbook consolidation we did on 07-16.</li>
+<li><span class="tag have">HAVE</span> <b>One agent per vertical + orchestrator</b> (#6) — the pane fleet (marketing / frontendesigner / product panes) + A2A protocol.</li>
+<li><span class="tag have">HAVE</span> <b>Eval loop / judge vs what-good-looks-like</b> (#7) — <code>what-good-looks-like.md</code>, QA gates, design-gate, outcome-grader.</li>
+<li><span class="tag have">HAVE</span> Jamon's #0 router AGENTS.md, #3 agents-run-the-app (verification rules), #6 cross-agent review (codex reviewer role), #12 night-shift (auto-harness), #13 task queue (TRACKS.md / active_tasks.md), #11 conventions (.claude/rules).</li>
+<li><span class="tag have">HAVE</span> <b>Effort tiering</b> (@dr_cintas) — our model-tiering table (haiku/sonnet/top) already encodes it; his Luna/Terra/Sol column maps 1:1 for codex-pane dispatches.</li>
+</ul>
+</div>
+
+<h2>Source notes</h2>
+<div class="card"><h3>1 · Marketing engineer path — @shannholmberg (45k views)</h3><div class="src">x.com/shannholmberg/status/2070153493747495170</div>
+Build agents instead of prompting one-shot · company brain first · open→closed loop promotion · watch your own repeated work to find the next specialist · design the loop (steps/checks/budget/done-state) before running it · eval loop closes the system.</div>
+
+<div class="card"><h3>2 · Full agentic setup, 18 points — @jamonholmgren (339k views)</h3><div class="src">x.com/jamonholmgren/status/2076001786700394610</div>
+The gaps we're adopting: #2 greppable doc headers · #5 precommit linters that FIX (shell to cheap LLM) · #7 worksheets+tags · #8 end-of-session feedback ingest · #10 commit sweeps · #14 false-confidence test audit · #15 visual regression · #16-17 perf benchmarks. The rest we have.</div>
+
+<div class="card"><h3>3 · GPT-5.6 Sol inside Claude Code — @dr_cintas (53k views)</h3><div class="src">x.com/dr_cintas/status/2076724255245373524</div>
+5.6 = Luna (everyday) / Terra (features) / Sol (planning+review). <b>Inheritance bug: subagents inherit parent model+effort — avoid Ultra.</b> Official plugin: <code>/plugin marketplace add openai/codex-plugin-cc</code> → /codex:review, /codex:adversarial-review, /codex:rescue. AGENTS.md guardrail lines against eager self-spawning.</div>
+
+<div class="card"><h3>4 · /improve-animations — @emilkowalski (490k views)</h3><div class="src">x.com/emilkowalski/status/2075929554594500772</div>
+Top model audits animations, cheap models execute. Skills already on this machine — just unwired.</div>
+
+<div class="card"><h3>5 · dcg — Dicklesworthstone/destructive_command_guard</h3><div class="src">github.com/Dicklesworthstone/destructive_command_guard</div>
+Multi-agent PreToolUse guard, Rust, sub-ms, 50+ packs (git/fs/db/k8s/cloud), explain mode, scan mode for CI, native Windows PowerShell installer with SHA256+minisign verification. Its context detection (blocks <code>rm -rf /</code> execution, allows <code>grep "rm -rf"</code> data) is the principled version of the 07-16 safety-policy fix.</div>
+
+<div class="card"><h3>6 · Resume dead background agents — @bttnns</h3><div class="src">x.com/bttnns/status/2074500771047989507 · gist a0fd08b7253b0f3e590d98d98125689e</div>
+Transcript survives agent death; SendMessage to the task-id resumes with context intact. Workflow runs resume via <code>resumeFromRunId</code>. Never re-spawn fresh.</div>
+
+<div class="card"><h3>7 · IG carousel — syntaix.ai "6 open-source AI agent repos" (Jul 10)</h3><div class="src">instagram.com/p/Dam_GQNiezK</div>
+msitarzewski/agency-agents ★132k · DeusData/codebase-memory-mcp ★32.6k · calesthio/OpenMontage ★39.7k · Panniantong/Agent-Reach ★57.7k · stablyai/orca ★21.6k · diegosouzapw/OmniRoute ★18.6k — all resolved to exact repos, verdicts in the table.</div>
+
+</div></body>
+</html>

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Intelligence Refresh — 11-project fleet report (2026-07-22)</title>
+<style>
+  :root{--bg:#0b0f17;--panel:#121826;--panel2:#0e1420;--ink:#e8eef7;--mut:#8b98ad;
+    --good:#28c76f;--warn:#ffb020;--bad:#ff5a5a;--blue:#5b8cff}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.5 system-ui,Segoe UI,sans-serif;padding:30px 18px}
+  .wrap{max-width:1150px;margin:0 auto}
+  h1{font-size:24px;margin:0 0 4px} h2{font-size:18px;margin:30px 0 10px;border-bottom:1px solid #223;padding-bottom:5px}
+  .sub{color:var(--mut);margin-bottom:20px}
+  table{width:100%;border-collapse:collapse;background:var(--panel);border-radius:10px;overflow:hidden;font-size:13px}
+  th{background:var(--panel2);text-align:left;padding:8px 10px;color:var(--mut);white-space:nowrap}
+  td{padding:8px 10px;border-top:1px solid #1c2536;vertical-align:top}
+  .g{color:var(--good);font-weight:700}.w{color:var(--warn)}.b{color:var(--bad)}
+  .tag{display:inline-block;padding:0 8px;border-radius:99px;font-size:11px;font-weight:700}
+  .tg{background:#173325;color:var(--good)}.tw{background:#332a14;color:var(--warn)}
+  .card{background:var(--panel);border-radius:10px;padding:14px 16px;margin:10px 0}
+  code{background:#0a0e15;padding:1px 5px;border-radius:4px;font-size:12px;color:#a5c8ff}
+  ul{margin:6px 0;padding-left:20px}li{margin:3px 0}
+  .scroll{overflow-x:auto}
+</style>
+</head>
+<body><div class="wrap">
+<h1>Intelligence Refresh — 11-project fleet</h1>
+<div class="sub">2026-07-22 · Phase A (gitnexus, mechanical: 9 repos in 3.5 min, 0 failures) + Phase B (/project-health --apply via 11 pane-dispatched workers) · <b>ALL results: 0 FAIL · NOTHING committed anywhere</b> — every change sits uncommitted in each working tree for your review</div>
+
+<h2>Per-project results</h2>
+<div class="scroll"><table>
+<tr><th>Project</th><th>Health</th><th>Graphify</th><th>gitnexus</th><th>monitoring.md</th><th>Notable</th></tr>
+<tr><td><b>whatsappbot-final</b> 💰</td><td class="g">14 PASS / 0 FAIL</td><td class="g">REGEN — was 1,183 commits stale → fresh: 14,176 nodes / 2,037 communities (html+labels skipped: size caps)</td><td class="g">fresh (31s)</td><td class="w">exists; missing watchdog: key</td><td>The fleet headline. God nodes stable. CLAUDE.md 310 lines</td></tr>
+<tr><td><b>pedrito</b></td><td class="g">17 PASS / 1 WARN</td><td class="g">NEW — app-scoped (5,807-file repo gated): 11,717 nodes / 703 communities + .graphifyignore</td><td class="g">fresh (was 153 behind)</td><td class="g">NEW</td><td>Real validation ran: pytest 5 ✓, typecheck ✓. CLAUDE.md 787 lines(!)</td></tr>
+<tr><td><b>argentina-sales-hub</b></td><td class="g">16 PASS / 0 FAIL</td><td class="w">src-scope finish trailing (was 261 behind; corpus-gated at root)</td><td class="g">fresh</td><td class="g">NEW</td><td>PR #29 untouched (still your merge call)</td></tr>
+<tr><td><b>elbraserito</b></td><td class="g">13 PASS / 0 FAIL</td><td class="g">NEW — src-scoped: 337 nodes / 25 communities</td><td class="g">fresh (was 122d stale)</td><td class="g">NEW — 5 signals, all read-only</td><td>Telegram chat-id placeholder needs real value</td></tr>
+<tr><td><b>bajoneando</b></td><td class="g">14 PASS / 2 WARN*</td><td class="g">NEW — 700 nodes / 52 communities (vendored excluded)</td><td class="g">NEW</td><td class="g">NEW — tailored to Coolify prod, read-only</td><td>*Both WARNs = checker false-negatives (GlitchTip + custom limiter exist)</td></tr>
+<tr><td><b>venezia</b></td><td class="g">16 PASS / 1 WARN*</td><td class="g">verified current-dormant (correct)</td><td class="g">NEW (created post-run)</td><td class="g">updated</td><td>*rate-limit WARN = false-positive (express-rate-limit + redis mounted)</td></tr>
+<tr><td><b>gimnasio-next</b></td><td class="g">15 PASS / 0 FAIL</td><td class="g">REGEN — 865 nodes / 35 communities</td><td class="g">fresh</td><td class="g">normalized</td><td>SHA-verified zero-touch of baseline files. CLAUDE.md 429 lines</td></tr>
+<tr><td><b>mutual</b></td><td class="g">17 PASS / 3 WARN</td><td class="g">NEW — 839 nodes / 48 communities (41.7× token benchmark)</td><td class="g">fresh</td><td class="g">NEW</td><td>CLAUDE.md 515 lines; public secret-shaped env var advisory</td></tr>
+<tr><td><b>nereidas</b></td><td class="g">final PASS (artifacts ✓)</td><td class="g">NEW — src-scoped (6M-word repo gated)</td><td class="g">current</td><td class="g">NEW</td><td>Bonus: CLAUDE.md compacted to 60 lines + AGENTS refresh w/ legacy backups</td></tr>
+<tr><td><b>omniremote</b></td><td class="g">9 PASS / 2 WARN</td><td class="g">verified fresh (16d, within threshold)</td><td class="g">NEW</td><td class="g">fixed (truthful watchdog meta)</td><td>+ deployment rule corrected (:8088 systemd)</td></tr>
+<tr><td><b>rifas</b></td><td class="g">16 PASS / 0 FAIL</td><td class="w">not generated (repo already healthy; skipped)</td><td class="g">NEW</td><td class="g">exists</td><td>Zero changes needed — cleanest repo in the fleet</td></tr>
+</table></div>
+
+<h2>Operator action queue (from the fleet's findings)</h2>
+<div class="card"><ul>
+<li><span class="tag tw">BATCH</span> <b>CLAUDE.md over the 200-line budget in 5 repos:</b> pedrito 787 · mutual 515 · gimnasio 429 · whatsappbot 310 · rifas AGENTS 262. Nereidas showed the fix (compacted to 60 + legacy backup). One batch pass could do all five.</li>
+<li><span class="tag tw">CONFIG</span> <b>Telegram escalation placeholders</b> in elbraserito + pedrito monitoring.md — need real chat ids to actually alert.</li>
+<li><span class="tag tw">SECURITY</span> <b>Secret-shaped public env vars</b> flagged in mutual + nereidas — review whether they're actually sensitive.</li>
+<li><span class="tag tw">SKILL BUG</span> <b>project-health checker scans only the root manifest</b> — 3 confirmed false-negatives (bajoneando ×2, venezia ×1) for deps living in subpackages or custom implementations. Fix in the skill.</li>
+<li><span class="tag tw">PENDING</span> <b>a-s-h src-scoped graphify</b> still finishing · <b>futuracrm PR #29</b> still your merge call.</li>
+</ul></div>
+
+<h2>What the run taught us (feeds Phase C — the sweeper)</h2>
+<div class="card"><ul>
+<li><b>gitnexus full re-analysis is cheap</b> (7–65s/repo) → the sweeper can just re-run it every sweep. No incremental complexity.</li>
+<li><b>graphify's &gt;200-file corpus gate blocks every large repo at root</b> → per-repo bounded scopes are mandatory sweeper config. Discovered today: whatsappbot=root-ok(huge), pedrito=<code>app</code>, nereidas/elbraserito/a-s-h=<code>src</code>, bajoneando=src-minus-vendored.</li>
+<li><b>Staleness must be measured in commits-behind, not days</b> — venezia (28d, 0 behind) was fine; whatsappbot (2d index, 41 behind) wasn't.</li>
+<li><b>Stagger fleet dispatches</b> — 11 back-to-back A2A sends + 11 subagent spawns wedged the mux for ~10 min (self-recovered; filesystem watching bridged the blindness).</li>
+<li><b>Ack every codex result immediately</b> or it re-sends in a loop.</li>
+</ul></div>
+</div></body>
+</html>

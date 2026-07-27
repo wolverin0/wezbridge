@@ -1,3 +1,12 @@
+<!-- doc-head: triaged 2026-07-18, greppable summary. Edit body => update this. -->
+Execution checklist for the Claude Sentinel and Codex Orchestrator loop.
+Maps pane aliases (e.g. pane 33) to sentinel events and A2A routing.
+Defines Phase 1 smoke tests, pane identity resolution, and event contracts.
+Specifies MemoryMaster bounded recall context and validation enforcement rules.
+Documents goal dispatcher flow and project status probe JSON schema.
+Read when: Executing /goal or implementing orchestration logic between panes.
+<!-- /doc-head -->
+
 # ROADMAP - Claude Sentinel + Codex Orchestrator
 
 > Use this as the execution checklist for `/goal`.

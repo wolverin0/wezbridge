@@ -1,0 +1,72 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Per-Project Skill Map — 2026-07-16</title><style>
+:root{--bg:#0d1117;--card:#161b22;--bd:#30363d;--fg:#e6edf3;--mut:#8b949e;--acc:#58a6ff;--grn:#3fb950;--org:#d29922;--red:#f85149;--pur:#bc8cff;--cx:#39c5cf}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.55 -apple-system,Segoe UI,Roboto,sans-serif;padding:26px;max-width:1160px}
+h1{margin:0 0 2px;font-size:24px}h2{font-size:17px;margin:28px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--bd)}
+h3{font-size:14px;margin:16px 0 4px}
+.sub{color:var(--mut);margin-bottom:14px}
+.b{display:inline-block;padding:1px 8px;border-radius:20px;font-size:11px;font-weight:700;vertical-align:middle}
+.t1{background:#12331d;color:var(--grn)}.t2{background:#3a2d0a;color:var(--org)}.t3{background:#1c1f24;color:var(--mut)}
+.claude{background:#1c2b40;color:var(--acc)}.codex{background:#0b3335;color:var(--cx)}.both{background:#2a1f3d;color:var(--pur)}
+.rule{background:#3d1418;color:var(--red)}
+table{border-collapse:collapse;width:100%;margin:8px 0}
+td,th{border-bottom:1px solid var(--bd);padding:7px 8px;text-align:left;vertical-align:top;font-size:13px}
+th{color:var(--mut);font-weight:600}
+code{background:#1c2128;border:1px solid var(--bd);border-radius:4px;padding:1px 5px;font-size:12px;color:#e6edf3}
+.q{color:#9db4d0;font-style:italic;font-size:12px}
+.verdict{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:14px 18px;font-size:14.5px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:10px 16px;margin:8px 0}
+ul{margin:5px 0;padding-left:20px}li{margin:3px 0}
+.win{color:var(--grn);font-weight:700}
+</style></head><body>
+<h1>Per-Project Skill Map</h1>
+<div class="sub">3-agent audit · 20 most-recent projects · Claude + Codex sessions (54, ~2–3 recent each) · 2026-07-16. Skills you already have were excluded. Pick what you want; I build it.</div>
+
+<div class="verdict"><b>Verdict:</b> two patterns dominate everything. <b>(1) A "monitor-tick" loop</b> — <i>poll → report → re-arm</i>, hand-typed dozens of times across CRM waves, frontendesigner waves, and the homelab backup "hawk". It's the same shape everywhere → <b>one config-driven skill</b>, not three. <b>(2) A "revive/roadmap→goal" template</b> — you've run it on brandkit, lifeagent, personaldashboard. Beyond those, the strongest single-project signal by far is <b>marketing's ChatGPT image-harvest</b> (~25 near-identical prompts in one session). <span class="win">Build-first recommendation: <code>monitor-tick</code>, <code>chatgpt-harvest</code>, <code>wezterm-crash-recover</code>, and package this very audit as <code>/usage-audit</code>.</span></div>
+
+<h2>Ranked master list — deduped across projects</h2>
+<table>
+<tr><th>#</th><th>Skill</th><th>Projects</th><th>Agent</th><th>Recurrence / evidence</th><th>Tier</th></tr>
+<tr><td>1</td><td><code>monitor-tick</code> <span class="mut">(generic poll→report→re-arm loop; configs: wave-campaign, backup-watch)</span></td><td>CRM, frontendesigner, Apps(homelab)</td><td><span class="b claude">claude</span></td><td>Same ritual 15+× (waves) & 12+× (ghettoVCB "hawk"), only counts/phase change. <span class="q">"W54/W55… shipped X of 60, holds=N, demote at source"</span></td><td><span class="b t1">TOP</span></td></tr>
+<tr><td>2</td><td><code>chatgpt-harvest</code></td><td>marketing</td><td><span class="b claude">claude</span></td><td>~25 verbatim in ONE session. <span class="q">"Harvest the FS-02 fused red/black mark… dedup by id, download, QA"</span></td><td><span class="b t1">TOP</span></td></tr>
+<tr><td>3</td><td><code>wezterm-crash-recover</code></td><td>wezbridge</td><td><span class="b claude">claude</span></td><td>10+× incl this very session. <span class="q">"fucking crashed again, relaunch them"</span> — you have <code>restore-session</code> but keep re-asking manually.</td><td><span class="b t1">TOP</span></td></tr>
+<tr><td>4</td><td><code>revive-abandoned-project</code> <span class="mut">(roadmap → agent-plan → /goal prompt)</span></td><td>brandkit, lifeagent, personaldashboard</td><td><span class="b both">both</span></td><td>3-step template across 3 stale repos. <span class="q">"create the roadmap… create the proper agents… give me a /goal prompt to tackle it"</span></td><td><span class="b t1">TOP</span></td></tr>
+<tr><td>5</td><td><code>mz-1to1-visual-diff</code></td><td>mzcopilot</td><td><span class="b claude">claude</span></td><td>8+× — screenshot real ManagerZone vs clone, diff before claiming parity. <span class="q">"does this look ANYTHING like this?"</span></td><td><span class="b t2">MID</span></td></tr>
+<tr><td>6</td><td><code>mz-forum-post-sync</code></td><td>mzcopilot</td><td><span class="b claude">claude</span></td><td>6× — regenerate ES/EN/CN GreasyFork posts + screenshots. <span class="q">"why does the english post has a lot of spanish words"</span></td><td><span class="b t2">MID</span></td></tr>
+<tr><td>7</td><td><code>wisp-payment-reconcile</code></td><td>whatsappbot-final</td><td><span class="b both">both</span></td><td>5× — re-OCR flagged payments, cross-check MercadoPago UUID vs manual load (no double-count). <span class="q">"run the 48 hours of payments, re analyze the images"</span></td><td><span class="b t2">MID</span></td></tr>
+<tr><td>8</td><td><code>wisp-evolution-qr-recover</code></td><td>whatsappbot-final</td><td><span class="b claude">claude</span></td><td>4 full cycles — Evolution disconnect → QR → stable-open → 25/25 battletest. <span class="q">corr=qr-battletest-20260711</span></td><td><span class="b t2">MID</span></td></tr>
+<tr><td>9</td><td><code>android-tablet-enroll</code></td><td>omniremote</td><td><span class="b claude">claude</span></td><td>User-flagged: <span class="q">"save all this knowledge somewhere since we will have to do the same for 6 other tablets"</span></td><td><span class="b t2">MID</span></td></tr>
+<tr><td>10</td><td><code>seogeo-fanout</code></td><td>frontendesigner</td><td><span class="b claude">claude</span></td><td>3× — dispatch <code>.seogeo/prompt.md</code> to sibling project panes + steer. (<code>claude-seo</code> covers the audit; the pane fan-out wrapper isn't covered.)</td><td><span class="b t2">MID</span></td></tr>
+<tr><td>11</td><td><code>ecosystem-status-audit</code></td><td>lifeagent/Desktop</td><td><span class="b codex">codex</span></td><td>Scoped read-only A2A arch-summary fan-out. Currently ad-hoc & over-fired (see rule R1).</td><td><span class="b t2">MID</span></td></tr>
+<tr><td>12</td><td><code>ig-scraper-healthcheck</code></td><td>CRM</td><td><span class="b claude">claude</span></td><td>2× — respond to <span class="q">"🔴 IG yield COLLAPSED… SCRAPER AUTO-PAUSED"</span> → refresh cookie → resume.</td><td><span class="b t3">LOW</span></td></tr>
+<tr><td>13</td><td><code>mz-userscript-release</code></td><td>mzcopilot</td><td><span class="b claude">claude</span></td><td>2× — build/test/publish Tampermonkey script to GreasyFork via claude-in-chrome.</td><td><span class="b t3">LOW</span></td></tr>
+<tr><td>14</td><td><code>oss-agent-vet</code></td><td>lifeagent/Desktop</td><td><span class="b codex">codex</span></td><td>2× — research a candidate OSS agent (Hermes/Paperclip) + changelog-diff vs installed version.</td><td><span class="b t3">LOW</span></td></tr>
+<tr><td>15</td><td><code>prior-art-refresh</code></td><td>memorymaster</td><td><span class="b claude">claude</span></td><td>~2× — clone/diff the upstream repos MM was inspired by, changelog-only report.</td><td><span class="b t3">LOW</span></td></tr>
+<tr><td>16</td><td><code>wisp-audit-roadmap-status</code></td><td>whatsappbot-final</td><td><span class="b both">both</span></td><td>Repeated "how many items left / real value vs overengineering" digest against <code>auditroadmap.md</code>.</td><td><span class="b t3">LOW</span></td></tr>
+</table>
+
+<h2>CLAUDE.md rules found (not skills — behavior gaps)</h2>
+<div class="card">
+<b><span class="b rule">R1</span> A2A fan-out scoping</b> — the "broadcast to ALL discovered panes" anti-pattern actually fired and you had to stop it: <span class="q">"stop that send to everyone nonsense"</span>. Rule: scope <code>discover_sessions</code> fan-outs to an explicit named subset; never broadcast to all panes without confirmation. → global/wezbridge CLAUDE.md.<br>
+<b><span class="b rule">R2</span> Codex native subagents</b> — gimnasio-next session: <span class="q">"why would we need a fresh session if this behavior is embedded in your fucking cli"</span>. Rule: Codex CLI has native subagents, so <code>/quality-loop</code>-style dispatch on a codex project should NOT spawn extra panes. → gimnasio-next (or global codex) AGENTS.md.<br>
+<b>Already-covered enforcement gaps (no new rule):</b> the "verify before done" and "don't nag about context length" violations are already STOP rules #6 and the When-Stuck rule — compliance gaps, not missing rules.
+</div>
+
+<h2>Already covered — do NOT build</h2>
+<div class="card"><code>quality-loop</code> (gimnasio-next, loop, omniremote QA) · <code>auto-harness</code>/<code>/loop</code> (loop, designloop harnesses) · <code>battle-test</code> (whatsappbot remediation) · <code>rpi</code> (CRM approval queue) · <code>design-gate</code> (frontendesigner AI-slop loop) · <code>handoff</code> (all long sessions) · <code>whatsappbotriage</code>/<code>whatsappbotretention</code> · <code>claude-seo:*</code> (seo audit half of seogeo) · <code>audit-orchestrator</code> (portfolio audits) · <code>schedule</code> (marketing daily prompts, POKER run).</div>
+
+<h2>Projects with NO skill (one-offs / thin sample)</h2>
+<div class="card">wificsi (ESP32 pose-debug, 1 session) · pedrito (read-only review, thin) · gimnasio-next execution (=quality-loop) · designloop/loop/next/rehearsal/pauol (automation harness output, not human workflow).</div>
+
+<h2>Recommended build order</h2>
+<table>
+<tr><th>Order</th><th>Build</th><th>Why first</th></tr>
+<tr><td>1</td><td><code>/usage-audit</code> (package THIS audit)</td><td>Makes this repeatable — the gap you flagged. One command re-runs the 3-agent per-project scan (claude+codex). ~1h.</td></tr>
+<tr><td>2</td><td><code>monitor-tick</code></td><td>Single highest re-typing killer — 3 projects, 30+ occurrences. Config-driven (wave/backup/scraper all instances). Also the "DEFAULT TO A LOOP" rule you keep hand-executing.</td></tr>
+<tr><td>3</td><td><code>chatgpt-harvest</code></td><td>Strongest single-project signal (~25 prompts/session). Immediate marketing-ops relief.</td></tr>
+<tr><td>4</td><td><code>wezterm-crash-recover</code></td><td>You hit it in THIS session. Wraps the restore path you already fixed into one <code>/crash-recover</code>.</td></tr>
+<tr><td>5</td><td>R1 + R2 CLAUDE.md rules</td><td>5-minute edits, prevent the fan-out overfire + codex-pane-waste.</td></tr>
+<tr><td>6+</td><td>MID-tier per project</td><td>Build the ones for projects you're actively in (mzcopilot forum-sync, wisp-payment-reconcile, android-tablet-enroll).</td></tr>
+</table>
+
+<div class="sub" style="margin-top:20px">Note on codex: codex projects (gimnasio-next, omniremote, pedrito, whatsappbot, brandkit, lifeagent) mostly ran <code>quality-loop</code>-shaped work or one-offs — their genuine new skills are <code>revive-abandoned-project</code>, <code>ecosystem-status-audit</code>, <code>oss-agent-vet</code>, and the R2 rule. Codex + Claude share the same <code>~/.claude/skills</code> so any skill built works for both.</div>
+</body></html>

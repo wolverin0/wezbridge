@@ -1,3 +1,12 @@
+<!-- doc-head: triaged 2026-07-18, greppable summary. Edit body => update this. -->
+Specification of the MemoryMaster personal AI layering architecture for wezbridge.
+Maps global, project, and ephemeral scopes to storage targets like AGENTS.md and MemoryMaster.
+Defines ingestion rules: durable claims allowed, raw scrollback and secrets strictly excluded.
+Provides specific query modes: query_for_context, query_for_task, query_meta_decisions, ingest_claim.
+Orchestrator decision tree determines if context belongs in global, project, or prompt scope.
+Read when: implementing context retrieval or configuring memory scoping rules.
+<!-- /doc-head -->
+
 # MemoryMaster Personal AI Harness
 
 This note maps the "personal AI system" idea from

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hosting-Drift Fleet Review — 11 repos (2026-07-23)</title>
+<style>
+  :root{--bg:#0b0f17;--panel:#121826;--panel2:#0e1420;--ink:#e8eef7;--mut:#8b98ad;
+    --good:#28c76f;--warn:#ffb020;--bad:#ff5a5a;--blue:#5b8cff;--purple:#b58cff}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.55 system-ui,Segoe UI,sans-serif;padding:30px 18px}
+  .wrap{max-width:1180px;margin:0 auto}
+  h1{font-size:23px;margin:0 0 4px} h2{font-size:18px;margin:30px 0 10px;border-bottom:1px solid #223;padding-bottom:5px}
+  .sub{color:var(--mut);margin-bottom:16px}
+  table{width:100%;border-collapse:collapse;background:var(--panel);border-radius:10px;overflow:hidden;font-size:13px}
+  th{background:var(--panel2);text-align:left;padding:8px 10px;color:var(--mut);white-space:nowrap}
+  td{padding:8px 10px;border-top:1px solid #1c2536;vertical-align:top}
+  .g{color:var(--good);font-weight:700}.w{color:var(--warn);font-weight:700}.b{color:var(--bad);font-weight:700}.p{color:var(--purple);font-weight:700}
+  .tag{display:inline-block;padding:0 8px;border-radius:99px;font-size:11px;font-weight:700}
+  .tg{background:#173325;color:var(--good)}.tw{background:#332a14;color:var(--warn)}.tb{background:#331717;color:var(--bad)}
+  .card{background:var(--panel);border-radius:10px;padding:14px 16px;margin:10px 0}
+  code{background:#0a0e15;padding:1px 5px;border-radius:4px;font-size:12px;color:#a5c8ff}
+  ul{margin:6px 0;padding-left:20px}li{margin:4px 0}
+  .scroll{overflow-x:auto}
+</style>
+</head>
+<body><div class="wrap">
+<h1>Hosting-Drift Fleet Review</h1>
+<div class="sub">2026-07-23 · Question per repo: does <code>monitoring.md</code> name where production ACTUALLY runs, and do hosting claims agree across files? · 11 repos: pedrito reviewed inline (fixed same-day), 10 via 5 parallel read-only agents · Trigger: operator caught pedrito's monitoring.md silent about its DonWeb VPS</div>
+
+<h2>The fleet table (worst first)</h2>
+<div class="scroll"><table>
+<tr><th>Repo</th><th>Production actually runs on</th><th>monitoring.md says…</th><th>Verdict</th></tr>
+<tr><td><b>omniremote</b></td><td>Homeserver VM (systemd <code>omniremote-cp.service</code>, uvicorn <b>:8088</b>) + Docker for Postgres/Redis/RustDesk, Cloudflare Tunnel → omniremote.puntofutura.com.ar. AGENTS.md/CLAUDE.md/docs/deploy.md/systemd README unanimous.</td><td class="b">localhost:8080 everywhere; "CP:8080 in production" (wrong port — 8080 is qbittorrent on that VM); <code>repo: local-only</code> (false — GitHub is the deploy source); <b>auto-restart action_scripts spawn a LOCAL Windows uvicorn on :8080</b> — during a real outage they'd "remediate" nothing and report success. VM named once, only as another project's dependency.</td><td class="b">CRITICAL — false-remediation risk</td></tr>
+<tr><td><b>venezia</b></td><td class="w">Hosted Supabase prod DB is REAL (weekly cron <code>prod-backup.yml</code> pg_dumps <code>PROD_DATABASE_URL</code> → R2). Frontend/API host UNRESOLVED: CI deploys to <b>Cloudflare Pages</b>, task log says <b>Vercel</b> was the decided topology, operator-runbook still says <b>pm2/systemd</b>. Three contradictory narratives.</td><td class="b">"Deployed locally via Docker" — actively claims local-only while a live cron backs up a production database.</td><td class="b">HIGH — needs YOUR decision (which frontend host is truth?) before docs can be fixed</td></tr>
+<tr><td><b>mutual</b></td><td>TWO surfaces: Vercel CRM (<code>mutual-inky.vercel.app</code>) + Ferozo/WooCommerce webshop (<code>c1511579.ferozo.com</code>), Supabase backend. Evidenced in the 2026-06-26 owner launch packet.</td><td class="b">Silent on both. Worse: <code>docs/deployment.md</code> is a 221-line Nginx/manual-SSL guide that never mentions Vercel — pure unreconciled boilerplate. OPERATIONS.md has "dashboard: TBD" placeholders for URLs already known.</td><td class="b">HIGH — silent + contradicting deploy guide</td></tr>
+<tr><td><b>nereidas</b></td><td>Vercel (<code>nereidas.vercel.app</code>) + Supabase (Edge Functions, /health routed there). vercel.json + REQUIRED_SECRETS + 4 audit docs agree.</td><td class="b">Actively disclaims: "no production URL or live health endpoint was verified"; <code>health_check: none</code>. The URL exists and was audited in the same repo.</td><td class="w">MEDIUM — false disclaimer</td></tr>
+<tr><td><b>pedrito</b></td><td>DonWeb VPS (Compose+Caddy, Cloudflare, <code>/opt/pedrito/releases</code>). Coolify = GlitchTip only.</td><td class="g">FIXED today: production named as out-of-scope context; compose "AWS" comment corrected to DonWeb.</td><td class="g">FIXED</td></tr>
+<tr><td><b>elbraserito</b></td><td>Vercel (<code>delivery.puntofutura.com.ar</code>) + Supabase; CI workflow <code>deploy-vercel.yml</code> does CLI deploy on push + 2h synthetic uptime check.</td><td class="g">YES, thorough.</td><td class="w">LOW — narrative gap: "⚠️ BROKEN webhook (07-16), deploys manual" note never mentions that <code>deploy-vercel.yml</code> exists (likely IS the workaround); unclear if the note is now stale. Needs a Vercel-dashboard glance.</td></tr>
+<tr><td><b>whatsappbot-final</b> 💰</td><td>Ubuntu VM (Docker: MySQL 8, Evolution API, bot, Grafana/Loki) behind named Cloudflare Tunnel; ESXi hypervisor.</td><td class="g">YES, in detail (best in fleet: server, ssh_prefix, dependency table).</td><td class="w">LOW — one doc lies: <code>bot/docs/otacon-hermes-wisp-context.md:42</code> claims "Postgres/Supabase, Vercel" stack. It's MySQL-on-Docker-VM.</td></tr>
+<tr><td><b>rifas</b></td><td>Coolify (<code>rifas-web</code>, private Postgres 17) + Cloudflare Tunnel → rifas.puntofutura.com.ar. donweb-pull.sh = NAS backup mechanism, not hosting.</td><td class="w">Implied only (Coolify named in an authorization sentence, never as "production runs on…").</td><td class="w">LOW — make it explicit (one line)</td></tr>
+<tr><td><b>bajoneando</b></td><td>Coolify on DonWeb VPS, single container, cloudflared tunnel. Old Vercel+Supabase = rollback only (decommission still awaiting your go).</td><td class="g">YES — the fleet's gold standard; SSH key/port in monitor scripts match HANDOFF.md exactly.</td><td class="g">CLEAN — 2 side notes: <code>wrangler.demo.jsonc</code> still declares the removed custom domain; <code>app.bajoneando</code> subdomain has wrangler config AND a vercel deploy script with no doc saying which is authoritative</td></tr>
+<tr><td><b>gimnasio-next</b></td><td>Vercel + Supabase (<code>gimnasio.puntofutura.com.ar</code>); DeepFace on a separate Ubuntu VM (Docker).</td><td class="g">YES, correct (polls prod URL, uses vercel CLI in signals).</td><td class="g">CLEAN — cruft only: dead <code>whatsapp-web.js</code> container in root compose, zero references in src (prod is Meta Cloud API)</td></tr>
+<tr><td><b>argentina-sales-hub</b></td><td>Vercel (<code>futuracrm.com.ar</code>) + Supabase; prebuilt CLI deploys (Windows rollup bug documented).</td><td class="g">YES (frontmatter production_url + body).</td><td class="g">CLEAN — zero contradictions anywhere</td></tr>
+</table></div>
+
+<h2>Proposed fixes (awaiting your go — nothing edited beyond pedrito)</h2>
+<div class="card">
+<b><span class="tag tb">A</span> omniremote monitoring.md rewrite of the drifted parts</b> — correct :8080→:8088 + systemd topology in entry_point/health_check/prose, name the VM + tunnel + prod URL, change the two auto-restart action_scripts from "spawn local uvicorn" to <b>escalate</b> (safe default; a real restart command would be <code>systemctl restart omniremote-cp</code> on the VM and that should stay operator/pane-gated), fix <code>repo: local-only</code>. <b>Highest value fix in the batch.</b><br><br>
+<b><span class="tag tb">B</span> nereidas monitoring.md</b> — replace the "no production URL" disclaimers with: Production = Vercel (nereidas.vercel.app) + Supabase, optionally after one live <code>curl -sI</code> to confirm still up.<br><br>
+<b><span class="tag tb">C</span> mutual</b> — (1) monitoring.md: add production line naming BOTH surfaces (Vercel CRM + Ferozo webshop + Supabase); (2) mark <code>docs/deployment.md</code> Nginx guide SUPERSEDED in its doc-head (it describes infrastructure that never existed); (3) fill the two known URLs into OPERATIONS.md placeholders.<br><br>
+<b><span class="tag tw">D</span> rifas monitoring.md</b> — one explicit line: "Production: Coolify app rifas-web + private Postgres, via Cloudflare Tunnel rifas.puntofutura.com.ar."<br><br>
+<b><span class="tag tw">E</span> whatsappbot</b> — fix the stack line in <code>bot/docs/otacon-hermes-wisp-context.md</code> (MySQL 8 / Docker-VM / Cloudflare Tunnel; no Vercel, no Supabase).<br><br>
+<b><span class="tag tw">F</span> elbraserito monitoring.md</b> — amend the broken-webhook note to reference <code>deploy-vercel.yml</code> as the active CLI-deploy path; flag "verify in Vercel dashboard whether webhook is still broken" as the open question.<br><br>
+<b><span class="tag tw">G</span> VENEZIA — decision needed from YOU, not an edit:</b> which frontend host is ground truth — Cloudflare Pages (what CI actually deploys) or Vercel (what the task log says was decided)? Once you answer, monitoring.md + runbook + ROADMAP get reconciled in one pass. (Agent suggests git dates would hint, but the decision is yours.)<br><br>
+<b>Flag-only (no edits proposed):</b> bajoneando wrangler.demo.jsonc stale domain + undocumented app.bajoneando dual-config; gimnasio dead whatsapp container in compose.
+</div>
+
+<h2>Pattern learned (feeds the knowledge compiler)</h2>
+<div class="card"><ul>
+<li><b>monitoring.md is treated as "what is this project" by every agent — so even deliberately local-scoped contracts MUST name the production host as out-of-scope context.</b> 5 of 11 repos failed this (pedrito, omniremote, venezia, mutual, nereidas).</li>
+<li><b>Hosting claims in prose/comments rot silently:</b> pedrito's "AWS" comment, omniremote's ":8080 in production", mutual's Nginx guide, venezia's pm2 runbook, whatsappbot's Otacon doc. None of these are executable, so nothing ever failed when they went stale — exactly the class the greppable-headers + doc-triage system exists for.</li>
+<li><b>The worst failure mode isn't silence — it's wrong remediation:</b> omniremote's watchdog scripts would spawn a local process and claim success during a production outage.</li>
+<li>Gold standards to copy: <b>bajoneando</b> (host + tunnel + SSH details in monitoring.md matching HANDOFF.md) and <b>whatsappbot</b> (server/ssh_prefix in frontmatter + dependency table).</li>
+</ul></div>
+
+<div class="sub" style="margin-top:20px">Sources: 5 read-only review agents (2 repos each) + inline pedrito investigation · claims mm-09ed (pedrito), fleet claim pending · companion: 2026-07-23-fleet-control-plane-graph.html</div>
+</div></body>
+</html>

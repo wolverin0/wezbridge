@@ -1,3 +1,12 @@
+<!-- doc-head: triaged 2026-07-18, greppable summary. Edit body => update this. -->
+Architectural plan defining the hybrid Claude Sentinel + Codex Orchestrator control loop for wezbridge.
+Details the core loop: Claude acts as event-driven sentinel; Codex acts as on-demand planner/decision engine.
+Specifies MCP transport usage: pane discovery, A2A event passing, and stable pane ID mapping.
+Defines MemoryMaster integration constraints: use bounded context queries, avoid raw scrollback dumps.
+Outlines validation rules: enforce Playwright/browser checks for UI work and specific skill invocations.
+Read when: implementing the orchestrator logic, designing pane discovery, or setting up project status probes.
+<!-- /doc-head -->
+
 # PLAN - Claude Sentinel + Codex Orchestrator
 
 > Status: draft created 2026-05-16 after live A2A smoke test.
