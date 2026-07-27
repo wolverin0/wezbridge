@@ -200,7 +200,7 @@ test('fake-ClawTrol integration: sync posts wire body, applies intent, acks resu
     });
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  const cfg = { url: `http://127.0.0.1:${server.address().port}`, token: 'test-token-not-logged', profile: 'testprof' };
+  const cfg = { url: `http://127.0.0.1:${server.address().port}`, token: 'test-token-not-logged', profile: 'testprof', projects: new Set(['fakerepo']) };
 
   const first = await bridge.syncOnce(cfg, { fullSnapshot: true });
   assert.strictEqual(first.intents, 1);
@@ -225,7 +225,7 @@ test('fake-ClawTrol integration: sync posts wire body, applies intent, acks resu
 test('sync retry: failed POST leaves cursors unpersisted so the delta replays', async () => {
   writeIntelFile('events.jsonl', [{ time: 't', event: 'ledger.update', task_id: 'T-0011', attempt: 1 }]);
   bridge.writeCursors({}); // reset
-  const cfg = { url: 'http://127.0.0.1:1', token: 'x', profile: 'p' }; // nothing listens
+  const cfg = { url: 'http://127.0.0.1:1', token: 'x', profile: 'p', projects: new Set(['fakerepo']) }; // nothing listens
   await assert.rejects(() => bridge.syncOnce(cfg, { fullSnapshot: false }));
   assert.deepStrictEqual(bridge.readCursors(), {}); // not advanced
   const replay = bridge.readDelta('events.jsonl', bridge.readCursors());
@@ -249,4 +249,33 @@ test('env-file loader: CLAWTROL_ keys load from owner file, other keys ignored, 
   assert.strictEqual(process.env.NOT_CLAWTROL, undefined);
   delete process.env.CLAWTROL_URL; delete process.env.CLAWTROL_TOKEN; delete process.env.CLAWTROL_PROFILE;
   delete process.env.WEZBRIDGE_CLAWTROL_ENV;
+});
+
+test('canary allowlist: unset ships nothing task-scoped; allowlisted repo ships; others filtered', async () => {
+  // Tasks on disk belong to 'fakerepo' (created by earlier tests via the real ledger).
+  const none = bridge.buildTasks(new Set());
+  assert.strictEqual(none.length, 0); // fail-closed: empty allowlist = no tasks
+  const some = bridge.buildTasks(new Set(['fakerepo']));
+  assert.ok(some.length >= 1 && some.every((t) => t.project === 'fakerepo'));
+  const other = bridge.buildTasks(new Set(['whatsappbot-final']));
+  assert.strictEqual(other.length, 0); // non-matching allowlist filters everything
+  // Event filtering goes through allowedTaskIds inside syncOnce — prove via a
+  // fake server: same event delta, allowlist off → 0 events shipped.
+  const taskId = some[0].id;
+  writeIntelFile('events.jsonl', [{ time: 't', event: 'ledger.update', task_id: taskId, attempt: 1 }]);
+  bridge.writeCursors({});
+  const seen = [];
+  const http2 = require('node:http');
+  const srv = http2.createServer((req, res) => {
+    let raw = ''; req.on('data', (d) => { raw += d; });
+    req.on('end', () => { seen.push(JSON.parse(raw)); res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ intents: [] })); });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const base = { url: `http://127.0.0.1:${srv.address().port}`, token: 't', profile: 'p' };
+  await bridge.syncOnce({ ...base, projects: new Set() }, { fullSnapshot: false });
+  bridge.writeCursors({}); // replay same delta with allowlist ON
+  await bridge.syncOnce({ ...base, projects: new Set(['fakerepo']) }, { fullSnapshot: false });
+  srv.close();
+  assert.strictEqual((seen[0].events || []).length, 0); // fail-closed
+  assert.ok((seen[1].events || []).some((e) => e.task_id === taskId)); // canary ships
 });

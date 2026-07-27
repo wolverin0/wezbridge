@@ -85,7 +85,12 @@ function config() {
   const url = process.env.CLAWTROL_URL;
   const token = process.env.CLAWTROL_TOKEN;
   if (!url || !token) return null;
-  return { url: url.replace(/\/+$/, ''), token, profile: process.env.CLAWTROL_PROFILE || 'wolverin0' };
+  // Rollout canary allowlist (comma-separated repo names). FAIL-CLOSED: when
+  // unset, NO task/event/message data ships — health + panes summary only.
+  // Fleet expansion happens by editing the owner env file, never by default.
+  const projects = new Set(String(process.env.CLAWTROL_PROJECTS || '')
+    .split(',').map((s) => s.trim()).filter(Boolean));
+  return { url: url.replace(/\/+$/, ''), token, profile: process.env.CLAWTROL_PROFILE || 'wolverin0', projects };
 }
 
 // ---------- rotation-safe per-file cursors ----------
@@ -361,12 +366,13 @@ async function buildPanes() {
   } catch { return []; }
 }
 
-function buildTasks() {
+function buildTasks(projects = new Set()) {
   try {
     const dir = path.join(intelDir(), 'tasks');
     const tasks = fs.readdirSync(dir).filter((f) => f.endsWith('.json')).map((f) => {
       try { return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); } catch { return null; }
-    }).filter(Boolean);
+    }).filter(Boolean)
+      .filter((t) => projects.has(t.repo)); // canary allowlist — fail-closed on empty
     return tasks.map((t) => ({
       id: t.id, title: t.title, brief: t.goal || null, project: t.repo, kind: t.kind,
       state: t.state, priority: t.priority || null, attempt: t.attempt,
@@ -386,9 +392,27 @@ const state = {
   lastOkAt: null, lastError: null,
 };
 
+/** Task ids belonging to allowlisted canary projects (fail-closed on empty allowlist). */
+function allowedTaskIds(projects) {
+  const ids = new Set();
+  if (!projects || !projects.size) return ids;
+  try {
+    const dir = path.join(intelDir(), 'tasks');
+    for (const f of fs.readdirSync(dir)) {
+      if (!f.endsWith('.json')) continue;
+      try {
+        const t = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+        if (projects.has(t.repo)) ids.add(t.id);
+      } catch { /* skip corrupt */ }
+    }
+  } catch { /* no tasks dir */ }
+  return ids;
+}
+
 async function syncOnce(cfg, { fullSnapshot }) {
   const cursors = readCursors();
   const nextCursors = { ...cursors };
+  const canaryIds = allowedTaskIds(cfg.projects);
   const events = [];
   const rawEntriesByFile = {};
   for (const f of EVENT_FILES) {
@@ -396,7 +420,8 @@ async function syncOnce(cfg, { fullSnapshot }) {
     rawEntriesByFile[f] = entries;
     for (const e of entries) {
       const wire = toWireEvent(f, e);
-      if (wire) events.push(wire); // task-scoped only; fleet lines summarize below
+      // Canary allowlist: only events for tasks in allowlisted projects ship.
+      if (wire && canaryIds.has(wire.task_id)) events.push(wire);
     }
     nextCursors[f] = nextOffset;
   }
@@ -405,7 +430,9 @@ async function syncOnce(cfg, { fullSnapshot }) {
     const { entries, nextOffset } = readDelta(MESSAGE_FILE, cursors);
     for (const e of entries) {
       const m = toWireMessage(e);
-      if (m) messages.push(m);
+      // Messages with a known task ship only for canary tasks; task-less
+      // orchestrator notes ship only when at least one project is allowlisted.
+      if (m && (m.task_id ? canaryIds.has(m.task_id) : cfg.projects && cfg.projects.size > 0)) messages.push(m);
     }
     nextCursors[MESSAGE_FILE] = nextOffset;
   }
@@ -421,7 +448,7 @@ async function syncOnce(cfg, { fullSnapshot }) {
     ...(events.length ? { events } : {}),
     ...(messages.length ? { messages } : {}),
     intent_results: unackedResults(acked),
-    ...(fullSnapshot ? { tasks: buildTasks(), panes: await buildPanes() } : {}),
+    ...(fullSnapshot ? { tasks: buildTasks(cfg.projects), panes: await buildPanes() } : {}),
   };
 
   const res = await fetch(`${cfg.url}/api/v1/orchestration/sync`, {
