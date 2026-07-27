@@ -17,9 +17,14 @@ const REPO = path.join(TMP, 'fakerepo');
 fs.mkdirSync(INTEL, { recursive: true });
 fs.mkdirSync(LEDGER, { recursive: true });
 fs.mkdirSync(path.join(REPO, '.agent-workflow'), { recursive: true });
-fs.copyFileSync(
+// Locate the real ledger.cjs regardless of checkout depth: repo root sits at
+// <Py Apps>/wezbridge (2 up from test/) OR <Py Apps>/_worktrees/<name> (3 up).
+const LEDGER_SRC = [
+  path.join(__dirname, '..', '..', '_docs-curation', 'ledger.cjs'),
   path.join(__dirname, '..', '..', '..', '_docs-curation', 'ledger.cjs'),
-  path.join(LEDGER, 'ledger.cjs'));
+].find((p) => fs.existsSync(p));
+if (!LEDGER_SRC) throw new Error('cannot locate _docs-curation/ledger.cjs from this checkout');
+fs.copyFileSync(LEDGER_SRC, path.join(LEDGER, 'ledger.cjs'));
 fs.writeFileSync(path.join(LEDGER, 'sweeper-config.json'), JSON.stringify({
   root: TMP,
   repos: [{ name: 'fakerepo', path: 'fakerepo' }],
