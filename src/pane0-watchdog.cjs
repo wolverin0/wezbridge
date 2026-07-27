@@ -21,8 +21,13 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const CHECK_MS = 60_000;
-const STALE_MS = 15 * 60_000;      // no beacon for 15 min = stale heartbeat
+const CHECK_MS = 30_000;
+// Recovery timing (P1 gate: <2 min recovery): when the orchestrator pane is
+// ABSENT, 90s of beacon silence is enough — two missed 30s observations.
+// When a pane is PRESENT it is never recovered regardless of silence (busy or
+// quiet is not dead); STALE_MS only marks the health surface as stale.
+const ABSENT_STALE_MS = 90_000;
+const STALE_MS = 15 * 60_000;      // health-surface staleness only
 const COOLDOWN_MS = 10 * 60_000;   // min gap between recovery attempts
 const MAX_FAILURES = 3;
 const TAIL_BYTES = 128 * 1024;
@@ -97,15 +102,18 @@ async function check(deps = {}) {
   state.lastBeaconAt = beaconMs ? new Date(beaconMs).toISOString() : null;
   state.lastCheck = new Date(now).toISOString();
 
-  const stale = !beaconMs || now - beaconMs > STALE_MS;
-  if (!stale) {
-    // Fresh heartbeat after an attempt = that recovery worked; reset strikes.
-    if (state.consecutiveFailures > 0 && beaconMs > state.lastAttemptAt) state.consecutiveFailures = 0;
-    return { action: 'healthy' };
-  }
+  // Fresh heartbeat after an attempt = that recovery worked; reset strikes.
+  if (beaconMs && beaconMs > state.lastAttemptAt && state.consecutiveFailures > 0) state.consecutiveFailures = 0;
 
   const paneUp = deps.paneExists !== undefined ? deps.paneExists : await orchestratorPaneExists();
-  if (paneUp) return { action: 'stale-but-present' }; // busy or quiet session — not dead
+  if (paneUp) {
+    // A present pane is never recovered; report staleness on the health surface only.
+    return { action: !beaconMs || now - beaconMs > STALE_MS ? 'stale-but-present' : 'healthy' };
+  }
+  // Pane ABSENT: recover after ABSENT_STALE_MS of beacon silence — the short
+  // threshold is what makes <2 min recovery reachable (P1 gate).
+  const silentFor = beaconMs ? now - beaconMs : Infinity;
+  if (silentFor <= ABSENT_STALE_MS) return { action: 'absent-grace' }; // just closed/racing — wait out the grace window
 
   if (now - state.lastAttemptAt < COOLDOWN_MS) return { action: 'cooldown' };
 
@@ -161,4 +169,4 @@ function _reset() {
   });
 }
 
-module.exports = { start, stop, check, health, lastOrchBeaconMs, orchestratorPaneExists, _reset, STALE_MS, COOLDOWN_MS, MAX_FAILURES };
+module.exports = { start, stop, check, health, lastOrchBeaconMs, orchestratorPaneExists, _reset, CHECK_MS, ABSENT_STALE_MS, STALE_MS, COOLDOWN_MS, MAX_FAILURES };

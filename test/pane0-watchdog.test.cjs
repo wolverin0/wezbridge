@@ -18,9 +18,16 @@ beforeEach(() => {
   wd.start();
 });
 
-test('healthy: fresh beacon → no action regardless of pane state', async () => {
+test('absent pane inside the 90s grace window → wait, no respawn (close/reopen race)', async () => {
   const r = await wd.check({ now: NOW, beaconMs: NOW - 60_000, paneExists: false, recover: noRecover });
-  assert.strictEqual(r.action, 'healthy');
+  assert.strictEqual(r.action, 'absent-grace');
+});
+
+test('P1 timing gate: absent + silence just past 90s → recovery fires (<2min reachable)', async () => {
+  const r = await wd.check({ now: NOW, beaconMs: NOW - wd.ABSENT_STALE_MS - 1000, paneExists: false, recover: okRecover });
+  assert.strictEqual(r.action, 'recovered');
+  // Worst-case trigger latency = grace window + one check period, under the 2-min gate.
+  assert.ok(wd.ABSENT_STALE_MS + wd.CHECK_MS <= 120_000);
 });
 
 test('stale beacon but pane present → no respawn (busy/quiet session is not death)', async () => {
@@ -28,7 +35,7 @@ test('stale beacon but pane present → no respawn (busy/quiet session is not de
   assert.strictEqual(r.action, 'stale-but-present');
 });
 
-test('stale AND absent → recovery fires once, then cooldown blocks the next attempt', async () => {
+test('silence AND absent → recovery fires once, then cooldown blocks the next attempt', async () => {
   const r1 = await wd.check({ now: NOW, beaconMs: 0, paneExists: false, recover: okRecover });
   assert.strictEqual(r1.action, 'recovered');
   assert.strictEqual(r1.paneId, 99);
