@@ -382,7 +382,7 @@ function createEventHandlers(ctx) {
     }
     try {
       const watchdog = require('../pane0-watchdog.cjs');
-      log(watchdog.start() ? 'pane0-watchdog armed (60s check, 15min stale, 10min cooldown, 3-strike disable)' : 'pane0-watchdog disabled (WEZBRIDGE_WATCHDOG=0)');
+      log(watchdog.start() ? 'pane0-watchdog armed (30s check, 90s absent-recovery, 10min cooldown, 3-strike disable)' : 'pane0-watchdog disabled (WEZBRIDGE_WATCHDOG=0)');
     } catch (e) {
       log(`pane0-watchdog failed to start: ${e.message}`);
     }

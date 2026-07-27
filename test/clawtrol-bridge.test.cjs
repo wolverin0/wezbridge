@@ -67,7 +67,7 @@ test('toWireEvent: task-scoped lines map with attempt>=1; fleet lines return nul
   const wire = bridge.toWireEvent('events.jsonl', taskLine);
   assert.strictEqual(wire.task_id, 'T-0042');
   assert.strictEqual(wire.attempt, 2);
-  assert.strictEqual(wire.seq, 11);
+  assert.strictEqual(wire.seq, bridge.FILE_SEQ_BASE['events.jsonl'] + 10 + 1);
   assert.strictEqual(wire.external_id, 'events.jsonl:10');
   // Fleet-level beacon → null (v1 boundary: Rails rejects null task_id).
   const beacon = { line: JSON.stringify({ time: 't', event: 'turn-end', repo: 'x', markers: [] }), offset: 0 };
@@ -94,6 +94,44 @@ test('message provenance: only orchestrator|worker sync up; operator stays local
   assert.ok(bridge.toWireMessage(mk('worker')));
   assert.strictEqual(bridge.toWireMessage(mk('operator')), null);
   assert.strictEqual(bridge.toWireMessage(mk(undefined)), null);
+});
+
+test('defect-1 regression: create_task accepts Rails wire keys {project, brief, acceptance}', async () => {
+  const r = await bridge.applyIntent({
+    id: 'i-wire1', kind: 'create_task',
+    payload: { project: 'fakerepo', kind: 'safe-kind', title: 'wire-shape task', brief: 'created via project/brief keys', priority: 'high', acceptance: ['criterion A', 'criterion B'] },
+  });
+  assert.strictEqual(r.status, 'applied');
+  assert.match(String(r.result.task_id), /^T-\d+$/);
+  assert.match(String(r.result.note || ''), /priority not persisted/);
+});
+
+test('defect-2 regression: task id resolves from task_origin_key when payload lacks task_id', async () => {
+  assert.strictEqual(bridge.resolveTaskId({ payload: { task_id: 'T-0042' } }), 'T-0042');
+  assert.strictEqual(bridge.resolveTaskId({ payload: {}, task_origin_key: 'wezbridge:wolverin0:task:T-0099' }), 'T-0099');
+  assert.strictEqual(bridge.resolveTaskId({ payload: {}, task_origin_key: 'wezbridge:u1:T-0099:attempt:2' }), null); // wrong shape → no guess
+  // cancel via origin key against a real created task
+  const created = await bridge.applyIntent({ id: 'i-ok1', kind: 'create_task', payload: { project: 'fakerepo', kind: 'safe-kind', title: 'to cancel', brief: 'x' } });
+  const cancelled = await bridge.applyIntent({ id: 'i-ok2', kind: 'cancel', payload: {}, task_origin_key: `wezbridge:test:task:${created.result.task_id}` });
+  assert.strictEqual(cancelled.status, 'applied');
+  assert.strictEqual(cancelled.result.task_state, 'cancelled');
+});
+
+test('defect-3 regression: seq namespaced per file (no cross-file collision) and payload allowlisted', () => {
+  const mk = (line, offset) => ({ line, offset });
+  const taskLine = JSON.stringify({ time: 't', event: 'ledger.update', task_id: 'T-0001', attempt: 1, corr: 'c', secret_blob: 'MUST-NOT-SHIP', body: 'raw content MUST-NOT-SHIP' });
+  const e1 = bridge.toWireEvent('events.jsonl', mk(taskLine, 500));
+  const e2 = bridge.toWireEvent('pane-events.jsonl', mk(JSON.stringify({ time: 't', event: 'turn-end', task_id: 'T-0001', repo: 'r' }), 500));
+  assert.notStrictEqual(e1.seq, e2.seq); // same offset, different files → distinct seq
+  assert.ok(Number.isSafeInteger(e1.seq) && Number.isSafeInteger(e2.seq));
+  assert.ok(e1.seq > 0 && e2.seq > 0);
+  // Allowlist: metadata fields survive, unknown/content fields do NOT.
+  assert.strictEqual(e1.payload.corr, 'c');
+  assert.strictEqual(e1.payload.file, 'events.jsonl');
+  assert.strictEqual(e1.payload.cursor, 500);
+  assert.strictEqual(e1.payload.secret_blob, undefined);
+  assert.strictEqual(e1.payload.body, undefined);
+  assert.ok(!JSON.stringify(e1.payload).includes('MUST-NOT-SHIP'));
 });
 
 test('applyIntent: unknown kind rejected with structured result', async () => {

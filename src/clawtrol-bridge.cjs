@@ -23,9 +23,10 @@
  *   body   = {profile, generated_at, health, panes[], tasks[], events[],
  *             messages[], intent_results:[{id,status,result}]}
  *   events = {external_id, task_id, attempt, seq, timestamp, event_type,
- *             level, message, payload}  — fleet-level events carry
- *             task_id:null/attempt:null and seq = byte offset (stable, positive,
- *             monotonic per file); external_id = "<file>:<offset>".
+ *             level, message, payload} — TASK-SCOPED only (fleet-level lines
+ *             summarize into health.fleet); seq is namespaced per source file
+ *             (FILE_SEQ_BASE + offset + 1, safe-integer bounded); payload is
+ *             allowlisted metadata only; external_id = "<file>:<offset>".
  *   reply  = {server_time, source, accepted:{...,duplicates}, intents:
  *             [{id, kind, task_origin_key, payload, created_at}]}
  *
@@ -122,6 +123,22 @@ function readDelta(fileId, cursors) {
  * task_id/attempt). Returns null for fleet-level lines (a2a audit, beacons);
  * those summarize into health.fleet instead of uploading raw.
  */
+// Deterministic per-file seq namespace: seq = base + offset + 1. Bases are 1e12
+// apart, so offsets never collide across source files, and the largest value
+// (3e12 + file offset) stays far below Number.MAX_SAFE_INTEGER (9e15) and
+// Postgres bigint.
+const FILE_SEQ_BASE = { 'events.jsonl': 1e12, 'pane-events.jsonl': 2e12, [MESSAGE_FILE]: 3e12 };
+
+// Allowlisted payload metadata — never the raw parsed object, never content.
+const PAYLOAD_FIELDS = ['event', 'state', 'repo', 'corr', 'type', 'task_id', 'attempt',
+  'from_pane', 'to_pane', 'submitted', 'delivered', 'v2', 'session', 'markers', 'by', 'kind'];
+
+function allowlistPayload(fileId, offset, parsed) {
+  const out = { file: fileId, cursor: offset };
+  for (const k of PAYLOAD_FIELDS) if (parsed[k] !== undefined) out[k] = parsed[k];
+  return out;
+}
+
 function toWireEvent(fileId, entry) {
   let parsed = {};
   try { parsed = JSON.parse(entry.line); } catch { return null; }
@@ -132,12 +149,12 @@ function toWireEvent(fileId, entry) {
     external_id: `${fileId}:${entry.offset}`,
     task_id: taskId,
     attempt: Number(parsed.attempt) > 0 ? Number(parsed.attempt) : 1,
-    seq: entry.offset + 1, // stable positive integer, monotonic per source file
+    seq: (FILE_SEQ_BASE[fileId] || 0) + entry.offset + 1, // per-file namespaced, safe-integer bounded
     timestamp: parsed.time || new Date().toISOString(),
     event_type: eventType,
     level: /error|fail/i.test(eventType) ? 'error' : 'info',
     message: `${eventType} ${taskId}`.slice(0, 300),
-    payload: { file: fileId, cursor: entry.offset, ...parsed },
+    payload: allowlistPayload(fileId, entry.offset, parsed),
   };
 }
 
@@ -234,6 +251,14 @@ function runLedger(args) {
   });
 }
 
+/** Ledger task id from payload.task_id or the ":task:<T-NNNN>" tail of task_origin_key. */
+function resolveTaskId(intent) {
+  const p = intent.payload || {};
+  if (p.task_id && /^T-\d+$/.test(p.task_id)) return p.task_id;
+  const m = String(intent.task_origin_key || '').match(/:task:(T-\d+)\b/);
+  return m ? m[1] : null;
+}
+
 /**
  * Apply one operator intent through the ledger FSM. Structured result, never
  * throws. create_task goes through ledger create, which applies the per-repo
@@ -249,7 +274,7 @@ async function applyIntent(intent) {
   try {
     if (intent.kind === 'message') {
       appendTaskMessage({
-        task_id: p.task_id || null,
+        task_id: resolveTaskId(intent),
         message_type: p.message_type || 'operator_message',
         content: String(p.content || '').slice(0, 4000),
         provenance: 'operator',
@@ -258,23 +283,39 @@ async function applyIntent(intent) {
       return { ...base, status: 'applied' };
     }
     if (intent.kind === 'create_task') {
-      if (!p.repo || !p.kind || !p.title || !p.goal) {
-        return { ...base, result: { ...base.result, reason: 'create_task requires payload {repo, kind, title, goal}' } };
+      // Rails/UI wire payload is {project, brief, title, kind, priority,
+      // acceptance}; older callers may send {repo, goal}. Accept both.
+      const repo = p.project || p.repo;
+      const goal = p.brief || p.goal;
+      if (!repo || !p.kind || !p.title || !goal) {
+        return { ...base, result: { ...base.result, reason: 'create_task requires payload {project|repo, kind, title, brief|goal}' } };
       }
-      const r = await runLedger(['create', '--repo', p.repo, '--kind', p.kind, '--title', p.title, '--goal', p.goal]);
+      const args = ['create', '--repo', repo, '--kind', p.kind, '--title', p.title, '--goal', goal];
+      const criteria = Array.isArray(p.acceptance) ? p.acceptance.join(';') : (typeof p.acceptance === 'string' ? p.acceptance : null);
+      if (criteria) args.push('--criteria', criteria);
+      const r = await runLedger(args);
       if (!r.ok) return { ...base, result: { ...base.result, reason: `ledger create failed: ${r.stderr.slice(0, 300)}` } };
       const idMatch = r.stdout.match(/"id":\s*"(T-\d+)"/);
       const stateMatch = r.stdout.match(/"state":\s*"(\w+)"/);
-      return { ...base, status: 'applied', result: { ...base.result, task_id: idMatch ? idMatch[1] : null, task_state: stateMatch ? stateMatch[1] : null } };
+      return {
+        ...base, status: 'applied',
+        result: {
+          ...base.result, task_id: idMatch ? idMatch[1] : null, task_state: stateMatch ? stateMatch[1] : null,
+          ...(p.priority ? { note: 'priority not persisted (ledger v1 has no priority field)' } : {}),
+        },
+      };
     }
-    // approve / retry / cancel — FSM transitions on an existing task.
-    if (!p.task_id) return { ...base, result: { ...base.result, reason: `${intent.kind} requires payload.task_id` } };
+    // message handled above; approve / retry / cancel — FSM transitions on an
+    // existing task. Rails may omit payload.task_id and carry the id only in
+    // intent.task_origin_key ("...:task:<T-NNNN>").
+    const taskId = resolveTaskId(intent);
+    if (!taskId) return { ...base, result: { ...base.result, reason: `${intent.kind} requires payload.task_id or a task_origin_key ending :task:<T-NNNN>` } };
     const target = intent.kind === 'approve' ? 'ready' : intent.kind === 'retry' ? 'queued' : 'cancelled';
-    const r = await runLedger(['update', p.task_id, '--state', target, '--note', `${intent.kind} via clawtrol intent ${intent.id}`]);
+    const r = await runLedger(['update', taskId, '--state', target, '--note', `${intent.kind} via clawtrol intent ${intent.id}`]);
     if (!r.ok || /ledger error/i.test(r.stdout + r.stderr)) {
       return { ...base, result: { ...base.result, reason: `illegal transition or ledger error: ${(r.stderr || r.stdout).slice(0, 300)}` } };
     }
-    return { ...base, status: 'applied', result: { ...base.result, task_id: p.task_id, task_state: target } };
+    return { ...base, status: 'applied', result: { ...base.result, task_id: taskId, task_state: target } };
   } catch (e) {
     return { ...base, result: { ...base.result, reason: `apply crashed: ${String(e && e.message).slice(0, 200)}` } };
   }
@@ -439,7 +480,8 @@ module.exports = {
   start, stop, health,
   // exported for tests
   readDelta, readCursors, writeCursors, toWireEvent, toWireMessage,
-  fleetSummary, applyIntent, appendTaskMessage, appliedIntentIds,
-  persistResult, unackedResults, readAckState, writeAckState, syncOnce,
-  buildTasks, INTENT_KINDS, SYNC_FILES,
+  fleetSummary, applyIntent, resolveTaskId, appendTaskMessage,
+  appliedIntentIds, persistResult, unackedResults, readAckState,
+  writeAckState, syncOnce, buildTasks, INTENT_KINDS, SYNC_FILES,
+  FILE_SEQ_BASE, PAYLOAD_FIELDS,
 };
