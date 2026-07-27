@@ -559,6 +559,19 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: {} },
   },
   {
+    name: 'clawtrol_task_reply',
+    description: 'Append a provenance-tagged reply/note on a ledger task to the ClawTrol task thread (_intel/task-messages.jsonl, append-only). The bridge syncs it to the cockpit on its next poll. Use to answer an operator message that arrived from ClawTrol or to leave a durable task-thread note.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string', description: 'Ledger task id (T-NNNN) the message belongs to.' },
+        message_type: { type: 'string', description: 'Message type, e.g. "reply", "note", "status". Default: "reply".' },
+        content: { type: 'string', description: 'Message body (plain text, ≤4000 chars).' },
+      },
+      required: ['task_id', 'content'],
+    },
+  },
+  {
     name: 'a2a_send',
     description: 'Send an A2A protocol envelope to a peer pane in ONE call: builds "[A2A from pane-N to pane-M | corr=<id> | type=<t>]\\n<body>", sends it with VERIFIED submission (no follow-up send_key needed), and returns {submitted, corr}. from_pane defaults to this session\'s own pane (WEZTERM_PANE env). Use this instead of hand-formatting envelopes with send_prompt.',
     inputSchema: {
@@ -1321,6 +1334,30 @@ function handleToolCall(name, args) {
 
     case 'bridge_health':
       return handleBridgeHealth();
+
+    case 'clawtrol_task_reply': {
+      const taskId = String(args.task_id || '');
+      const content = String(args.content || '').trim();
+      if (!/^T-\d+$/.test(taskId)) {
+        return { content: [{ type: 'text', text: 'Error: task_id must be a ledger id (T-NNNN)' }], isError: true };
+      }
+      if (!content) {
+        return { content: [{ type: 'text', text: 'Error: empty content' }], isError: true };
+      }
+      try {
+        const bridge = require('./clawtrol-bridge.cjs');
+        bridge.appendTaskMessage({
+          task_id: taskId,
+          message_type: String(args.message_type || 'reply'),
+          content: content.slice(0, 4000),
+          provenance: 'orchestrator',
+          sender_name: `pane-${process.env.WEZTERM_PANE || '?'}`,
+        });
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: true, task_id: taskId, note: 'appended to task-messages.jsonl; bridge syncs it on the next poll' }) }] };
+      } catch (err) {
+        return { content: [{ type: 'text', text: `Error appending task message: ${err.message}` }], isError: true };
+      }
+    }
 
     case 'a2a_send': return (async () => {
       const toPane = args.to_pane;
