@@ -445,3 +445,50 @@ test('latency fix: crash-replay safety retained — re-offered intent is not app
   assert.strictEqual(r.applied, 0, 'already-applied intent must not re-apply');
   assert.strictEqual(fs.readdirSync(path.join(INTEL, 'tasks')).length, before, 'no duplicate task created');
 });
+
+test('phase-1 enrichment: buildTasks ships the CONTRACT, corr and context_refs', () => {
+  // The cockpit could show a task was blocked but never that the graph contract
+  // blocked it, nor which gate/kind/mode did — an effect with no visible cause.
+  const dir = path.join(INTEL, 'tasks');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'T-9001.json'), JSON.stringify({
+    id: 'T-9001', title: 'gated thing', goal: 'g', kind: 'write-rpc', repo: 'fakerepo',
+    state: 'blocked', blocker: 'operator gate (graph contract, kind=write-rpc)',
+    contract: { mode: 'none', gate: 'operator', _note: 'moves money' },
+    corr: 'T-9001-thread', context_refs: ['verified by pane-0: commits present'],
+    attempt: 1, depends_on: [], created_at: 't', updated_at: 't',
+  }));
+
+  const [wire] = bridge.buildTasks(new Set(['fakerepo'])).filter((t) => t.id === 'T-9001');
+  assert.ok(wire, 'task must ship for an allowlisted repo');
+  assert.strictEqual(wire.contract.gate, 'operator', 'the gate must reach the operator UI');
+  assert.strictEqual(wire.contract.mode, 'none');
+  assert.strictEqual(wire.corr, 'T-9001-thread');
+  assert.deepStrictEqual(wire.context_refs, ['verified by pane-0: commits present']);
+  assert.match(wire.blocker, /graph contract/);
+});
+
+test('phase-1 enrichment: canary allowlist STILL fail-closed after enrichment', () => {
+  // Enriching the payload must not widen who receives it.
+  assert.strictEqual(bridge.buildTasks(new Set()).length, 0, 'empty allowlist ships nothing');
+  assert.strictEqual(bridge.buildTasks(new Set(['otherrepo'])).some((t) => t.id === 'T-9001'), false);
+});
+
+test('phase-1 enrichment: payload allowlist gains trust fields but STILL excludes content', () => {
+  // role/markers_prose_only let the UI tell a report from an action; scrollback
+  // and free content must remain impossible to leak.
+  const line = JSON.stringify({
+    time: 't', event: 'turn-end', task_id: 'T-0009', repo: 'fakerepo',
+    role: 'orchestrator', markers_prose_only: true, owner: 'pane-37',
+    message: 'Claude is waiting for your input',
+    lastLines: 'SECRET SCROLLBACK', rawText: 'SECRET', env: 'SECRET', content: 'SECRET',
+  });
+  const wire = bridge.toWireEvent('pane-events.jsonl', { line, offset: 0 });
+  assert.strictEqual(wire.payload.role, 'orchestrator');
+  assert.strictEqual(wire.payload.markers_prose_only, true);
+  assert.strictEqual(wire.payload.owner, 'pane-37');
+  assert.match(wire.payload.message, /waiting for your input/);
+  for (const banned of ['lastLines', 'rawText', 'env', 'content']) {
+    assert.strictEqual(wire.payload[banned], undefined, `${banned} must never ship`);
+  }
+});

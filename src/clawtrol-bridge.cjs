@@ -161,8 +161,17 @@ function readDelta(fileId, cursors) {
 const FILE_SEQ_BASE = { 'events.jsonl': 1e12, 'pane-events.jsonl': 2e12, [MESSAGE_FILE]: 3e12 };
 
 // Allowlisted payload metadata — never the raw parsed object, never content.
+// `role`/`markers_prose_only` matter for TRUST: without them the cockpit cannot
+// tell an orchestrator REPORTING that a peer deployed from a peer actually
+// deploying, and cannot tell a marker scraped from prose from a real event
+// (both real 2026-07-28 defects — mm-ad08, mm-978b). `owner`/`minutes` carry
+// lease ownership; `message`/`reason`/`resolution` are short structured strings
+// already written by our own tooling (e.g. "Claude is waiting for your input"),
+// NOT free user content — the no-scrollback rule is unaffected.
 const PAYLOAD_FIELDS = ['event', 'state', 'repo', 'corr', 'type', 'task_id', 'attempt',
-  'from_pane', 'to_pane', 'submitted', 'delivered', 'v2', 'session', 'markers', 'by', 'kind'];
+  'from_pane', 'to_pane', 'submitted', 'delivered', 'v2', 'session', 'markers', 'by', 'kind',
+  'role', 'markers_prose_only', 'markers_may_be_reports', 'owner', 'minutes',
+  'message', 'reason', 'resolution'];
 
 function allowlistPayload(fileId, offset, parsed) {
   const out = { file: fileId, cursor: offset };
@@ -201,8 +210,15 @@ function fleetSummary(rawEntriesByFile) {
       if (fileId === 'pane-events.jsonl') {
         const repo = parsed.repo || '?';
         beaconsByRepo[repo] = (beaconsByRepo[repo] || 0) + 1;
-        if (parsed.event === 'permission-wait' || (parsed.markers || []).some((m) => /^GATE:/i.test(m))) {
-          notable = { repo, event: parsed.event, markers: parsed.markers || [], time: parsed.time };
+        // NEVER trust the shape of a line written by another process. On
+        // 2026-07-28 a hook edited mid-flight emitted `markers` as an OBJECT;
+        // `.some()` threw, the sync loop caught it, backed off exponentially and
+        // froze the operator's board for over an hour. One malformed line must
+        // not be able to wedge the control plane — coerce, do not assume.
+        const markers = Array.isArray(parsed.markers) ? parsed.markers
+          : (parsed.markers && Array.isArray(parsed.markers.markers) ? parsed.markers.markers : []);
+        if (parsed.event === 'permission-wait' || markers.some((m) => /^GATE:/i.test(String(m)))) {
+          notable = { repo, event: parsed.event, markers, time: parsed.time };
         }
       } else if (fileId === 'events.jsonl') {
         a2aEnvelopes += 1;
@@ -387,9 +403,22 @@ async function buildPanes() {
   try {
     const discovery = require('./pane-discovery.cjs');
     const panes = await discovery.discoverPanes();
+    // v1 shipped only 4 fields, so the cockpit could show a pane existed but not
+    // whether it was about to die of context exhaustion, which model it was
+    // burning, or what role it plays. All of these are ALREADY parsed by
+    // status-parser.cjs and sat unused — this is copying fields, not new
+    // instrumentation. The withholding rule is unchanged and deliberate:
+    // never scrollback (lastLines/rawText), never full paths, never env.
     return panes.filter((p) => p.isClaude || p.isCodex).map((p) => ({
       pane_id: p.paneId, agent: p.agent, status: p.status,
       project: p.project ? path.basename(String(p.project)) : null,
+      title: p.title || null,
+      persona: p.persona || null,
+      model: p.model || null,
+      ctx: p.ctx ?? null,                 // context-window used %
+      session_pct: p.sessionPct ?? null,  // usage-limit %
+      weekly_pct: p.weeklyPct ?? null,
+      confidence: p.confidence ?? null,   // agent-detection confidence
     }));
   } catch { return []; }
 }
@@ -409,6 +438,14 @@ function buildTasks(projects = new Set()) {
       lease: t.lease ? { owner: t.lease.owner, expires_at: t.lease.expires_at } : null,
       acceptance: t.acceptance_criteria || null, evidence: t.evaluator_evidence || null,
       summary: t.summary || null, outcome: t.outcome || null, updated_at: t.updated_at,
+      // The CONTRACT is the most decision-relevant object in the task file and
+      // was never sent: the cockpit could show a task was blocked but not that
+      // the graph contract blocked it, nor which kind/gate/mode did so. Without
+      // this the operator sees an effect with no cause.
+      contract: t.contract || null,
+      corr: t.corr || null,               // ties a task to its live A2A thread
+      context_refs: t.context_refs || [], // the verification/evidence narrative
+      created_at: t.created_at || null,
     }));
   } catch { return []; }
 }
@@ -570,6 +607,16 @@ async function tick() {
     state.failures += 1;
     state.lastError = String(e && e.message).slice(0, 200);
     const backoff = Math.min(POLL_MS * 2 ** state.failures, BACKOFF_MAX_MS);
+    // The sync stalled TWICE on 2026-07-28 for over an hour each time with ZERO
+    // output: failures were counted into state and never printed, so exponential
+    // backoff quietly stretched to 5-minute retries while /api/panes kept
+    // answering 200. The operator's board silently froze and nothing said so.
+    // A background loop that can die without emitting a line is unobservable by
+    // construction — log the first failure, then every 5th, so a persistent
+    // outage is visible without flooding on a transient blip.
+    if (state.failures === 1 || state.failures % 5 === 0) {
+      process.stdout.write(`[clawtrol-bridge] sync FAILING (${state.failures} consecutive, next retry ${Math.round(backoff / 1000)}s, last ok ${state.lastOkAt || 'never'}): ${state.lastError}\n`);
+    }
     schedule(backoff + Math.floor(Math.random() * 1000)); // jitter
   } finally {
     state.inFlight = false;
@@ -598,7 +645,21 @@ function stop() {
 }
 
 function health() {
-  return { enabled: Boolean(config()), running: state.running, failures: state.failures, last_ok: state.lastOkAt, last_error: state.lastError };
+  // `running` only means the timer is armed — it stays true through an endless
+  // backoff loop. `stalled` is the field a caller should actually assert on: it
+  // answers "has this loop done its job recently", which is what an HTTP 200
+  // from the host server can never tell you.
+  const lastOkMs = state.lastOkAt ? Date.parse(state.lastOkAt) : NaN;
+  const staleSeconds = Number.isNaN(lastOkMs) ? null : Math.round((Date.now() - lastOkMs) / 1000);
+  return {
+    enabled: Boolean(config()),
+    running: state.running,
+    failures: state.failures,
+    last_ok: state.lastOkAt,
+    last_error: state.lastError,
+    stale_seconds: staleSeconds,
+    stalled: state.failures > 0 || staleSeconds === null || staleSeconds > 120,
+  };
 }
 
 module.exports = {
@@ -608,6 +669,6 @@ module.exports = {
   fleetSummary, applyIntent, resolveTaskId, appendTaskMessage,
   appliedIntentIds, persistResult, unackedResults, readAckState,
   writeAckState, readNotifiedState, writeNotifiedState,
-  deliverOperatorMessages, syncOnce, buildTasks, INTENT_KINDS, SYNC_FILES,
+  deliverOperatorMessages, syncOnce, buildTasks, buildPanes, INTENT_KINDS, SYNC_FILES,
   FILE_SEQ_BASE, PAYLOAD_FIELDS,
 };
