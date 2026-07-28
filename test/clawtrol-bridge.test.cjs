@@ -338,3 +338,67 @@ test('canary boundary: task-less messages NEVER ship, even with a non-empty allo
   srv.close();
   assert.ok(!(seen[0].messages || []).some((m) => /fleet prose/.test(m.content)));
 });
+
+test('latency fix: syncOnce reports applied count so tick can expedite the follow-up', async () => {
+  // Regression for the ~115s applied->visible lag. The contract the scheduler
+  // relies on: syncOnce returns applied>0 EXACTLY on the sync that applied an
+  // intent, and 0 on replay — so tick() can shorten the next delay once and
+  // never loops. Durable-before-ack ordering is asserted below, unchanged.
+  const seen = { bodies: [] };
+  let pending = [{
+    id: 'i-lat1', kind: 'create_task', created_at: 't',
+    payload: { repo: 'fakerepo', kind: 'safe-kind', title: 'latency proof', goal: 'render fast' },
+  }];
+  const srv = http.createServer((req, res) => {
+    let raw = ''; req.on('data', (d) => { raw += d; });
+    req.on('end', () => {
+      const body = JSON.parse(raw); seen.bodies.push(body);
+      if ((body.intent_results || []).some((r) => r.id === 'i-lat1')) pending = [];
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ server_time: 't', accepted: {}, intents: pending }));
+    });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const cfg = { url: `http://127.0.0.1:${srv.address().port}`, token: 't', profile: 'p', projects: new Set(['fakerepo']) };
+
+  const first = await bridge.syncOnce(cfg, { fullSnapshot: false });
+  assert.strictEqual(first.applied, 1, 'sync that applies an intent must report applied=1');
+
+  // The result is durable BEFORE any ack could have shipped it (crash-safety).
+  const persisted = bridge.appliedIntentIds();
+  assert.ok(persisted.has('i-lat1'), 'result must be persisted before the acking sync runs');
+  assert.ok(!(seen.bodies[0].intent_results || []).some((r) => r.id === 'i-lat1'),
+    'the applying sync must NOT have already acked it');
+
+  // The expedited follow-up carries BOTH the ack and the new card.
+  const second = await bridge.syncOnce(cfg, { fullSnapshot: true });
+  srv.close();
+  assert.strictEqual(second.applied, 0, 'replay must not re-apply — no follow-up loop');
+  const b2 = seen.bodies[1];
+  assert.ok(b2.intent_results.some((r) => r.id === 'i-lat1' && r.status === 'applied'));
+  assert.ok(Array.isArray(b2.tasks) && b2.tasks.some((t) => /latency proof/.test(t.title || '')),
+    'the follow-up full snapshot must carry the newly created task card');
+});
+
+test('latency fix: crash-replay safety retained — re-offered intent is not applied twice', async () => {
+  // Same intent id re-delivered (e.g. the ack POST never reached Rails). The
+  // ledger must not gain a second task, and applied must stay 0.
+  const before = fs.readdirSync(path.join(INTEL, 'tasks')).length;
+  const srv = http.createServer((req, res) => {
+    let raw = ''; req.on('data', (d) => { raw += d; });
+    req.on('end', () => {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({
+        server_time: 't', accepted: {},
+        intents: [{ id: 'i-lat1', kind: 'create_task', created_at: 't',
+          payload: { repo: 'fakerepo', kind: 'safe-kind', title: 'latency proof', goal: 'render fast' } }],
+      }));
+    });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const cfg = { url: `http://127.0.0.1:${srv.address().port}`, token: 't', profile: 'p', projects: new Set(['fakerepo']) };
+  const r = await bridge.syncOnce(cfg, { fullSnapshot: false });
+  srv.close();
+  assert.strictEqual(r.applied, 0, 'already-applied intent must not re-apply');
+  assert.strictEqual(fs.readdirSync(path.join(INTEL, 'tasks')).length, before, 'no duplicate task created');
+});

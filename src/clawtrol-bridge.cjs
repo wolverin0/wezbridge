@@ -43,6 +43,11 @@ const { execFile } = require('node:child_process');
 const POLL_MS = 5_000;
 const SNAPSHOT_EVERY = 6;          // every 6th poll (~30s) adds the full snapshot
 const BACKOFF_MAX_MS = 300_000;
+// After an intent is applied, its result + the resulting task card must not wait
+// for the ordinary tick (and, for the card, the every-6th full snapshot). Measured
+// operator-visible lag before this: ~115s from applied to card. We keep the
+// durable-before-ack ordering exactly as-is and only shorten the NEXT sync.
+const INTENT_FOLLOWUP_MS = 250;
 const EVENT_BATCH_BYTES = 256 * 1024;
 const EVENT_FILES = ['events.jsonl', 'pane-events.jsonl'];
 const MESSAGE_FILE = 'task-messages.jsonl';
@@ -402,6 +407,9 @@ function buildTasks(projects = new Set()) {
 const state = {
   running: false, timer: null, tick: 0, failures: 0, inFlight: false,
   lastOkAt: null, lastError: null, notifyOperatorMessage: null,
+  // Set when a sync applied at least one intent: the next sync is expedited AND
+  // forced to carry a full snapshot so the new task card ships with the ack.
+  forceSnapshot: false,
 };
 
 /** Task ids belonging to allowlisted canary projects (fail-closed on empty allowlist). */
@@ -509,14 +517,19 @@ async function syncOnce(cfg, { fullSnapshot, notifyOperatorMessage = state.notif
   // Apply pending intents — idempotent by intent id; the result is persisted
   // BEFORE it can ever be acknowledged (ships on the NEXT successful sync).
   const done = appliedIntentIds();
+  let appliedNow = 0;
   for (const intent of Array.isArray(reply.intents) ? reply.intents : []) {
     if (!intent || !intent.id || done.has(intent.id)) continue;
     const result = await applyIntent(intent);
-    persistResult(result);
+    persistResult(result);                 // durable BEFORE any ack — unchanged
     done.add(intent.id);
+    appliedNow += 1;
   }
   await deliverOperatorMessages(cfg.projects, notifyOperatorMessage);
-  return { sent_events: events.length, sent_messages: messages.length, intents: (reply.intents || []).length };
+  return {
+    sent_events: events.length, sent_messages: messages.length,
+    intents: (reply.intents || []).length, applied: appliedNow,
+  };
 }
 
 async function tick() {
@@ -525,11 +538,23 @@ async function tick() {
   state.inFlight = true;
   try {
     state.tick += 1;
-    await syncOnce(cfg, { fullSnapshot: state.tick % SNAPSHOT_EVERY === 1 });
+    const fullSnapshot = state.forceSnapshot || state.tick % SNAPSHOT_EVERY === 1;
+    state.forceSnapshot = false;           // consume before the await; re-set below if needed
+    const r = await syncOnce(cfg, { fullSnapshot });
     state.failures = 0;
     state.lastOkAt = new Date().toISOString();
     state.lastError = null;
-    schedule(POLL_MS);
+    // An applied intent expedites exactly ONE follow-up sync carrying a full
+    // snapshot, so the operator sees the result and the new card together.
+    // Serialized by the same timer + inFlight guard as any other tick — this is
+    // a shortened delay, never a recursive or parallel POST. The failure path
+    // below is untouched, so backoff still wins.
+    if (r && r.applied > 0) {
+      state.forceSnapshot = true;
+      schedule(INTENT_FOLLOWUP_MS);
+    } else {
+      schedule(POLL_MS);
+    }
   } catch (e) {
     state.failures += 1;
     state.lastError = String(e && e.message).slice(0, 200);
