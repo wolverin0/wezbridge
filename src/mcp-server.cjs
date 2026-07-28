@@ -288,7 +288,7 @@ const TOOLS = [
       properties: {
         only_claude: {
           type: 'boolean',
-          description: 'If true, only return panes detected as Claude Code sessions. Default: true.',
+          description: 'If true, only return panes detected as Claude Code sessions. Default: true — which HIDES codex and shell panes. For any fleet census, health check or oversight pass pass false, or you will miss peer executors and daemons. When the filter drops panes the response sets filtered:true plus total_unfiltered/omitted.',
         },
         verbose: {
           type: 'boolean',
@@ -626,11 +626,24 @@ function handleToolCall(name, args) {
         statusCounts[p.status] = (statusCounts[p.status] || 0) + 1;
       }
 
+      // A filtered count must NEVER present itself as the fleet. On 2026-07-28 a
+      // bare call returned 8 while `wezterm cli list` showed 17 — the omitted 9
+      // included the codex executor under active oversight and the daemon pane —
+      // and the response said only `total: 8`, so 34 oversight passes ran blind.
+      // `total` now always means "rows returned"; when a filter dropped panes we
+      // say so, and say how many there really are.
+      const dropped = panes.length - filtered.length;
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
             total: filtered.length,
+            ...(dropped > 0 ? {
+              filtered: true,
+              total_unfiltered: panes.length,
+              omitted: dropped,
+              omitted_note: `${dropped} pane(s) hidden by only_claude=true (codex and shell panes). Pass only_claude:false for a full fleet census.`,
+            } : { filtered: false, total_unfiltered: panes.length }),
             status_summary: statusCounts,
             sessions: summary,
           }, null, 2),

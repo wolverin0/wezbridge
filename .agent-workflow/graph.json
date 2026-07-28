@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "repo": "wezbridge",
+  "_why": "wezbridge is the fleet's plumbing AND the orchestrator's own repo, which makes it the one place where 'the agent decides' is most dangerous: a change here silently changes what every other pane can see and do. On 2026-07-28 three defects in code written that same week caused a blind census (8 of 17 panes reported as the fleet), self-polluted beacons, and a one-shot guard that let a rehearsal cancel a real scheduled run. The gates below are the classes where being wrong is expensive and invisible.",
+  "defaults": {
+    "mode": "scoped_write",
+    "gate": null,
+    "evaluator": "node --test test/*.test.cjs",
+    "max_repair_cycles": 2
+  },
+  "kinds": {
+    "tooling-fix": {
+      "mode": "scoped_write",
+      "gate": null,
+      "_note": "Ordinary fixes to the MCP server, bridge, watchers and their tests. Ungated — this is the bulk of the work and it must never wait on a human.",
+      "allowed_paths": ["src/**", "test/**", "scripts/**", "docs/**", "bin/**"],
+      "evidence_required": [
+        "full suite green with counts stated (node --test test/*.test.cjs)",
+        "a regression that FAILS without the fix, not merely a passing assertion"
+      ]
+    },
+    "docs": {
+      "mode": "scoped_write",
+      "gate": null,
+      "allowed_paths": ["docs/**", "*.md"]
+    },
+    "sensor-change": {
+      "mode": "scoped_write",
+      "gate": null,
+      "_note": "Changes to what the fleet can SEE: pane discovery, beacon markers, wake filters, event streams. Ungated, but evidence_required is deliberately strict — a sensor that under-reports is worse than one that is down, because absence reads as safety. Every such change must prove it cannot report a subset as a total.",
+      "allowed_paths": ["src/pane-discovery.cjs", "src/mcp-server.cjs", "src/status-parser.cjs", "test/**"],
+      "evidence_required": [
+        "counts reconciled against ground truth (wezterm cli list --format json)",
+        "explicit proof the filtered case is labelled as filtered, never reported as a total"
+      ]
+    },
+    "control-plane": {
+      "mode": "scoped_write",
+      "gate": null,
+      "_note": "The ClawTrol bridge: sync loop, cursors, intent application. Ungated for code changes, but the durable-before-ack ordering is an invariant — a regression must assert the applying sync does NOT carry its own result.",
+      "allowed_paths": ["src/clawtrol-bridge.cjs", "test/clawtrol-bridge.test.cjs"]
+    },
+    "egress-scope": {
+      "mode": "none",
+      "gate": "operator",
+      "_note": "Changing CLAWTROL_PROJECTS or anything else governing WHICH project data leaves this machine for the VM. This is a data-exposure decision, not an engineering one. Born blocked — one pane must never be able to widen egress at another pane's request."
+    },
+    "guard-change": {
+      "mode": "none",
+      "gate": "operator",
+      "_note": "Weakening or bypassing the safety layers: safety-policy rules, guard shims, permission classifiers, the A2A thread gate. Born blocked. Strengthening them is a tooling-fix; weakening them is never the agent's call."
+    },
+    "deploy": {
+      "mode": "none",
+      "gate": "operator",
+      "_note": "Exposing the daemon beyond loopback (WEZBRIDGE_BIND) or any hosted deployment. Born blocked — the daemon binds 127.0.0.1 by design."
+    }
+  }
+}
