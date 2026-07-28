@@ -18,6 +18,7 @@
  *   cursors.json         rotation-safe per-file cursors {file_id: byte_offset}
  *   intent-results.jsonl append-only applied-intent results (replay source)
  *   acked.json           result ids already delivered on a successful sync
+ *   notified.json        operator-message intent ids delivered to the reasoner
  *
  * Wire shape (fixed by ClawTrol side 2026-07-27):
  *   body   = {profile, generated_at, health, panes[], tasks[], events[],
@@ -265,6 +266,17 @@ function writeAckState(set) {
   } catch { /* fail-soft */ }
 }
 
+function readNotifiedState() {
+  try { return new Set(JSON.parse(fs.readFileSync(path.join(stateDir(), 'notified.json'), 'utf8'))); } catch { return new Set(); }
+}
+
+function writeNotifiedState(set) {
+  const file = path.join(stateDir(), 'notified.json');
+  const tmp = file + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify([...set]));
+  fs.renameSync(tmp, file);
+}
+
 // ---------- ledger integration (the ledger CLI stays the single writer) ----------
 
 function runLedger(args) {
@@ -389,7 +401,7 @@ function buildTasks(projects = new Set()) {
 
 const state = {
   running: false, timer: null, tick: 0, failures: 0, inFlight: false,
-  lastOkAt: null, lastError: null,
+  lastOkAt: null, lastError: null, notifyOperatorMessage: null,
 };
 
 /** Task ids belonging to allowlisted canary projects (fail-closed on empty allowlist). */
@@ -409,7 +421,34 @@ function allowedTaskIds(projects) {
   return ids;
 }
 
-async function syncOnce(cfg, { fullSnapshot }) {
+async function deliverOperatorMessages(projects, notify) {
+  if (typeof notify !== 'function') return { delivered: 0, pending: 0 };
+  const allowed = allowedTaskIds(projects);
+  const notified = readNotifiedState();
+  const pending = [];
+  try {
+    for (const line of fs.readFileSync(path.join(intelDir(), MESSAGE_FILE), 'utf8').split('\n')) {
+      if (!line.trim()) continue;
+      let message;
+      try { message = JSON.parse(line); } catch { continue; }
+      if (message.provenance !== 'operator' || !message.intent_id || !allowed.has(message.task_id)) continue;
+      if (!notified.has(String(message.intent_id))) pending.push(message);
+    }
+  } catch { return { delivered: 0, pending: 0 }; }
+
+  let delivered = 0;
+  for (const message of pending) {
+    try {
+      if (await notify(message) === false) continue;
+      notified.add(String(message.intent_id));
+      writeNotifiedState(notified);
+      delivered += 1;
+    } catch { /* keep pending; retry on the next poll */ }
+  }
+  return { delivered, pending: pending.length - delivered };
+}
+
+async function syncOnce(cfg, { fullSnapshot, notifyOperatorMessage = state.notifyOperatorMessage }) {
   const cursors = readCursors();
   const nextCursors = { ...cursors };
   const canaryIds = allowedTaskIds(cfg.projects);
@@ -476,6 +515,7 @@ async function syncOnce(cfg, { fullSnapshot }) {
     persistResult(result);
     done.add(intent.id);
   }
+  await deliverOperatorMessages(cfg.projects, notifyOperatorMessage);
   return { sent_events: events.length, sent_messages: messages.length, intents: (reply.intents || []).length };
 }
 
@@ -507,9 +547,10 @@ function schedule(ms) {
   if (state.timer.unref) state.timer.unref();
 }
 
-function start() {
+function start({ notifyOperatorMessage } = {}) {
   if (!config()) return false; // unconfigured → disabled silently (fail-soft)
   if (state.running) return true;
+  state.notifyOperatorMessage = typeof notifyOperatorMessage === 'function' ? notifyOperatorMessage : null;
   state.running = true;
   schedule(1000);
   return true;
@@ -530,6 +571,7 @@ module.exports = {
   readDelta, readCursors, writeCursors, toWireEvent, toWireMessage,
   fleetSummary, applyIntent, resolveTaskId, appendTaskMessage,
   appliedIntentIds, persistResult, unackedResults, readAckState,
-  writeAckState, syncOnce, buildTasks, INTENT_KINDS, SYNC_FILES,
+  writeAckState, readNotifiedState, writeNotifiedState,
+  deliverOperatorMessages, syncOnce, buildTasks, INTENT_KINDS, SYNC_FILES,
   FILE_SEQ_BASE, PAYLOAD_FIELDS,
 };
