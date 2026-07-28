@@ -164,6 +164,49 @@ test('applyIntent message: appends operator-provenance line locally', async () =
   assert.strictEqual(last.intent_id, 'i-m1');
 });
 
+test('question creation notifies the reasoner exactly once with its new task binding', async () => {
+  bridge.writeNotifiedState(new Set());
+  const result = await bridge.applyIntent({
+    id: 'i-fleet-question',
+    kind: 'create_task',
+    payload: {
+      project: '_fleet',
+      kind: 'question',
+      title: 'Assess every open pane',
+      brief: 'Recommend the next action for every live project.',
+    },
+  });
+
+  assert.strictEqual(result.status, 'applied');
+  assert.match(result.result.task_id, /^T-\d+$/);
+  const messages = fs.readFileSync(path.join(INTEL, 'task-messages.jsonl'), 'utf8')
+    .trim().split('\n').map((line) => JSON.parse(line));
+  const question = messages.find((message) => message.intent_id === 'i-fleet-question');
+  assert.deepStrictEqual(
+    {
+      task_id: question.task_id,
+      message_type: question.message_type,
+      provenance: question.provenance,
+      content: question.content,
+    },
+    {
+      task_id: result.result.task_id,
+      message_type: 'operator_question',
+      provenance: 'operator',
+      content: 'Assess every open pane\n\nRecommend the next action for every live project.',
+    },
+  );
+
+  const delivered = [];
+  const notify = async (message) => {
+    delivered.push(message.intent_id);
+    return true;
+  };
+  await bridge.deliverOperatorMessages(new Set(['_fleet']), notify);
+  await bridge.deliverOperatorMessages(new Set(['_fleet']), notify);
+  assert.deepStrictEqual(delivered, ['i-fleet-question']);
+});
+
 test('operator message delivery: wakes once after durable append and retries failures', async () => {
   writeIntelFile('task-messages.jsonl', []);
   bridge.writeNotifiedState(new Set());

@@ -339,10 +339,21 @@ async function applyIntent(intent) {
       if (!r.ok) return { ...base, result: { ...base.result, reason: `ledger create failed: ${r.stderr.slice(0, 300)}` } };
       const idMatch = r.stdout.match(/"id":\s*"(T-\d+)"/);
       const stateMatch = r.stdout.match(/"state":\s*"(\w+)"/);
+      const taskId = idMatch ? idMatch[1] : null;
+      if (p.kind === 'question' && taskId) {
+        appendTaskMessage({
+          task_id: taskId,
+          message_type: 'operator_question',
+          content: [p.title, goal].filter(Boolean).join('\n\n').slice(0, 4000),
+          provenance: 'operator',
+          sender_name: 'ClawTrol operator',
+          intent_id: intent.id,
+        });
+      }
       return {
         ...base, status: 'applied',
         result: {
-          ...base.result, task_id: idMatch ? idMatch[1] : null, task_state: stateMatch ? stateMatch[1] : null,
+          ...base.result, task_id: taskId, task_state: stateMatch ? stateMatch[1] : null,
           ...(p.priority ? { note: 'priority not persisted (ledger v1 has no priority field)' } : {}),
         },
       };
