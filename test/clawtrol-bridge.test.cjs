@@ -164,6 +164,51 @@ test('applyIntent message: appends operator-provenance line locally', async () =
   assert.strictEqual(last.intent_id, 'i-m1');
 });
 
+test('operator message delivery: wakes once after durable append and retries failures', async () => {
+  writeIntelFile('task-messages.jsonl', []);
+  bridge.writeNotifiedState(new Set());
+  const projects = new Set(['fakerepo']);
+  const task = bridge.buildTasks(projects)[0];
+  assert.ok(task);
+  bridge.appendTaskMessage({
+    task_id: task.id,
+    message_type: 'operator_message',
+    content: 'wake the reasoner',
+    provenance: 'operator',
+    intent_id: 'i-wake-once',
+  });
+
+  const delivered = [];
+  const first = await bridge.deliverOperatorMessages(projects, async (message) => {
+    delivered.push(message.intent_id);
+    return true;
+  });
+  assert.deepStrictEqual(delivered, ['i-wake-once']);
+  assert.strictEqual(first.delivered, 1);
+
+  await bridge.deliverOperatorMessages(projects, async (message) => {
+    delivered.push(message.intent_id);
+    return true;
+  });
+  assert.deepStrictEqual(delivered, ['i-wake-once']);
+
+  bridge.appendTaskMessage({
+    task_id: task.id,
+    message_type: 'operator_message',
+    content: 'retry this wake',
+    provenance: 'operator',
+    intent_id: 'i-wake-retry',
+  });
+  const failed = await bridge.deliverOperatorMessages(projects, async () => false);
+  assert.strictEqual(failed.pending, 1);
+  const retried = await bridge.deliverOperatorMessages(projects, async (message) => {
+    delivered.push(message.intent_id);
+    return true;
+  });
+  assert.strictEqual(retried.delivered, 1);
+  assert.deepStrictEqual(delivered, ['i-wake-once', 'i-wake-retry']);
+});
+
 test('crash-after-apply replay: persisted result blocks re-application of the same intent id', async () => {
   // Simulate: intent applied + result persisted, then "crash" before ack —
   // ClawTrol re-delivers the same intent; appliedIntentIds must exclude it.

@@ -6,7 +6,7 @@ function createEventHandlers(ctx) {
     wez, discoverPanes, NOISE_EVENTS, a2aState, a2aEvict, a2aTouch,
     recordA2AFromRawEvent, sseClients, collectPanes, broadcastSSE,
     slugify, isoForFilename, SRC_DIR, a2aHeartbeat, sessionSnapshot,
-    teamManifest, teamsRegistry, worktreeRegistry,
+    teamManifest, teamsRegistry, worktreeRegistry, safetyPolicy,
   } = ctx;
 
   async function handleGetA2APending(req, res) {
@@ -376,7 +376,35 @@ function createEventHandlers(ctx) {
     // CLAWTROL_URL/TOKEN; watchdog disabled via WEZBRIDGE_WATCHDOG=0.
     try {
       const bridge = require('../clawtrol-bridge.cjs');
-      log(bridge.start() ? 'clawtrol-bridge armed (outbound sync loop)' : 'clawtrol-bridge disabled (CLAWTROL_URL/TOKEN unset)');
+      const notifyOperatorMessage = (message) => {
+        const candidates = (discoverPanes ? discoverPanes() : []).filter((pane) => {
+          const projectName = pane.projectName
+            || (pane.project ? path.basename(String(pane.project)) : null);
+          return pane.isClaude && projectName === 'wezbridge';
+        });
+        if (candidates.length !== 1) {
+          log(`clawtrol operator message ${message.intent_id} pending: expected one wezbridge reasoner, found ${candidates.length}`);
+          return false;
+        }
+        const paneId = candidates[0].paneId ?? candidates[0].pane_id;
+        const prompt = [
+          `[ClawTrol operator message | provenance=operator | intent=${message.intent_id} | task=${message.task_id}]`,
+          String(message.content || ''),
+          '',
+          `Reply in the same ClawTrol thread with clawtrol_task_reply(task_id="${message.task_id}", message_type="reply", content=<your reply>).`,
+          'Do not answer only in this terminal; the operator is using the cockpit.',
+        ].join('\n');
+        const verdict = safetyPolicy.evaluate({ action: 'send_prompt', paneId, prompt });
+        if (!verdict.allowed) {
+          log(`clawtrol operator message ${message.intent_id} pending: blocked by ${verdict.rule}`);
+          return false;
+        }
+        wez.sendTextBracketed(paneId, prompt);
+        wez.sendTextNoEnter(paneId, '\r');
+        log(`clawtrol operator message ${message.intent_id} delivered to wezbridge reasoner`);
+        return true;
+      };
+      log(bridge.start({ notifyOperatorMessage }) ? 'clawtrol-bridge armed (outbound sync loop)' : 'clawtrol-bridge disabled (CLAWTROL_URL/TOKEN unset)');
     } catch (e) {
       log(`clawtrol-bridge failed to start: ${e.message}`);
     }
