@@ -226,12 +226,11 @@ function render(rows, { liveKnown, generatedAt }) {
   L.push('**1. Route by who OWNS the work, not by who is free.** On 2026-07-28 ClawTrol deployment');
   L.push('work — container promotion, a database role separation, deploy-path retirement — was sent');
   L.push('to a pane whose cwd is `argentina-sales-hub`, because it was an idle, capable session with');
-  L.push('the right access. No files were harmed, and it still cost: that project\'s transcript is now');
-  L.push('mostly another project\'s incident, its own `/goal` sat paused while it worked, and the');
-  L.push('claims it ingested landed under a scope that does not match the session\'s project, which');
-  L.push('fragments recall for both. If no pane owns the work, spawn one in the right cwd —');
-  L.push('borrowing a pane because it is available is how a project\'s context gets spent on');
-  L.push('somebody else\'s problem.');
+  L.push('the right access. No files were harmed and its memory claims were correctly scoped, and it');
+  L.push('still cost: that project\'s transcript is now mostly another project\'s incident, so anyone');
+  L.push('resuming it inherits the wrong context, and its own `/goal` sat paused while it worked on');
+  L.push('somebody else\'s problem. If no pane owns the work, spawn one in the right cwd — borrowing');
+  L.push('a pane because it is available is how a project\'s context gets spent elsewhere.');
   L.push('');
   L.push('**2. Route by the LEASE, not by the repo name.** A ledger task names a repo, but the pane');
   L.push('that owes you an answer is the one holding `lease.owner`. Sending a reconcile to the repo\'s');
