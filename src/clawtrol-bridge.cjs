@@ -74,15 +74,30 @@ function stateDir() {
  * logged. Only CLAWTROL_-prefixed keys are honored — this is a scoped secret
  * file, not a general dotenv.
  */
+// True when the allowlist came from the real process environment rather than
+// the env file. A caller who exports CLAWTROL_PROJECTS explicitly outranks the
+// file, so we must not clobber them on refresh.
+const PROJECTS_PINNED_BY_ENV = process.env.CLAWTROL_PROJECTS !== undefined;
+
 function loadEnvFile() {
-  if (process.env.CLAWTROL_URL && process.env.CLAWTROL_TOKEN) return;
+  const secretsCached = Boolean(process.env.CLAWTROL_URL && process.env.CLAWTROL_TOKEN);
+  const canRefreshAllowlist = !PROJECTS_PINNED_BY_ENV;
+  if (secretsCached && !canRefreshAllowlist) return;
   const p = process.env.WEZBRIDGE_CLAWTROL_ENV
     || path.join(require('node:os').homedir(), '.wezbridge', 'clawtrol.env');
   let text;
   try { text = fs.readFileSync(p, 'utf8'); } catch { return; }
   for (const line of text.split('\n')) {
     const m = line.match(/^\s*(CLAWTROL_[A-Z_]+)\s*=\s*(.*?)\s*$/);
-    if (m && !line.trim().startsWith('#') && process.env[m[1]] === undefined) process.env[m[1]] = m[2];
+    if (!m || line.trim().startsWith('#')) continue;
+    // The allowlist is the ONE key re-read on every tick. It is a fail-closed
+    // security boundary the operator widens by hand, and caching it at boot
+    // meant editing the file did nothing until someone remembered to restart
+    // the daemon — a silent no-op on a security control, which is the same
+    // "confidently wrong, no error" family as the frozen-feed and null-ctx
+    // defects. Secrets stay cached: rotating those SHOULD require a restart.
+    if (m[1] === 'CLAWTROL_PROJECTS' && canRefreshAllowlist) process.env[m[1]] = m[2];
+    else if (process.env[m[1]] === undefined) process.env[m[1]] = m[2];
   }
 }
 
@@ -670,5 +685,7 @@ module.exports = {
   appliedIntentIds, persistResult, unackedResults, readAckState,
   writeAckState, readNotifiedState, writeNotifiedState,
   deliverOperatorMessages, syncOnce, buildTasks, buildPanes, INTENT_KINDS, SYNC_FILES,
+  // config() is internal; tests need it to prove the allowlist refresh path.
+  __test_config: config,
   FILE_SEQ_BASE, PAYLOAD_FIELDS,
 };

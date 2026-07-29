@@ -492,3 +492,49 @@ test('phase-1 enrichment: payload allowlist gains trust fields but STILL exclude
     assert.strictEqual(wire.payload[banned], undefined, `${banned} must never ship`);
   }
 });
+
+test('allowlist edits take effect without a daemon restart', () => {
+  // The allowlist is fail-closed and widened by hand-editing the owner env
+  // file. v1 cached every CLAWTROL_* key at first read, so after the operator
+  // added a repo the running daemon kept shipping the OLD set with no error,
+  // no log line, and a healthy /api/panes — the operator would believe a repo
+  // was wired up while its tasks stayed invisible. Found 2026-07-29 while
+  // adding pedrito + CRM.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'clawtrol-env-'));
+  const envFile = path.join(dir, 'clawtrol.env');
+  const prior = {
+    WEZBRIDGE_CLAWTROL_ENV: process.env.WEZBRIDGE_CLAWTROL_ENV,
+    CLAWTROL_URL: process.env.CLAWTROL_URL,
+    CLAWTROL_TOKEN: process.env.CLAWTROL_TOKEN,
+    CLAWTROL_PROJECTS: process.env.CLAWTROL_PROJECTS,
+  };
+  try {
+    delete process.env.CLAWTROL_URL;
+    delete process.env.CLAWTROL_TOKEN;
+    delete process.env.CLAWTROL_PROJECTS;
+    process.env.WEZBRIDGE_CLAWTROL_ENV = envFile;
+
+    fs.writeFileSync(envFile, 'CLAWTROL_URL=http://x\nCLAWTROL_TOKEN=t\nCLAWTROL_PROJECTS=alpha\n');
+    const first = bridge.__test_config();
+    assert.deepStrictEqual([...first.projects], ['alpha'], 'first read picks up the file');
+
+    // Operator widens the allowlist while the daemon keeps running.
+    fs.writeFileSync(envFile, 'CLAWTROL_URL=http://x\nCLAWTROL_TOKEN=t\nCLAWTROL_PROJECTS=alpha,pedrito\n');
+    const second = bridge.__test_config();
+    assert.deepStrictEqual([...second.projects].sort(), ['alpha', 'pedrito'],
+      'the edit must be live without a restart');
+
+    // Narrowing must be live too — revoking access cannot wait for a restart.
+    fs.writeFileSync(envFile, 'CLAWTROL_URL=http://x\nCLAWTROL_TOKEN=t\nCLAWTROL_PROJECTS=alpha\n');
+    assert.deepStrictEqual([...bridge.__test_config().projects], ['alpha'],
+      'removing a repo must revoke it immediately');
+
+    // Secrets stay cached: rotating a token SHOULD require a deliberate restart.
+    assert.strictEqual(process.env.CLAWTROL_TOKEN, 't', 'secrets are not re-read per tick');
+  } finally {
+    for (const [k, v] of Object.entries(prior)) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
