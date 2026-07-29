@@ -79,10 +79,36 @@ function updateThreads({ fromPane, toPane, corr, type, body }) {
     next = { ...next, [corr]: { ...prev, state: prev.state || 'open', ...(gate ? { gate } : {}), updated_at: now } };
   } else if (type === 'result') {
     next = { ...next, [corr]: { ...prev, state: 'awaiting-ack', result_from: fromPane, result_to: toPane, updated_at: now } };
-  } else if (type === 'ack' || type === 'error') {
+  } else if (type === 'ack') {
+    // An ack closes the thread ONLY when it is acknowledging a RESULT.
+    //
+    // The protocol defines `ack` as a fast "got it" that legitimately arrives
+    // right after a request, long before any result. v1 treated every ack as
+    // terminal and deleted the thread, so the normal sequence
+    //   request -> ack -> progress -> result
+    // deleted at the ack, then the progress recreated the thread from nothing
+    // and the result parked it at awaiting-ack with nobody left to acknowledge
+    // it — because the requester had already acked. The thread then sat in
+    // unacked_inbound forever. Three of them accumulated over five days and
+    // were only explained today by reading the audit log.
+    //
+    // The cost is not the stale rows: it is that a warning which is permanently
+    // wrong trains every pane to ignore it, which is the exact opposite of what
+    // the gate exists to do. Same failure family as a detector that no-ops.
+    if (prev.state === 'awaiting-ack') {
+      const { [corr]: _closed, ...rest } = next;
+      next = rest;
+      recordEvent({ event: 'a2a.thread-closed', corr, by: fromPane });
+    } else if (prev.state) {
+      // Early acknowledgement of a request: record it, keep the thread open.
+      next = { ...next, [corr]: { ...prev, acked_at: now, updated_at: now } };
+    }
+    // An ack for a corr we have never seen creates nothing — inventing an open
+    // thread from a stray acknowledgement would manufacture the same noise.
+  } else if (type === 'error') {
     const { [corr]: _closed, ...rest } = next;
     next = rest;
-    recordEvent({ event: type === 'ack' ? 'a2a.thread-closed' : 'a2a.thread-error', corr, by: fromPane });
+    recordEvent({ event: 'a2a.thread-error', corr, by: fromPane });
   }
 
   const updated = { ...data, threads: next };

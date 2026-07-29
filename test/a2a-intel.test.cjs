@@ -110,3 +110,68 @@ test('fail-soft: unwritable intel dir never throws', () => {
   assert.doesNotThrow(() => intel.updateThreads({ fromPane: 1, toPane: 2, corr: 'x', type: 'request' }));
   process.env.WEZBRIDGE_INTEL_DIR = prev;
 });
+
+test('an early ack does not close the thread, and the result still requires one', () => {
+  // The real sequence that broke: request -> ack ("got it") -> progress -> result.
+  // v1 deleted the thread at the ack, the progress recreated it from nothing, and
+  // the result parked it at awaiting-ack with nobody left to acknowledge — because
+  // the requester had already acked. Three such threads sat open for five days.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-threads-'));
+  const prior = process.env.WEZBRIDGE_INTEL_DIR;
+  process.env.WEZBRIDGE_INTEL_DIR = dir;
+  try {
+    const corr = 'register-gym';
+    intel.updateThreads({ fromPane: 4, toPane: 45, corr, type: 'request', body: 'do the thing' });
+    intel.updateThreads({ fromPane: 45, toPane: 4, corr, type: 'ack', body: 'got it' });
+
+    const afterEarlyAck = JSON.parse(fs.readFileSync(path.join(dir, 'a2a-threads.json'), 'utf8'));
+    assert.ok(afterEarlyAck.threads[corr], 'an early ack must NOT delete the thread');
+    assert.ok(afterEarlyAck.threads[corr].acked_at, 'but it should be recorded');
+
+    intel.updateThreads({ fromPane: 45, toPane: 4, corr, type: 'progress', body: 'working' });
+    const owed = intel.updateThreads({ fromPane: 45, toPane: 4, corr, type: 'result', body: 'done' });
+    assert.deepStrictEqual(owed, [], 'the RESPONDER is not owed its own result');
+
+    // The requester is the one who now owes an ack.
+    const owedByRequester = intel.updateThreads({ fromPane: 4, toPane: 45, corr, type: 'progress', body: 'noted' });
+    assert.deepStrictEqual(owedByRequester, [corr], 'the requester owes the ack');
+
+    intel.updateThreads({ fromPane: 4, toPane: 45, corr, type: 'ack', body: 'accepted' });
+    const closed = JSON.parse(fs.readFileSync(path.join(dir, 'a2a-threads.json'), 'utf8'));
+    assert.strictEqual(closed.threads[corr], undefined, 'the ack ON A RESULT closes it');
+  } finally {
+    if (prior === undefined) delete process.env.WEZBRIDGE_INTEL_DIR; else process.env.WEZBRIDGE_INTEL_DIR = prior;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('an ack for an unknown corr invents nothing', () => {
+  // Manufacturing an open thread from a stray acknowledgement would recreate the
+  // very noise this fix removes.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-threads-'));
+  const prior = process.env.WEZBRIDGE_INTEL_DIR;
+  process.env.WEZBRIDGE_INTEL_DIR = dir;
+  try {
+    intel.updateThreads({ fromPane: 9, toPane: 4, corr: 'never-seen', type: 'ack', body: 'ok' });
+    const data = JSON.parse(fs.readFileSync(path.join(dir, 'a2a-threads.json'), 'utf8'));
+    assert.strictEqual(data.threads['never-seen'], undefined);
+  } finally {
+    if (prior === undefined) delete process.env.WEZBRIDGE_INTEL_DIR; else process.env.WEZBRIDGE_INTEL_DIR = prior;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('an error still closes the thread outright', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-threads-'));
+  const prior = process.env.WEZBRIDGE_INTEL_DIR;
+  process.env.WEZBRIDGE_INTEL_DIR = dir;
+  try {
+    intel.updateThreads({ fromPane: 4, toPane: 9, corr: 'boom', type: 'request', body: 'x' });
+    intel.updateThreads({ fromPane: 9, toPane: 4, corr: 'boom', type: 'error', body: 'aborted' });
+    const data = JSON.parse(fs.readFileSync(path.join(dir, 'a2a-threads.json'), 'utf8'));
+    assert.strictEqual(data.threads.boom, undefined, 'an abort ends the thread');
+  } finally {
+    if (prior === undefined) delete process.env.WEZBRIDGE_INTEL_DIR; else process.env.WEZBRIDGE_INTEL_DIR = prior;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
