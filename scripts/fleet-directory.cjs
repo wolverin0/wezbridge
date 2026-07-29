@@ -18,10 +18,12 @@
  * They live in separate files on purpose. A generated file that humans edit gets its
  * edits destroyed on the next run, and then nobody trusts it again.
  *
- * NO PANE IDS ARE EVER WRITTEN. They renumber when panes close — the fleet's one
- * pre-existing cross-pane doc is titled "pane-8" for a pane that is now a different
- * number. The index records WHETHER a project has a live pane; callers resolve the id
- * with discover_sessions at use time.
+ * NO PANE IDS ARE EVER WRITTEN — but not for the reason first assumed. Ids are monotonic
+ * and never reused inside a wezterm process, so a stale one fails LOUDLY on a dead pane.
+ * They reset when wezterm restarts and panes respawn in a new order, and closing a tab
+ * with the X crashes this build, so restarts are routine: that is when a stored id starts
+ * silently naming a different project. The index records WHETHER a project has a live
+ * pane; callers resolve via src/pane-identity.cjs (cwd canonical, tab_title alias).
  *
  * Usage:  node fleet-directory.cjs [--check]
  *         --check exits 1 if FLEET.md is out of date (for CI / the steward).
@@ -216,10 +218,25 @@ function render(rows, { liveKnown, generatedAt }) {
   L.push('roster that makes that possible: it tells you who exists, what they own, and what symptoms');
   L.push('mean the thing in front of you is somebody else\'s job.');
   L.push('');
-  L.push('**Never store a pane ID.** They renumber when panes close. Resolve with');
-  L.push('`discover_sessions` once per session, cache `{project -> pane_id}`, and refresh on');
-  L.push('`session_removed` or `no such pane`. Send with `a2a_send` (it builds the envelope and');
-  L.push('verifies submission); a `type=result` owes a `criteria:` block.');
+  L.push('**Identity is the folder, not the number.** Measured 2026-07-29: `pane_id` is monotonic');
+  L.push('and NEVER reused within a WezTerm process (live ids 0,2..6,9..15,28,29,37,38,43 — 26');
+  L.push('permanent gaps), so a stale id hits a DEAD pane and fails loudly rather than reaching the');
+  L.push('wrong project. But ids RESET to 0 when WezTerm restarts and panes respawn in a different');
+  L.push('order — and closing a tab with the X crashes this build, so restarts are routine. That is');
+  L.push('the real hazard: across a restart a stored id can silently name a different project.');
+  L.push('');
+  L.push('The two failure modes are opposite, so the caching rule follows from them: **invalidate the');
+  L.push('whole `{project -> pane_id}` cache on a WezTerm restart, and otherwise trust it.** Inside a');
+  L.push('process a stale id fails loudly and retry-and-rediscover recovers, so constant re-resolving');
+  L.push('buys nothing. "Distrust ids always" is both wrong and useless — it gives you no way to tell');
+  L.push('a safe stale id from a dangerous one.');
+  L.push('');
+  L.push('Resolve by **cwd** (canonical, the folder) with **tab_title** as the operator alias.');
+  L.push('`src/pane-identity.cjs` does this: cwd wins when the two disagree, ambiguity is reported');
+  L.push('rather than guessed, and a project with no pane returns null so you spawn in the right cwd');
+  L.push('instead of borrowing one. Declare alternate names in a brief `aliases:` field — the');
+  L.push('operator calls `argentina-sales-hub` "futuraCRM". Send with `a2a_send`; `type=result` owes');
+  L.push('a `criteria:` block.');
   L.push('');
   L.push('## Two routing rules, both learned the hard way');
   L.push('');
