@@ -149,3 +149,19 @@ test('the steward never proposes closing anything', () => {
   assert.ok(!/closed|closing T-/i.test(out.replace(/never closes anything/, '')),
     'the report must not claim to have closed anything');
 });
+
+test('every finding names the lease owner, because that is the routing key', () => {
+  // A staleness reconcile for T-0008 was dispatched to the whatsappbot pane
+  // because the task names that repo — while the lease was held by the
+  // orchestrator itself. It chased another agent about its own abandoned work,
+  // and that pane rightly refused to transition a task it did not hold. A
+  // report that omits the owner routes every follow-up to the wrong place.
+  const t = {
+    id: 'T-0008', repo: 'whatsappbot-final', state: 'running', title: 'Oversight',
+    updated_at: hoursAgo(40), lease: { owner: 'pane-0', expires_at: hoursAgo(30) },
+  };
+  const f = steward.audit([t], NOW).findings[0];
+  assert.strictEqual(f.owner, 'pane-0', 'the finding must carry the lease holder');
+  assert.match(steward.render(steward.audit([t], NOW)), /owner: pane-0/,
+    'and the rendered report must show it, not just the JSON');
+});

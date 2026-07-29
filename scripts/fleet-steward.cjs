@@ -102,7 +102,16 @@ const ageMs = (task, now, dir) => now - lastActivity(task, dir);
 function classify(task, now, dir = intelDir()) {
   const age = ageMs(task, now, dir);
   const gated = Boolean(task.contract && task.contract.gate === 'operator');
-  const common = { id: task.id, repo: task.repo, state: task.state, title: task.title, age_hours: hours(age) };
+  // `owner` is the lease holder, and it is the correct routing key for any
+  // follow-up — NOT the repo. A staleness reconcile for T-0008 was sent to the
+  // whatsappbot pane because the task names that repo, while the lease was held
+  // by the orchestrator itself: it chased another agent about its own abandoned
+  // work. A pane cannot transition a task it holds no lease on, so a report
+  // that omits the owner routes every follow-up to the wrong place.
+  const common = {
+    id: task.id, repo: task.repo, state: task.state, title: task.title,
+    owner: (task.lease && task.lease.owner) || null, age_hours: hours(age),
+  };
 
   switch (task.state) {
     case 'blocked':
@@ -168,7 +177,7 @@ function render(report) {
   let last = null;
   for (const f of report.findings) {
     if (f.category !== last) { lines.push(`[${f.category}]`); last = f.category; }
-    lines.push(`  ${f.id} | ${f.repo} | ${f.age_hours}h | ${String(f.title || '').slice(0, 58)}`);
+    lines.push(`  ${f.id} | ${f.repo} | ${f.age_hours}h | owner: ${f.owner || 'unleased'} | ${String(f.title || '').slice(0, 44)}`);
     lines.push(`      ${f.why}`);
   }
   lines.push('', 'The steward never closes anything — every line above is yours to rule on.');
