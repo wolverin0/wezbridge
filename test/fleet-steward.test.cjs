@@ -156,12 +156,24 @@ test('every finding names the lease owner, because that is the routing key', () 
   // orchestrator itself. It chased another agent about its own abandoned work,
   // and that pane rightly refused to transition a task it did not hold. A
   // report that omits the owner routes every follow-up to the wrong place.
-  const t = {
-    id: 'T-0008', repo: 'whatsappbot-final', state: 'running', title: 'Oversight',
-    updated_at: hoursAgo(40), lease: { owner: 'pane-0', expires_at: hoursAgo(30) },
-  };
-  const f = steward.audit([t], NOW).findings[0];
-  assert.strictEqual(f.owner, 'pane-0', 'the finding must carry the lease holder');
-  assert.match(steward.render(steward.audit([t], NOW)), /owner: pane-0/,
-    'and the rendered report must show it, not just the JSON');
+  // Hermetic dir on purpose. An earlier version used the REAL task id T-0008
+  // with the default intel dir, so lastActivity() read the live fleet's
+  // _intel/runs/T-0008/log.md — and the moment that oversight log was appended
+  // to, the task looked active, the finding vanished and the test failed. A
+  // test coupled to mutable production state fails for reasons unrelated to the
+  // behaviour it asserts.
+  const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'steward-empty-'));
+  try {
+    const t = {
+      id: 'T-0008', repo: 'whatsappbot-final', state: 'running', title: 'Oversight',
+      updated_at: hoursAgo(40), lease: { owner: 'pane-0', expires_at: hoursAgo(30) },
+    };
+    const f = steward.audit([t], NOW, empty).findings[0];
+    assert.ok(f, 'an expired lease with no activity must produce a finding');
+    assert.strictEqual(f.owner, 'pane-0', 'the finding must carry the lease holder');
+    assert.match(steward.render(steward.audit([t], NOW, empty)), /owner: pane-0/,
+      'and the rendered report must show it, not just the JSON');
+  } finally {
+    fs.rmSync(empty, { recursive: true, force: true });
+  }
 });

@@ -124,7 +124,7 @@ function ledgerCounts() {
  * down we say so rather than guessing, because "no pane" and "could not look" are very
  * different answers and conflating them is how a silent sensor failure starts.
  */
-async function livePaneProjects() {
+async function livePaneProjects(registered) {
   try {
     const res = await fetch('http://127.0.0.1:4200/api/panes', { signal: AbortSignal.timeout(4000) });
     if (!res.ok) return null;
@@ -156,18 +156,33 @@ async function livePaneProjects() {
         .filter(Boolean)
         .map((c) => String(c).trim().split(/[\\/]/).filter(Boolean).pop());
       for (const c of candidates) {
-        if (c && isProjectDir(c)) { found.add(c); break; }
+        if (c && isProjectDir(c, registered)) { found.add(c); break; }
       }
     }
     return found;
   } catch { return null; }
 }
 
-/** A project is a real directory under the Py Apps root — this filters out panes
- *  sitting in a home directory or on the Desktop, mechanically and without judging
- *  which projects matter. */
-function isProjectDir(name) {
-  try { return fs.statSync(path.join(ROOT, name)).isDirectory(); } catch { return false; }
+/**
+ * Is this name a real project directory?
+ *
+ * NOT every project is a direct child of the root. sweeper-config registers a
+ * `path` per repo, and two of them are nested: whatsappbot-final actually lives
+ * at "whatsappbot-prod - Copy - Copy/whatsappbot-final", gimnasio-next at
+ * "gimnasio/gimnasio-next". v1 only tried ROOT/<name>, so both were silently
+ * deleted from the roster — including the fleet's busiest repo, with ten open
+ * ledger tasks — and they were dropped BEFORE the coverage section ran, so the
+ * index omitted them while claiming to state its own gaps. Exactly the defect
+ * this file exists to prevent, committed by this file. Check the registered
+ * path first, then the direct child.
+ */
+function isProjectDir(name, registered) {
+  const rel = registered && registered.get(name);
+  for (const candidate of [rel, name]) {
+    if (!candidate) continue;
+    try { if (fs.statSync(path.join(ROOT, candidate)).isDirectory()) return true; } catch { /* try next */ }
+  }
+  return false;
 }
 
 // ---------- compose ----------
@@ -180,7 +195,7 @@ function buildRows({ briefs, registered, claw, ledger, live }) {
   if (live) for (const n of live) names.add(n);
   // Drop anything that is not a real directory here — a pane parked in a home folder
   // or on the Desktop is not a project, and listing it as one invites a misroute.
-  for (const n of [...names]) if (!isProjectDir(n)) names.delete(n);
+  for (const n of [...names]) if (!isProjectDir(n, registered)) names.delete(n);
 
   return [...names].sort((a, b) => a.localeCompare(b)).map((name) => {
     const b = briefs.get(name) || null;
@@ -329,7 +344,7 @@ function render(rows, { liveKnown, generatedAt }) {
 
 async function main() {
   const [briefs, registered, claw, ledger] = [loadBriefs(), registeredRepos(), clawtrolProjects(), ledgerCounts()];
-  const live = await livePaneProjects();
+  const live = await livePaneProjects(registered);
   const rows = buildRows({ briefs, registered, claw, ledger, live });
   const text = render(rows, { liveKnown: live !== null, generatedAt: new Date().toISOString() });
 
