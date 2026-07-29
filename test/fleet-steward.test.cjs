@@ -2,6 +2,9 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const steward = require('../scripts/fleet-steward.cjs');
 
 const NOW = Date.parse('2026-07-29T12:00:00.000Z');
@@ -33,13 +36,32 @@ test('a gated task blocked only an hour is NOT stale — gating is not a defect'
   assert.deepStrictEqual(steward.audit([t], NOW).findings, []);
 });
 
-test('an expired lease is reported even when the task was updated recently', () => {
-  // Age alone would miss this: a worker can touch a task and then die. The
-  // lease expiry is the stronger signal — someone PROMISED to finish it.
+test('the lease field name matches a REAL task record, not an invented one', () => {
+  // v1 read `lease.until`. The real field is `expires_at`, so the entire
+  // abandoned-lease rule was dead code against every task on disk — while this
+  // suite passed, because the fixture invented the same wrong name. A test
+  // that validates the bug is worse than no test. This one reads the actual
+  // ledger and fails if the shape ever drifts again.
+  const dir = path.join(__dirname, '..', '..', '_intel', 'tasks');
+  let leased = [];
+  try {
+    leased = fs.readdirSync(dir)
+      .filter((f) => f.endsWith('.json'))
+      .map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')))
+      .filter((t) => t.lease);
+  } catch { /* no live ledger in this checkout */ }
+  if (!leased.length) return; // nothing to conform to; other tests still cover logic
+  for (const t of leased) {
+    assert.ok('expires_at' in t.lease,
+      `${t.id}: real leases carry expires_at — the steward must read that name`);
+  }
+});
+
+test('an expired lease plus no activity is reported, naming who dropped it', () => {
   const t = {
     id: 'T-2', repo: 'wezbridge', state: 'running', title: 'batch',
-    updated_at: hoursAgo(1),
-    lease: { owner: 'pane-29', until: hoursAgo(3) },
+    updated_at: hoursAgo(30),
+    lease: { owner: 'pane-29', expires_at: hoursAgo(24) },
   };
   const f = steward.audit([t], NOW).findings;
   assert.strictEqual(f.length, 1);
@@ -47,12 +69,51 @@ test('an expired lease is reported even when the task was updated recently', () 
   assert.match(f[0].why, /pane-29/, 'the report must name who dropped it');
 });
 
+test('an expired lease on a task that is still ACTIVE is not abandoned', () => {
+  // Leases are minute-bounded and long loops routinely outlive them without
+  // harm. Expiry alone must not accuse a working owner of dying.
+  const t = {
+    id: 'T-2b', repo: 'wezbridge', state: 'running',
+    updated_at: hoursAgo(1),
+    lease: { owner: 'pane-29', expires_at: hoursAgo(20) },
+  };
+  assert.deepStrictEqual(steward.audit([t], NOW).findings, []);
+});
+
 test('a running task with a LIVE lease is left alone', () => {
   const t = {
     id: 'T-3', repo: 'mutual', state: 'running', updated_at: hoursAgo(20),
-    lease: { owner: 'pane-37', until: new Date(NOW + 3600000).toISOString() },
+    lease: { owner: 'pane-37', expires_at: new Date(NOW + 3600000).toISOString() },
   };
   assert.deepStrictEqual(steward.audit([t], NOW).findings, []);
+});
+
+test('a run log counts as activity even when the ledger has not moved', () => {
+  // T-0008 was at pass 50 of a live oversight loop with 38h of ledger silence,
+  // because that loop reports to _intel/runs/<id>/log.md. A detector that reads
+  // only the ledger is blind to the channel the work is on and will flag every
+  // healthy long task — and false positives are how a steward gets ignored.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'steward-runs-'));
+  try {
+    const runDir = path.join(tmp, 'runs', 'T-8');
+    fs.mkdirSync(runDir, { recursive: true });
+    const logFile = path.join(runDir, 'log.md');
+    fs.writeFileSync(logFile, '# pass 50\n');
+    const fresh = new Date(NOW - 3600000);          // one hour ago
+    fs.utimesSync(logFile, fresh, fresh);
+
+    const task = { id: 'T-8', repo: 'whatsappbot-final', state: 'running', updated_at: hoursAgo(38) };
+    assert.strictEqual(steward.classify(task, NOW, tmp), null,
+      'a fresh run log means the task is alive despite ledger silence');
+
+    // ...and a STALE run log must not rescue a genuinely dead task.
+    const old = new Date(NOW - 40 * 3600000);
+    fs.utimesSync(logFile, old, old);
+    const f = steward.classify(task, NOW, tmp);
+    assert.ok(f && f.category === 'stale-running', 'an old run log must not mask a real stall');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test('done and cancelled tasks are never reported however old', () => {

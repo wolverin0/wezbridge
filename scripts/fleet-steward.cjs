@@ -57,15 +57,50 @@ function loadTasks() {
   return out;
 }
 
-const ageMs = (task, now) => now - new Date(task.updated_at || task.created_at || 0).getTime();
 const hours = (ms) => Math.round(ms / 3600000);
+
+/**
+ * Lease expiry, or null when unleased.
+ *
+ * The field is `expires_at`. v1 read `lease.until`, a name invented to match a
+ * hand-written fixture, so the abandoned-lease rule was dead code against every
+ * real task while its unit test passed — the test validated the bug. Any field
+ * read here must be confirmed against a record on disk, never assumed.
+ */
+function leaseExpiry(task) {
+  const raw = task.lease && task.lease.expires_at;
+  if (!raw) return null;
+  const t = new Date(raw).getTime();
+  return Number.isFinite(t) ? t : null;
+}
+
+/**
+ * When this task last showed a sign of life.
+ *
+ * The ledger is NOT the only channel work is reported on: long-running
+ * oversight loops append to _intel/runs/<id>/log.md and may go many hours
+ * between ledger state transitions. A staleness detector that reads only the
+ * ledger is blind to the channel where the work actually shows up, so it flags
+ * healthy long tasks every single run — and a steward that cries wolf is a
+ * steward the operator stops reading. Diagnosed by pane-5 on T-0008, which was
+ * at pass 50 of an active loop while the ledger had not moved in 38h.
+ */
+function lastActivity(task, dir = intelDir()) {
+  const stamps = [new Date(task.updated_at || task.created_at || 0).getTime()];
+  try {
+    stamps.push(fs.statSync(path.join(dir, 'runs', task.id, 'log.md')).mtimeMs);
+  } catch { /* no run log — ledger timestamp stands alone */ }
+  return Math.max(...stamps.filter(Number.isFinite));
+}
+
+const ageMs = (task, now, dir) => now - lastActivity(task, dir);
 
 /**
  * Classify one task. Returns null when it needs no attention.
  * `now` is injected so this is testable without clock mocking.
  */
-function classify(task, now) {
-  const age = ageMs(task, now);
+function classify(task, now, dir = intelDir()) {
+  const age = ageMs(task, now, dir);
   const gated = Boolean(task.contract && task.contract.gate === 'operator');
   const common = { id: task.id, repo: task.repo, state: task.state, title: task.title, age_hours: hours(age) };
 
@@ -85,13 +120,18 @@ function classify(task, now) {
       // batch that simply has not hit a checkpoint is not a problem: flagging
       // it would train the operator to ignore the steward, which costs more
       // than the occasional missed stall.
-      const until = task.lease && task.lease.until ? new Date(task.lease.until).getTime() : null;
-      if (until !== null) {
-        return until < now
-          ? { ...common, category: 'abandoned-lease', why: `lease expired ${hours(now - until)}h ago (owner ${task.lease.owner || '?'})` }
+      const until = leaseExpiry(task);
+      // An expired lease alone is NOT proof of abandonment: leases are minute-
+      // bounded and owners routinely outlive them on long loops without harm.
+      // Only an expired lease AND no recent sign of life on either channel
+      // means the owner is actually gone.
+      if (until !== null && until < now) {
+        return age > HOURS(RULES.staleRunning)
+          ? { ...common, category: 'abandoned-lease', why: `lease expired ${hours(now - until)}h ago (owner ${task.lease.owner || '?'}) and no activity since` }
           : null;
       }
-      if (age > HOURS(RULES.staleRunning)) return { ...common, category: 'stale-running', why: 'running with no lease and no state change — worker may have died' };
+      if (until !== null) return null;   // live lease: someone is on it
+      if (age > HOURS(RULES.staleRunning)) return { ...common, category: 'stale-running', why: 'running with no lease and no activity on ledger or run log' };
       return null;
     }
     case 'review':
@@ -109,8 +149,8 @@ function classify(task, now) {
   }
 }
 
-function audit(tasks, now = Date.now()) {
-  const findings = tasks.map((t) => classify(t, now)).filter(Boolean);
+function audit(tasks, now = Date.now(), dir = intelDir()) {
+  const findings = tasks.map((t) => classify(t, now, dir)).filter(Boolean);
   // Operator-owed items first: those are the ones that block other people's work.
   const rank = { 'awaiting-operator': 0, 'abandoned-lease': 1, 'stale-running': 2, 'stale-review': 3, 'stale-failed': 4, 'blocked-not-gated': 5, idle: 6 };
   findings.sort((a, b) => (rank[a.category] - rank[b.category]) || (b.age_hours - a.age_hours));
