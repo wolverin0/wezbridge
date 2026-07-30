@@ -94,7 +94,8 @@ keeps owning RUNTIME state (lease/attempt/FSM/evidence). One writer per field.
   exist on a branch referencing an item id that is still `- [ ]`, i.e. work done and never claimed.
   **Exit:** run today against whatsappbot → FAILS on KB-12 (direction b) AND on the three
   committed-but-open items (direction d). Both cases are live fixtures; no synthetic test needed.
-- [ ] R.5 Pilot on TWO repos only — `mutual` (active ledger repo, 10 open items) and
+- [x] R.5 DONE 2026-07-30 — full pipeline ran: roadmap.md line 87 → T-0045 minted+written-back (10 tasks, 7 born-blocked incl. mutual's own write-rpc gate) → dispatched read_mostly (contract mode → plan-mode spawn = harness-enforced) → executor proposal returned as v2 result → verified → review, follow-ups T-0055/T-0056/T-0058 filed. Marker flip deliberately awaits merged work (linter enforces). Bugs found AND closed by the run itself: spawn submission verifier can report submitted on an eaten prompt (mutual's dangling auto-memory-hook, T-0055); create() bypassed fleet-minimum gates (fixed 063a0eb, probe-proven); kind vocabulary violation caught by own registry test (migration added). futura-command-center: 0 open items, nothing to import — drained canary confirmed. FREEZE BEGINS: one week operate-only from 2026-07-31.
+- [ ] R.5-original spec: Pilot on TWO repos only — `mutual` (active ledger repo, 10 open items) and
   `futura-command-center` (0 open / 14 closed, already drained = zero-risk canary for write-back).
   NOT 32 projects on day one.
   **Exit:** orchestrator reads mutual's ROADMAP.md, dispatches one item with its gate honoured, the
