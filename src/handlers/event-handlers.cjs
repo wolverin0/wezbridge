@@ -156,7 +156,25 @@ function createEventHandlers(ctx) {
     res.write(`event: hello\ndata: ${JSON.stringify({ ts: helloTs, timestamp: helloTs })}\n\n`);
     sseClients.add(res);
 
-    const child = spawn(process.execPath, [path.join(SRC_DIR, 'omni-watcher.cjs')], {
+    // omni-watcher.cjs was removed in the v3.x rollback but these call sites survived it.
+    // Spawning a missing module made EVERY SSE connection fail instantly: the child exited
+    // with MODULE_NOT_FOUND, the exit handler below closed the stream, and each subscriber
+    // got only `hello` + `watcher_exit` before being disconnected — so a2a_silent and every
+    // other pushed event was undeliverable, while each poll leaked a doomed process.
+    // Found 2026-08-03 after the daemon died and a 60s liveness poll had been spawning one
+    // failing child per connection for ~12h. Absent watcher now degrades to a plain SSE
+    // stream instead of taking the connection (and eventually the daemon) down with it.
+    const watcherPath = path.join(SRC_DIR, 'omni-watcher.cjs');
+    if (!fs.existsSync(watcherPath)) {
+      if (!handleEvents._warnedMissingWatcher) {
+        handleEvents._warnedMissingWatcher = true;
+        log(`omni-watcher.cjs absent at ${watcherPath} — serving SSE without the watcher child`);
+      }
+      req.on('close', () => { sseClients.delete(res); });
+      return;
+    }
+
+    const child = spawn(process.execPath, [watcherPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, WATCHER_POLL_MS: process.env.WATCHER_POLL_MS || '30000' },
     });
@@ -413,6 +431,28 @@ function createEventHandlers(ctx) {
       log(watchdog.start() ? 'pane0-watchdog armed (30s check, 90s absent-recovery, 10min cooldown, 3-strike disable)' : 'pane0-watchdog disabled (WEZBRIDGE_WATCHDOG=0)');
     } catch (e) {
       log(`pane0-watchdog failed to start: ${e.message}`);
+    }
+    // Orchestrator waker (walksim pilot, 2026-08-05): poke pane-0 when a
+    // watched repo's pane finishes a turn. Default OFF — WEZBRIDGE_ORCH_WAKER=1.
+    if (process.env.WEZBRIDGE_ORCH_WAKER === '1') {
+      try {
+        const { createWaker } = require('../orchestrator-waker.cjs');
+        const verifiedSend = require('../verified-send.cjs');
+        const intelDir = process.env.WEZBRIDGE_INTEL_DIR
+          || path.join(SRC_DIR, '..', '..', '_intel');
+        const waker = createWaker({
+          eventsPath: path.join(intelDir, 'pane-events.jsonl'),
+          stateDir: path.join(intelDir, '.orch-waker-state'),
+          watchRepos: (process.env.WEZBRIDGE_ORCH_WAKER_REPOS || 'walksim').split(',').map((s) => s.trim()).filter(Boolean),
+          discoverPanes: () => (discoverPanes ? discoverPanes() : []),
+          send: verifiedSend,
+          log,
+        });
+        waker.startWatcher();
+        log('orchestrator-waker armed (60s tick, idle-gated verified pokes, cap 3 + 5min cooldown)');
+      } catch (e) {
+        log(`orchestrator-waker failed to start: ${e.message}`);
+      }
     }
   }
 
