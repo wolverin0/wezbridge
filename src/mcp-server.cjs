@@ -112,100 +112,13 @@ function sleep(ms) {
 const pendingAsyncCalls = new Set();
 
 // ─── Verified prompt submission (claim-8945 fix at source) ────────────────
-// wezterm's `cli send-text --no-paste` intermittently swallows the trailing
-// \r, leaving the prompt sitting unsubmitted in the TUI input box. The old
-// approach fired blind redundant enters and reported success regardless.
-// This reads the pane back: the BOTTOM-MOST prompt-marker line (❯ / > / ›,
-// optionally behind a box-drawing border) is the live input box — if our text
-// is still sitting there, nudge enter and re-check (bounded retries).
-// Returns 'submitted' | 'stuck' | 'unknown' (pane unreadable / non-TUI shell).
-function inputBoxContent(tailLines) {
-  const markers = tailLines.filter((l) => /^[\s│|]*[❯>›]/.test(l));
-  const last = markers[markers.length - 1] || '';
-  return last.replace(/^[\s│|]*[❯>›]\s*/, '').replace(/[\s│|]+$/, '').replace(/\s+/g, ' ').trim().toLowerCase();
-}
+// Extracted to src/verified-send.cjs (2026-08-05) so the daemon shares the
+// exact same delivery guarantees (multi-line stuck detection, bracketed-paste
+// anti-splice, collapsed-paste handling). Same functions, same behaviour.
+const { verifyPromptSubmission, sendPromptDeferredEnter } = require('./verified-send.cjs');
 
 // read_output delta cursors — see src/read-cursor.cjs
 const { makeReadCursor, sliceAfterCursor } = require('./read-cursor.cjs');
-
-async function verifyPromptSubmission(paneId, text, { retries = 2, settleMs = 700 } = {}) {
-  const norm = String(text).replace(/\s+/g, ' ').trim().toLowerCase();
-  const probe = norm.slice(0, 60);
-  if (!probe) return 'unknown';
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    await sleep(attempt === 0 ? settleMs : 900);
-    let tailLines;
-    try {
-      wez.invalidateGetTextCache(paneId);
-      tailLines = wez.getFullText(paneId, 25).split('\n');
-    } catch {
-      return 'unknown';
-    }
-    const content = inputBoxContent(tailLines);
-    // MULTI-LINE fix (operator-observed 2026-07-10, new codex composer): with
-    // a multi-line prompt the visible composer line is the LAST line of the
-    // paste (or a "[pasted …]" placeholder), NOT the head — comparing only
-    // against the head reported 'submitted' while the whole envelope sat
-    // unsubmitted. Stuck if the composer shows the head, ANY slice of our
-    // text, or a paste placeholder.
-    const stuck = content.length > 0 && (
-      probe.startsWith(content.slice(0, 40)) ||
-      content.startsWith(probe.slice(0, 40)) ||
-      (content.length >= 8 && norm.includes(content.slice(0, 60))) ||
-      /\[?pasted (text|content)|\+\s*\d+\s+lines?\]?/i.test(content)
-    );
-    if (!stuck) return 'submitted';
-    // Text still in the input box — a fresh, time-separated enter (empty
-    // send-text + appended \r, same path as send_key('enter')) unsticks it.
-    try { wez.sendText(paneId, ''); } catch { /* ignore */ }
-  }
-  return 'stuck';
-}
-
-// Two-phase send: BODY as a bracketed paste, then a SEPARATE real Enter.
-//
-// The body MUST go via bracketed paste (sendTextBracketed), NOT --no-paste.
-// --no-paste injects raw key events, so every internal `\n` fires an Enter —
-// which fragments any multi-line payload (an A2A envelope always has a `\n`
-// after the header) into multiple partial deliveries: the recipient composer
-// submits at the first newline (truncation) and later lines land as separate
-// inputs (the "spliced-in / replaced by a different part of the message"
-// corruption reported by two panes 2026-07-21, incl. a corrupted credential).
-// Bracketed paste wraps the whole payload in paste markers, so internal
-// newlines stay soft (literal) and the composer holds it atomically. The
-// trailing CR is still sent separately (a bracketed paste's own newline is
-// soft and won't submit — the original "pasted but never pushed" fix, 07-10).
-//
-// Returns a delivery-integrity verdict: 'ok' if the composer visibly holds the
-// tail of our payload before we submit, 'truncated' if the tail is missing,
-// 'unknown' if the pane is unreadable. This is real delivery verification —
-// distinct from verifyPromptSubmission, which only checks the box CLEARED
-// (a truncated message clears too, so submission != integrity).
-function composerHoldsTail(paneId, text) {
-  const norm = String(text).replace(/\s+/g, ' ').trim();
-  const tail = norm.slice(-40).toLowerCase();
-  if (tail.length < 8) return 'ok'; // too short to meaningfully verify
-  let rendered;
-  try {
-    wez.invalidateGetTextCache(paneId);
-    rendered = wez.getFullText(paneId, 40).replace(/\s+/g, ' ').toLowerCase();
-  } catch { return 'unknown'; }
-  if (rendered.includes(tail)) return 'ok';
-  // Claude Code collapses long pastes in the composer ("[Pasted text #N ...]" /
-  // "paste again to expand") — the content is intact but its literal tail is not
-  // rendered, which read as a FALSE truncation (first seen 2026-07-25, T-0002
-  // dispatch). Collapsed paste = integrity unverifiable, not failed.
-  if (/\[pasted text|paste again to expand/.test(rendered)) return 'unknown';
-  return 'truncated';
-}
-
-async function sendPromptDeferredEnter(paneId, text) {
-  wez.sendTextBracketed(paneId, text); // atomic; internal newlines stay soft
-  await sleep(400);
-  const delivered = composerHoldsTail(paneId, text);
-  wez.sendTextNoEnter(paneId, '\r'); // separate real Enter = single submit
-  return delivered;
-}
 
 function mcpError(message) {
   return {
