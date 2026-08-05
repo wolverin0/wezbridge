@@ -207,3 +207,17 @@ test('intentId is stable and collision-scoped to repo+session+time+event', () =>
   assert.equal(a, b);
   assert.notEqual(a, c);
 });
+
+test('non-Claude panes sharing the target cwd do not make resolution ambiguous', async () => {
+  const env = makeEnv();
+  const send = fakeSend();
+  const daemonShellPane = { paneId: 14, project: 'G:/Py Apps/wezbridge', title: 'npm run dashboard', status: 'idle', isClaude: false };
+  const w = makeWaker(env, {
+    send, settleTicks: 1,
+    discoverPanes: () => [{ ...IDLE_PANE, isClaude: true }, daemonShellPane],
+  });
+  beacon(env, { repo: 'walksim', session: 's', time: 't1', event: 'turn-end' });
+  await w.tick();
+  assert.equal(send.calls.length, 1, 'daemon shell pane filtered out; Claude pane poked');
+  assert.equal(send.calls[0].paneId, 0);
+});

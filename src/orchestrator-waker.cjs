@@ -164,12 +164,17 @@ function createWaker(opts) {
   function findTarget(panes) {
     if (resolveTarget) return resolveTarget(panes);
     // Default: pane-identity semantics over discoverPanes output.
+    // Non-Claude panes are excluded FIRST: the daemon's own shell pane shares
+    // the wezbridge cwd, and without this filter resolution is permanently
+    // ambiguous (two hits) and the waker fails closed forever.
     const { resolve } = require('./pane-identity.cjs');
-    const mapped = panes.map((p) => ({
-      pane_id: p.paneId ?? p.pane_id,
-      cwd: p.project || p.cwd || null,
-      tab_title: p.title || null,
-    }));
+    const mapped = panes
+      .filter((p) => p.isClaude !== false)
+      .map((p) => ({
+        pane_id: p.paneId ?? p.pane_id,
+        cwd: p.project || p.cwd || null,
+        tab_title: p.title || null,
+      }));
     const hit = resolve(cfg.targetProject, mapped);
     if (hit.ambiguous.length) {
       log(`orch-waker: ${hit.warning} — not poking`);
