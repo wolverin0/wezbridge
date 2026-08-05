@@ -73,7 +73,15 @@ function createWaker(opts) {
 
   // Durable state — sessions and daemon restarts are survivable because
   // everything below is re-read from disk at construction.
-  const savedCursor = readJson(FILES.cursor, { bytes: 0, tail: null });
+  // FRESH state (no cursor file) starts at END of the events file: the waker
+  // signals new completions, it does not replay history. First armed live it
+  // ingested 590 stale intents from the beacon backlog — this stops that.
+  let savedCursor = readJson(FILES.cursor, null);
+  if (!savedCursor) {
+    let size = 0;
+    try { size = fs.statSync(cfg.eventsPath).size; } catch { /* no file yet */ }
+    savedCursor = { bytes: size, tail: null };
+  }
   const state = {
     cursorBytes: savedCursor.bytes,
     // Fingerprint of the last consumed bytes: rotation/truncation to a file of

@@ -221,3 +221,17 @@ test('non-Claude panes sharing the target cwd do not make resolution ambiguous',
   assert.equal(send.calls.length, 1, 'daemon shell pane filtered out; Claude pane poked');
   assert.equal(send.calls[0].paneId, 0);
 });
+
+test('fresh state starts at END of an existing events file — history is not replayed', async () => {
+  const env = makeEnv();
+  beacon(env, { repo: 'walksim', session: 'old', time: 't-old-1', event: 'turn-end' });
+  beacon(env, { repo: 'walksim', session: 'old', time: 't-old-2', event: 'turn-end' });
+  const send = fakeSend();
+  const w = makeWaker(env, { send, settleTicks: 1 }); // first construction AFTER history exists
+  await w.tick();
+  assert.equal(send.calls.length, 0, 'stale history produced no intents');
+  beacon(env, { repo: 'walksim', session: 'new', time: 't-new', event: 'turn-end' });
+  await w.tick();
+  assert.equal(send.calls.length, 1, 'events after arming are ingested normally');
+  assert.match(send.calls[0].text, /1 turn-end event\(s\)/);
+});
