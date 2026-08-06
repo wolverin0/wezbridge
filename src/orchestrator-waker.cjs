@@ -73,6 +73,7 @@ function createWaker(opts) {
     pending: path.join(stateDir, 'pending.json'),
     delivered: path.join(stateDir, 'delivered.json'),
     flags: path.join(stateDir, 'flags.json'),
+    resultsSeen: path.join(stateDir, 'results-seen.json'),
   };
 
   // Durable state — sessions and daemon restarts are survivable because
@@ -96,6 +97,7 @@ function createWaker(opts) {
     delivered: readJson(FILES.delivered, []), // ring of intent ids
     idleStreak: 0,
     lastAttemptAt: {}, // repo -> ms (in-memory: a restart re-attempting early is safe)
+    resultsSeen: readJson(FILES.resultsSeen, {}), // repo -> true once its results dir has been seeded
     lastTickAt: null, // ISO — proves the loop is running, not merely constructed
     lastPokeAt: null, // ISO — proves delivery, not merely ticking
   };
@@ -172,6 +174,68 @@ function createWaker(opts) {
     };
     persistCursor();
     if (added) log(`orch-waker: ${added} new intent(s), ${Object.keys(state.pending).length} pending`);
+  }
+
+  // ── 1b. results-file trigger: a completion signal that needs NO hook ──────
+  //
+  // The beacon path requires the agent's harness to fire a Stop hook. Codex
+  // panes do not reliably do that — confirmed on mutual 2026-08-06: the beacon
+  // hook is registered for codex and works standalone (exit 0, correct repo),
+  // yet no beacon has been emitted since 2026-07-31 while the pane worked all
+  // day. That is the `codex-pane: DEFERRED — no completion signal` entry in the
+  // registry, and it locked every non-Claude pane out of the loop.
+  //
+  // A results FILE is the contract already: harvest-by-file is how the
+  // orchestrator reads outcomes, and no node is complete without one. So watch
+  // for it directly. This is strictly better than the beacon for the thing we
+  // actually care about — a beacon says "a turn ended", which is usually noise;
+  // a new results file says "a NODE COMPLETED", which is always actionable.
+  //
+  // Mtime is deliberately NOT the key: clock skew and touch-like rewrites make
+  // it unreliable. The key is (path + size + mtime) hashed into an intent id, so
+  // a genuinely rewritten result re-fires and an unchanged one never does.
+  function scanResults() {
+    if (!cfg.reposRoot) return 0;
+    let added = 0;
+    for (const repo of cfg.watchRepos) {
+      const dir = path.join(cfg.reposRoot, repo, '.orchestrator', 'results');
+      let names;
+      try { names = fs.readdirSync(dir).filter((n) => n.endsWith('.json')); } catch { continue; }
+      for (const name of names) {
+        let st;
+        try { st = fs.statSync(path.join(dir, name)); } catch { continue; }
+        const id = crypto.createHash('sha1')
+          .update(`result|${repo}|${name}|${st.size}|${Math.floor(st.mtimeMs)}`)
+          .digest('hex').slice(0, 16);
+        if (deliveredSet.has(id) || state.pending[id]) continue;
+        // First sight of a repo's results dir must not replay its whole history:
+        // seed silently, exactly like the events cursor starts at end-of-file.
+        if (!state.resultsSeen[repo]) continue;
+        state.pending[id] = {
+          repo, event: 'result-file', time: new Date(st.mtimeMs).toISOString(),
+          node: name.replace(/\.json$/, ''), attempts: 0,
+        };
+        added += 1;
+      }
+      if (!state.resultsSeen[repo]) {
+        state.resultsSeen[repo] = true;
+        atomicWriteJson(FILES.resultsSeen, state.resultsSeen);
+        for (const name of names) {
+          try {
+            const st = fs.statSync(path.join(dir, name));
+            deliveredSet.add(crypto.createHash('sha1')
+              .update(`result|${repo}|${name}|${st.size}|${Math.floor(st.mtimeMs)}`)
+              .digest('hex').slice(0, 16));
+          } catch { /* vanished mid-scan */ }
+        }
+        persistDelivered();
+      }
+    }
+    if (added) {
+      persistPending();
+      log(`orch-waker: ${added} new RESULTS-FILE intent(s), ${Object.keys(state.pending).length} pending`);
+    }
+    return added;
   }
 
   // ── 2. target: resolve orchestrator pane + idle settle ───────────────────
@@ -260,9 +324,14 @@ function createWaker(opts) {
       // hours, pointing at four stale result files (audit hole 5). Asserting a
       // mode you have not checked is how a notification manufactures a fiction.
       const facts = `${group.length} ${kinds} event(s), latest ${newest}`;
-      const text = openGraph(repo)
-        ? `[orch-waker] Harvest ${repo}/.orchestrator/results/ and advance the graph — ${facts}.`
-        : `[orch-waker] ${repo} finished work — ${facts}. No open graph, so no node completed: check what the pane actually did.`;
+      // A results FILE outranks a turn-end: it names a node that actually
+      // completed, where a turn-end is usually mid-work noise. Lead with it.
+      const nodes = [...new Set(group.map((id) => state.pending[id].node).filter(Boolean))];
+      const text = nodes.length
+        ? `[orch-waker] ${repo} RESULT FILE(S) written: ${nodes.join(', ')}. Harvest ${repo}/.orchestrator/results/ and advance — ${facts}.`
+        : openGraph(repo)
+          ? `[orch-waker] Harvest ${repo}/.orchestrator/results/ and advance the graph — ${facts}.`
+          : `[orch-waker] ${repo} finished work — ${facts}. No open graph, so no node completed: check what the pane actually did.`;
       let ok = false;
       try {
         const delivered = await send.sendPromptDeferredEnter(targetId, text);
@@ -301,6 +370,7 @@ function createWaker(opts) {
   async function tick() {
     state.lastTickAt = new Date(now()).toISOString();
     ingestEvents();
+    try { scanResults(); } catch (err) { log(`orch-waker: results scan failed: ${err.message}`); }
     let panes = [];
     try { panes = discoverPanes() || []; } catch (err) {
       log(`orch-waker: discovery failed: ${err.message}`);

@@ -319,3 +319,77 @@ test('HOLE 5b: a graph in ANY graph*.json counts — not just graph.json', () =>
     JSON.stringify({ graph_state: 'closed', nodes: [{ id: 'f1', state: 'ready' }] }));
   assert.equal(build()._openGraph('brlite'), false, 'graph_state:closed is authoritative');
 });
+
+// ── RESULTS-FILE TRIGGER: a completion signal that needs no hook ───────────
+// Codex panes do not reliably fire a Stop hook (confirmed on mutual 2026-08-06:
+// the beacon hook is registered for codex and works standalone, yet emitted
+// nothing all day while the pane worked). That locked every non-Claude pane out
+// of the loop. A results file is the contract anyway — harvest-by-file — so it
+// is the better trigger: a beacon says "a turn ended", a results file says "a
+// NODE COMPLETED".
+function resultsWaker() {
+  const fs = require('node:fs'); const os = require('node:os'); const p = require('node:path');
+  const root = fs.mkdtempSync(p.join(os.tmpdir(), 'rw-'));
+  fs.mkdirSync(p.join(root, '_intel'), { recursive: true });
+  fs.writeFileSync(p.join(root, '_intel', 'events.jsonl'), '');
+  const resDir = p.join(root, 'mutual', '.orchestrator', 'results');
+  fs.mkdirSync(resDir, { recursive: true });
+  const sent = [];
+  const w = createWaker({
+    eventsPath: p.join(root, '_intel', 'events.jsonl'),
+    stateDir: p.join(root, '_intel', 'st'),
+    watchRepos: ['mutual'],
+    hasOpenGraph: () => true,
+    discoverPanes: () => [{ paneId: 0, isClaude: true, project: '/x/wezbridge', status: 'idle', title: 'w' }],
+    resolveTarget: () => 0,
+    send: {
+      sendPromptDeferredEnter: async (_id, t) => { sent.push(t); return 'ok'; },
+      verifyPromptSubmission: async () => 'submitted',
+    },
+  });
+  return { w, sent, resDir, fs, p };
+}
+
+test('RESULTS TRIGGER: first sight seeds silently — a repo full of old results is not replayed', async () => {
+  const { w, sent, resDir, fs, p } = resultsWaker();
+  fs.writeFileSync(p.join(resDir, 'OLD-node.json'), '{}');
+  await w.tick(); await w.tick();
+  assert.equal(sent.length, 0, 'pre-existing results must not fire — same discipline as the events cursor starting at EOF');
+});
+
+test('RESULTS TRIGGER: a NEW results file pokes, and names the node', async () => {
+  const { w, sent, resDir, fs, p } = resultsWaker();
+  await w.tick();                                   // seed
+  fs.writeFileSync(p.join(resDir, 'M1-coverage.json'), '{"verdict":"done"}');
+  await w.tick(); await w.tick();                   // settleTicks = 2
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /RESULT FILE\(S\) written: M1-coverage/);
+});
+
+test('RESULTS TRIGGER: an unchanged file never re-fires', async () => {
+  const { w, sent, resDir, fs, p } = resultsWaker();
+  await w.tick();
+  fs.writeFileSync(p.join(resDir, 'M1.json'), '{"a":1}');
+  await w.tick(); await w.tick();
+  const after = sent.length;
+  await w.tick(); await w.tick(); await w.tick();
+  assert.equal(sent.length, after, 'a stable results file must poke exactly once');
+});
+
+test('RESULTS TRIGGER: a REWRITTEN result fires again — a retry attempt is news', async () => {
+  const { w, sent, resDir, fs, p } = resultsWaker();
+  await w.tick();
+  const f = p.join(resDir, 'M1.json');
+  fs.writeFileSync(f, '{"verdict":"failed"}');
+  await w.tick(); await w.tick();
+  const afterFirst = sent.length;
+  fs.writeFileSync(f, '{"verdict":"done","attempt":2,"padding":"different size"}');
+  w._state.lastAttemptAt = {};                      // bypass per-repo cooldown for the test
+  await w.tick(); await w.tick();
+  assert.ok(sent.length > afterFirst, 'attempt 2 overwriting attempt 1 must be seen');
+});
+
+test('RESULTS TRIGGER: a repo with no .orchestrator dir is skipped without throwing', async () => {
+  const { w } = resultsWaker();
+  await assert.doesNotReject(() => w.tick());
+});
