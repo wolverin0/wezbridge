@@ -43,6 +43,24 @@ const { execFile } = require('node:child_process');
 const POLL_MS = 5_000;
 const SNAPSHOT_EVERY = 6;          // every 6th poll (~30s) adds the full snapshot
 const BACKOFF_MAX_MS = 300_000;
+// Consecutive failures before an outage is worth a log line. 1 was too eager:
+// this endpoint blips and self-heals constantly, so every blip printed.
+const SUSTAINED_FAILURES = 2;
+
+/**
+ * Is this consecutive-failure count worth a line? Extracted so the noise policy
+ * is assertable: it produced ~25 alarming lines overnight about blips that
+ * healed themselves, in the same stream the orchestrator waker logs to.
+ * Silent on 1 (the retry handles it), speaks at 2, then every 5th.
+ */
+function shouldLogFailure(failures) {
+  return failures === SUSTAINED_FAILURES || (failures > 0 && failures % 5 === 0);
+}
+
+/** A recovery is news only if the outage was worth announcing in the first place. */
+function shouldLogRecovery(failures) {
+  return failures >= SUSTAINED_FAILURES;
+}
 // After an intent is applied, its result + the resulting task card must not wait
 // for the ordinary tick (and, for the card, the every-6th full snapshot). Measured
 // operator-visible lag before this: ~115s from applied to card. We keep the
@@ -604,6 +622,12 @@ async function tick() {
     const fullSnapshot = state.forceSnapshot || state.tick % SNAPSHOT_EVERY === 1;
     state.forceSnapshot = false;           // consume before the await; re-set below if needed
     const r = await syncOnce(cfg, { fullSnapshot });
+    // Recovery from a SUSTAINED outage is news; recovery from a single blip is
+    // not. Without this line an outage had a beginning and no end in the log,
+    // so a reader could never tell whether it was still happening.
+    if (shouldLogRecovery(state.failures)) {
+      process.stdout.write(`[clawtrol-bridge] sync RECOVERED after ${state.failures} consecutive failures\n`);
+    }
     state.failures = 0;
     state.lastOkAt = new Date().toISOString();
     state.lastError = null;
@@ -627,9 +651,16 @@ async function tick() {
     // backoff quietly stretched to 5-minute retries while /api/panes kept
     // answering 200. The operator's board silently froze and nothing said so.
     // A background loop that can die without emitting a line is unobservable by
-    // construction — log the first failure, then every 5th, so a persistent
-    // outage is visible without flooding on a transient blip.
-    if (state.failures === 1 || state.failures % 5 === 0) {
+    // construction — so a persistent outage MUST be visible. But logging the
+    // FIRST failure made the opposite mistake: this endpoint blips once every
+    // few minutes and recovers immediately, so `failures` returned to 0 each
+    // time and every isolated blip printed "1 consecutive". Overnight that was
+    // ~25 alarming lines about nothing, in the same output where the waker's
+    // lines appear — noise that helped hide a real 2h45m outage (audit hole 6).
+    // Threshold at the SECOND consecutive failure: a blip the retry already
+    // handles is not an event, a sustained outage still is, and recovery is
+    // logged above so an outage has an end as well as a beginning.
+    if (shouldLogFailure(state.failures)) {
       process.stdout.write(`[clawtrol-bridge] sync FAILING (${state.failures} consecutive, next retry ${Math.round(backoff / 1000)}s, last ok ${state.lastOkAt || 'never'}): ${state.lastError}\n`);
     }
     schedule(backoff + Math.floor(Math.random() * 1000)); // jitter
@@ -680,6 +711,7 @@ function health() {
 module.exports = {
   start, stop, health,
   // exported for tests
+  shouldLogFailure, shouldLogRecovery,
   readDelta, readCursors, writeCursors, toWireEvent, toWireMessage,
   fleetSummary, applyIntent, resolveTaskId, appendTaskMessage,
   appliedIntentIds, persistResult, unackedResults, readAckState,

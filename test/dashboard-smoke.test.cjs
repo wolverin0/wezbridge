@@ -51,7 +51,16 @@ async function waitForServer(maxMs = 8000) {
 before(async () => {
   const entry = path.join(__dirname, '..', 'src', 'dashboard-server.cjs');
   server = spawn(process.execPath, [entry], {
-    env: { ...process.env, DASHBOARD_PORT: String(PORT) },
+    // Point the daemon's durable state at a throwaway dir. Since 2026-08-06 the
+    // daemon publishes a liveness heartbeat there, and a test-written beat in
+    // the REAL _intel is a false witness about the operator's live daemon.
+    env: {
+      ...process.env,
+      DASHBOARD_PORT: String(PORT),
+      WEZBRIDGE_INTEL_DIR: require('node:fs').mkdtempSync(
+        require('node:path').join(require('node:os').tmpdir(), 'smoke-intel-')
+      ),
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   // Surface early crash messages to the test runner for debugging.

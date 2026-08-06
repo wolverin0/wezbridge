@@ -65,7 +65,11 @@ test('turn-end + idle settle -> exactly one verified poke, intent delivered', as
   assert.equal(send.calls.length, 0, 'no poke before settle');
   await w.tick(); // idle streak 2 — poke
   assert.equal(send.calls.length, 1, 'exactly one poke');
-  assert.match(send.calls[0].text, /^\[orch-waker\] Harvest walksim/, 'payload-first single line');
+  // Payload-first single line: truncation eats the HEAD of long messages, so the
+  // substance must lead. Deliberately NOT asserting "Harvest" — this fixture has
+  // no graph, and after 2026-08-06 the poke only claims graph mode when a graph
+  // is actually open (see daemon-liveness.test.cjs for both variants).
+  assert.match(send.calls[0].text, /^\[orch-waker\] walksim\b/, 'payload-first single line, repo leads');
   assert.equal(Object.keys(w._state.pending).length, 0, 'intent removed from pending');
   await w.tick();
   assert.equal(send.calls.length, 1, 'no re-poke after delivery');

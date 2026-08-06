@@ -24,7 +24,16 @@ function freePort() {
 
 function bootServer(env) {
   return spawn(process.execPath, [ENTRY], {
-    env: { ...process.env, ...env },
+    // Throwaway durable-state dir: the daemon writes a liveness heartbeat, and
+    // one written by a test into the REAL _intel is a false witness about the
+    // operator's live daemon (found 2026-08-06).
+    env: {
+      ...process.env,
+      WEZBRIDGE_INTEL_DIR: require('node:fs').mkdtempSync(
+        require('node:path').join(require('node:os').tmpdir(), 'bind-intel-')
+      ),
+      ...env,
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 }

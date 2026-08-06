@@ -56,6 +56,10 @@ function readJson(file, fallback) {
 
 function createWaker(opts) {
   const cfg = { ...DEFAULTS, ...opts };
+  // Repos live beside _intel (<root>/_intel/pane-events.jsonl -> <root>/<repo>).
+  if (!cfg.reposRoot && cfg.eventsPath) {
+    cfg.reposRoot = path.dirname(path.dirname(cfg.eventsPath));
+  }
   const {
     eventsPath, stateDir, discoverPanes, resolveTarget, send, log = () => {},
     now = () => Date.now(),
@@ -193,6 +197,25 @@ function createWaker(opts) {
     return hit.paneId;
   }
 
+  // A node that can still run keeps the graph open. A missing or fully
+  // terminal graph means the pane's turn-ends are ordinary work, not node
+  // completions — and the poke must not pretend otherwise. Absent `state` counts
+  // as open: a freshly authored graph has run nothing yet.
+  const TERMINAL_NODE_STATES = new Set(['done', 'failed', 'cancelled', 'skipped']);
+  function openGraph(repo) {
+    if (cfg.hasOpenGraph) return cfg.hasOpenGraph(repo);
+    try {
+      const raw = fs.readFileSync(
+        path.join(cfg.reposRoot, repo, '.orchestrator', 'graph.json'), 'utf8'
+      );
+      const nodes = JSON.parse(raw).nodes;
+      if (!Array.isArray(nodes) || !nodes.length) return false;
+      return nodes.some((n) => !TERMINAL_NODE_STATES.has(n && n.state));
+    } catch {
+      return false; // no graph file, or unreadable -> not in graph mode
+    }
+  }
+
   // ── 3. deliver: one coalesced poke per repo, verified, capped ────────────
   async function deliverPending(panes) {
     const ids = Object.keys(state.pending);
@@ -218,7 +241,16 @@ function createWaker(opts) {
       const kinds = [...new Set(group.map((id) => state.pending[id].event))].join('+');
       // Payload-first single line: truncation eats the HEAD of long messages,
       // so the whole poke stays short and the command leads.
-      const text = `[orch-waker] Harvest ${repo}/.orchestrator/results/ and advance the graph — ${group.length} ${kinds} event(s), latest ${newest}, intents ${group.map((g) => g.slice(0, 8)).join(',')}.`;
+      //
+      // Say what HAPPENED, not what to do about it. The old text always claimed
+      // a graph was running and ordered a results harvest; on 2026-08-06 it fired
+      // for operator-directed work against a graph that had been closed for
+      // hours, pointing at four stale result files (audit hole 5). Asserting a
+      // mode you have not checked is how a notification manufactures a fiction.
+      const facts = `${group.length} ${kinds} event(s), latest ${newest}`;
+      const text = openGraph(repo)
+        ? `[orch-waker] Harvest ${repo}/.orchestrator/results/ and advance the graph — ${facts}.`
+        : `[orch-waker] ${repo} finished work — ${facts}. No open graph, so no node completed: check what the pane actually did.`;
       let ok = false;
       try {
         const delivered = await send.sendPromptDeferredEnter(targetId, text);
@@ -294,7 +326,7 @@ function createWaker(opts) {
     };
   }
 
-  return { tick, startWatcher, status, _state: state, _files: FILES };
+  return { tick, startWatcher, status, _state: state, _files: FILES, _openGraph: openGraph };
 }
 
 /**

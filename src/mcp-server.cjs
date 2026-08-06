@@ -1470,6 +1470,30 @@ async function handleBridgeHealth() {
       ? { armed: true, repos: waker.repos, pending: waker.pending, last_poke_at: waker.lastPokeAt, cursor_lag_bytes: waker.cursorLagBytes }
       : { armed: false, reason: waker.reason };
   }
+
+  // Liveness verdict in SENTENCES. Two reasons this is not just numbers:
+  // (1) the heartbeat file outlives the daemon, so this still says something
+  //     useful when the daemon is dead — which is exactly when it matters;
+  // (2) a number nobody interprets is not observability. Anything wrong here
+  //     is stated in plain words, so no reader has to know what a good value
+  //     of cursor_lag_bytes looks like.
+  try {
+    const ds = require('./daemon-status.cjs');
+    const intelDir = process.env.WEZBRIDGE_INTEL_DIR
+      || require('node:path').join(__dirname, '..', '..', '_intel');
+    const fileBeat = ds.readHeartbeat(require('node:path').join(intelDir, '.daemon-heartbeat.json'));
+    const reachable = !!(daemon && daemon.up);
+    // Prefer what the daemon just told us over the file it last flushed; fall
+    // back to the file, which is the only witness once the daemon is gone.
+    const beat = (reachable && services)
+      ? { ts: new Date().toISOString(), services }
+      : fileBeat;
+    const verdict = ds.assessLiveness({ heartbeat: beat, daemonReachable: reachable });
+    health.alerts = verdict.alerts;
+    health.ok = wezterm.reachable && verdict.alerts.length === 0;
+  } catch (err) {
+    health.alerts = [`liveness assessment failed: ${err.message}`];
+  }
   return { content: [{ type: 'text', text: JSON.stringify(health, null, 2) }] };
 }
 

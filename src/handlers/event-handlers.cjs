@@ -476,6 +476,25 @@ function createEventHandlers(ctx) {
       daemonStatus.set('orchestrator_waker', { armed: false, reason: `failed to start: ${e.message}` });
       log(`orchestrator-waker failed to start: ${e.message}`);
     }
+
+    // Liveness heartbeat (audit hole 3, 2026-08-06). Nothing watched the daemon
+    // before this; the file OUTLIVES the process, so its staleness is positive
+    // evidence of death — knowable precisely when the daemon cannot speak.
+    //
+    // Started LAST, deliberately. The first beat is immediate and carries the
+    // service snapshot, so beating before the watchers register would publish a
+    // snapshot missing the waker — and a reader in that window would be told
+    // "WAKER MISSING" about a perfectly healthy daemon. An alert that fires on
+    // a correct system is worse than no alert.
+    try {
+      const intelDir = process.env.WEZBRIDGE_INTEL_DIR
+        || path.join(SRC_DIR, '..', '..', '_intel');
+      fs.mkdirSync(intelDir, { recursive: true });
+      daemonStatus.startHeartbeat({ file: path.join(intelDir, '.daemon-heartbeat.json') });
+      log(`daemon heartbeat armed (${daemonStatus.HEARTBEAT_INTERVAL_MS / 1000}s beat -> _intel/.daemon-heartbeat.json)`);
+    } catch (e) {
+      log(`daemon heartbeat failed to start: ${e.message}`);
+    }
   }
 
   return {
