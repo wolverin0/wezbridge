@@ -200,7 +200,21 @@ function createWaker(opts) {
     for (const repo of cfg.watchRepos) {
       const dir = path.join(cfg.reposRoot, repo, '.orchestrator', 'results');
       let names;
-      try { names = fs.readdirSync(dir).filter((n) => n.endsWith('.json')); } catch { continue; }
+      try {
+        names = fs.readdirSync(dir).filter((n) => n.endsWith('.json'));
+      } catch {
+        // No results dir YET. Seed the repo as seen with an EMPTY history so the
+        // first file it ever writes counts as NEW. Without this, a greenfield
+        // repo's very first node completion is swallowed by the seeding branch
+        // below as if it were pre-existing history — the silent-swallow class
+        // this loop exists to prevent, and it would have eaten mutual's first
+        // result (caught 2026-08-06, before it could bite).
+        if (!state.resultsSeen[repo]) {
+          state.resultsSeen[repo] = true;
+          atomicWriteJson(FILES.resultsSeen, state.resultsSeen);
+        }
+        continue;
+      }
       for (const name of names) {
         let st;
         try { st = fs.statSync(path.join(dir, name)); } catch { continue; }

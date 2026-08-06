@@ -393,3 +393,35 @@ test('RESULTS TRIGGER: a repo with no .orchestrator dir is skipped without throw
   const { w } = resultsWaker();
   await assert.doesNotReject(() => w.tick());
 });
+
+test('RESULTS TRIGGER: a GREENFIELD repo does not swallow its FIRST ever result', async () => {
+  // Caught live on mutual 2026-08-06: it had no .orchestrator/results dir at
+  // arming time, so the seeding branch would have marked its very first result
+  // as pre-existing history and eaten it. A repo joining the loop before it has
+  // ever produced a result is the NORMAL case, not an edge case.
+  const fs = require('node:fs'); const os = require('node:os'); const p = require('node:path');
+  const root = fs.mkdtempSync(p.join(os.tmpdir(), 'green-'));
+  fs.mkdirSync(p.join(root, '_intel'), { recursive: true });
+  fs.writeFileSync(p.join(root, '_intel', 'events.jsonl'), '');
+  fs.mkdirSync(p.join(root, 'mutual'), { recursive: true }); // repo exists, NO .orchestrator
+  const sent = [];
+  const w = createWaker({
+    eventsPath: p.join(root, '_intel', 'events.jsonl'),
+    stateDir: p.join(root, '_intel', 'st'),
+    watchRepos: ['mutual'],
+    hasOpenGraph: () => true,
+    discoverPanes: () => [{ paneId: 0, isClaude: true, project: '/x/wezbridge', status: 'idle', title: 'w' }],
+    resolveTarget: () => 0,
+    send: {
+      sendPromptDeferredEnter: async (_id, t) => { sent.push(t); return 'ok'; },
+      verifyPromptSubmission: async () => 'submitted',
+    },
+  });
+  await w.tick();                                   // arms while the dir is absent
+  const resDir = p.join(root, 'mutual', '.orchestrator', 'results');
+  fs.mkdirSync(resDir, { recursive: true });
+  fs.writeFileSync(p.join(resDir, 'M1-first-ever.json'), '{"verdict":"done"}');
+  await w.tick(); await w.tick();
+  assert.equal(sent.length, 1, 'the first result from a repo that had none must POKE, not seed');
+  assert.match(sent[0], /M1-first-ever/);
+});
