@@ -204,16 +204,28 @@ function createWaker(opts) {
   const TERMINAL_NODE_STATES = new Set(['done', 'failed', 'cancelled', 'skipped']);
   function openGraph(repo) {
     if (cfg.hasOpenGraph) return cfg.hasOpenGraph(repo);
+    // EVERY graph file, not just graph.json. A repo accumulates them: brlite's
+    // graph.json held the sealed graph-1 while the live milestone was authored
+    // as graph-3.json, so reading one fixed name would have reported "no open
+    // graph" about a graph dispatched minutes earlier — the same lie this check
+    // exists to prevent, merely pointing the other way.
+    const dir = path.join(cfg.reposRoot, repo, '.orchestrator');
+    let files;
     try {
-      const raw = fs.readFileSync(
-        path.join(cfg.reposRoot, repo, '.orchestrator', 'graph.json'), 'utf8'
-      );
-      const nodes = JSON.parse(raw).nodes;
-      if (!Array.isArray(nodes) || !nodes.length) return false;
-      return nodes.some((n) => !TERMINAL_NODE_STATES.has(n && n.state));
+      files = fs.readdirSync(dir).filter((f) => /^graph.*\.json$/i.test(f));
     } catch {
-      return false; // no graph file, or unreadable -> not in graph mode
+      return false; // no .orchestrator dir -> not a graph-driven repo
     }
+    for (const f of files) {
+      try {
+        const g = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+        if (g.graph_state === 'closed') continue; // explicitly sealed
+        const nodes = g.nodes;
+        if (!Array.isArray(nodes) || !nodes.length) continue;
+        if (nodes.some((n) => !TERMINAL_NODE_STATES.has(n && n.state))) return true;
+      } catch { /* unreadable graph file is not an open graph */ }
+    }
+    return false;
   }
 
   // ── 3. deliver: one coalesced poke per repo, verified, capped ────────────

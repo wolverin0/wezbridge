@@ -289,3 +289,33 @@ test('ORDERING: the first beat already contains the waker — no false MISSING w
       'a healthy startup must never produce a MISSING alert');
   } finally { process.env = prev; }
 });
+
+test('HOLE 5b: a graph in ANY graph*.json counts — not just graph.json', () => {
+  // Live gap: brlite's graph.json held the SEALED graph-1 while the live
+  // milestone was authored as graph-3.json. Reading one fixed filename would
+  // have reported "no open graph" about a graph dispatched minutes earlier.
+  const os = require('node:os'); const fs = require('node:fs'); const p = require('node:path');
+  const root = fs.mkdtempSync(p.join(os.tmpdir(), 'repos2-'));
+  const orch = p.join(root, 'brlite', '.orchestrator');
+  fs.mkdirSync(orch, { recursive: true });
+  fs.mkdirSync(p.join(root, '_intel'), { recursive: true });
+  fs.writeFileSync(p.join(root, '_intel', 'events.jsonl'), '');
+  const build = () => createWaker({
+    eventsPath: p.join(root, '_intel', 'events.jsonl'),
+    stateDir: p.join(root, '_intel', 'st'),
+    watchRepos: ['brlite'], discoverPanes: () => [],
+    send: { sendPromptDeferredEnter: async () => 'ok', verifyPromptSubmission: async () => 'submitted' },
+  });
+
+  // The real shape: sealed graph.json + live graph-3.json
+  fs.writeFileSync(p.join(orch, 'graph.json'), JSON.stringify({ nodes: [{ id: 'a', state: 'done' }] }));
+  assert.equal(build()._openGraph('brlite'), false, 'only a sealed graph -> closed');
+
+  fs.writeFileSync(p.join(orch, 'graph-3.json'), JSON.stringify({ nodes: [{ id: 'f1', state: 'ready' }] }));
+  assert.equal(build()._openGraph('brlite'), true, 'a live graph-3.json must count as open');
+
+  // An explicitly closed graph is closed even with non-terminal nodes left in it
+  fs.writeFileSync(p.join(orch, 'graph-3.json'),
+    JSON.stringify({ graph_state: 'closed', nodes: [{ id: 'f1', state: 'ready' }] }));
+  assert.equal(build()._openGraph('brlite'), false, 'graph_state:closed is authoritative');
+});
