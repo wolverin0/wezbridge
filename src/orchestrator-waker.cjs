@@ -92,6 +92,8 @@ function createWaker(opts) {
     delivered: readJson(FILES.delivered, []), // ring of intent ids
     idleStreak: 0,
     lastAttemptAt: {}, // repo -> ms (in-memory: a restart re-attempting early is safe)
+    lastTickAt: null, // ISO — proves the loop is running, not merely constructed
+    lastPokeAt: null, // ISO — proves delivery, not merely ticking
   };
   const deliveredSet = new Set(state.delivered);
 
@@ -233,6 +235,7 @@ function createWaker(opts) {
         }
         persistPending(); persistDelivered();
         state.idleStreak = 0;
+        state.lastPokeAt = new Date(now()).toISOString();
         log(`orch-waker: poked pane ${targetId} for ${repo} (${group.length} intent(s) delivered)`);
       } else {
         let capped = 0;
@@ -252,6 +255,7 @@ function createWaker(opts) {
   }
 
   async function tick() {
+    state.lastTickAt = new Date(now()).toISOString();
     ingestEvents();
     let panes = [];
     try { panes = discoverPanes() || []; } catch (err) {
@@ -271,7 +275,82 @@ function createWaker(opts) {
     return () => clearInterval(handle);
   }
 
-  return { tick, startWatcher, _state: state, _files: FILES };
+  // Live runtime facts for the health surface. MEASURED, never inferred: the
+  // caller must be able to answer "is the loop actually consuming events?"
+  // without reading logs. cursorLagBytes > 0 and growing means beacons are
+  // being written and NOT read — the exact silent failure of 2026-08-06.
+  function status() {
+    let eventsBytes = 0;
+    try { eventsBytes = fs.statSync(cfg.eventsPath).size; } catch { /* no file yet */ }
+    return {
+      armed: true,
+      repos: cfg.watchRepos,
+      pending: Object.keys(state.pending).length,
+      lastTickAt: state.lastTickAt || null,
+      lastPokeAt: state.lastPokeAt || null,
+      cursorBytes: state.cursorBytes,
+      eventsBytes,
+      cursorLagBytes: Math.max(0, eventsBytes - state.cursorBytes),
+    };
+  }
+
+  return { tick, startWatcher, status, _state: state, _files: FILES };
 }
 
-module.exports = { createWaker, intentId, DEFAULTS };
+/**
+ * Where arming lives. Precedence: env override > durable config file > OFF.
+ *
+ * The env var alone was the whole bug on 2026-08-06: the waker ran fine for
+ * hours, the daemon was restarted with the documented `npm run dashboard`, and
+ * the arming vanished with the old shell — silently, because the old code just
+ * fell through a bare `if`. A restart must not be able to disarm the loop, and
+ * when it IS off the caller must be handed a reason to log.
+ *
+ * Returns { enabled, repos, source, reason } — reason is always populated.
+ */
+function resolveWakerConfig({ env = process.env, intelDir, readFile } = {}) {
+  const read = readFile || ((p) => fs.readFileSync(p, 'utf8'));
+  const parseRepos = (v) => String(v || '').split(',').map((s) => s.trim()).filter(Boolean);
+
+  const envFlag = env.WEZBRIDGE_ORCH_WAKER;
+  if (envFlag === '0') {
+    return { enabled: false, repos: [], source: 'env', reason: 'WEZBRIDGE_ORCH_WAKER=0 (explicit off)' };
+  }
+
+  let file = null;
+  if (intelDir) {
+    try {
+      file = JSON.parse(read(path.join(intelDir, 'orch-waker.json')));
+    } catch { /* absent or unparseable -> treated as no config */ }
+  }
+
+  if (envFlag === '1') {
+    const repos = parseRepos(env.WEZBRIDGE_ORCH_WAKER_REPOS)
+      || [];
+    const fromFile = Array.isArray(file && file.repos) ? file.repos : [];
+    const chosen = repos.length ? repos : fromFile;
+    if (!chosen.length) {
+      return { enabled: false, repos: [], source: 'env', reason: 'WEZBRIDGE_ORCH_WAKER=1 but no repos configured (set WEZBRIDGE_ORCH_WAKER_REPOS or _intel/orch-waker.json)' };
+    }
+    return { enabled: true, repos: chosen, source: 'env', reason: `armed by WEZBRIDGE_ORCH_WAKER=1 (repos: ${chosen.join(',')})` };
+  }
+
+  if (file && file.enabled === true) {
+    const repos = Array.isArray(file.repos) ? file.repos.filter(Boolean) : [];
+    if (!repos.length) {
+      return { enabled: false, repos: [], source: 'file', reason: '_intel/orch-waker.json has enabled:true but an empty repos list' };
+    }
+    return { enabled: true, repos, source: 'file', reason: `armed by _intel/orch-waker.json (repos: ${repos.join(',')})` };
+  }
+
+  return {
+    enabled: false,
+    repos: [],
+    source: 'default',
+    reason: file
+      ? '_intel/orch-waker.json present but enabled is not true'
+      : 'not armed — no WEZBRIDGE_ORCH_WAKER=1 and no _intel/orch-waker.json',
+  };
+}
+
+module.exports = { createWaker, intentId, DEFAULTS, resolveWakerConfig };

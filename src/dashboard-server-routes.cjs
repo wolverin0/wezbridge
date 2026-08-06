@@ -233,6 +233,12 @@ const server = http.createServer(async (req, res) => {
   }
 
   // API routes
+  // /api/health reports what THIS daemon actually armed. bridge_health used to
+  // infer arming from the MCP server's own env — a different process — so it
+  // could report a watcher as armed while nothing ran (fixed 2026-08-06).
+  if (pathname === '/api/health' && method === 'GET') {
+    return sendJson(res, 200, { services: require('./daemon-status.cjs').snapshot() });
+  }
   if (pathname === '/api/panes' && method === 'GET') return handlers.handleGetPanes(req, res);
   if (pathname === '/api/sessions' && method === 'GET') return handlers.handleGetSessions(req, res);
   if (pathname === '/api/projects' && method === 'GET') return handlers.handleGetProjects(req, res);

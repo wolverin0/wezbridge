@@ -1402,6 +1402,32 @@ function probeWezterm() {
   }
 }
 
+/**
+ * Ask the daemon which background services it actually armed. Returns null when
+ * the daemon is down or too old to expose /api/health — the caller must render
+ * "unknown", never a default that looks like an answer.
+ */
+function probeDaemonServices() {
+  const dashPort = parseInt(process.env.DASHBOARD_PORT || '4200', 10);
+  return new Promise((resolve) => {
+    const http = require('http');
+    const req = http.request(
+      { host: '127.0.0.1', port: dashPort, method: 'GET', path: '/api/health' },
+      (res) => {
+        let body = '';
+        res.on('data', (c) => { body += c; });
+        res.on('end', () => {
+          if (res.statusCode !== 200) return resolve(null);
+          try { resolve(JSON.parse(body).services || null); } catch { resolve(null); }
+        });
+      }
+    );
+    req.on('error', () => resolve(null));
+    req.setTimeout(2500, () => { req.destroy(); resolve(null); });
+    req.end();
+  });
+}
+
 function probeDaemon() {
   const dashPort = parseInt(process.env.DASHBOARD_PORT || '4200', 10);
   return new Promise((resolve) => {
@@ -1422,16 +1448,28 @@ function probeDaemon() {
 async function handleBridgeHealth() {
   let pkgVersion = 'unknown';
   try { pkgVersion = require('../package.json').version; } catch { /* ignore */ }
-  const snapshotArmed = process.env.WEZBRIDGE_SESSION_SNAPSHOT !== '0'; // default ON since v3.4.1
-  const [daemon] = await Promise.all([probeDaemon()]);
+  // Arming is MEASURED at the daemon, never inferred here: this process has a
+  // different environment from the daemon's, so reading process.env would
+  // report a wish. `null` services => genuinely unknown, and it says so.
+  const [daemon, services] = await Promise.all([probeDaemon(), probeDaemonServices()]);
   const wezterm = probeWezterm();
+  const snap = services && services.session_snapshot;
   const health = {
     wezbridge_version: pkgVersion,
     wezterm,
     daemon,
-    session_snapshot_armed: snapshotArmed,
+    services: services || 'unknown (daemon down, or predates /api/health)',
+    session_snapshot_armed: snap ? snap.armed : 'unknown',
     ok: wezterm.reachable, // wezterm is the only hard dependency for core MCP tools
   };
+  // The orchestrator loop is the thing whose silent death is expensive, so it
+  // gets a top-level verdict rather than being buried in the services blob.
+  const waker = services && services.orchestrator_waker;
+  if (waker) {
+    health.orchestrator_waker = waker.armed
+      ? { armed: true, repos: waker.repos, pending: waker.pending, last_poke_at: waker.lastPokeAt, cursor_lag_bytes: waker.cursorLagBytes }
+      : { armed: false, reason: waker.reason };
+  }
   return { content: [{ type: 'text', text: JSON.stringify(health, null, 2) }] };
 }
 

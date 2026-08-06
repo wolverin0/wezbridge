@@ -1,5 +1,7 @@
 'use strict';
 
+const daemonStatus = require('../daemon-status.cjs');
+
 function createEventHandlers(ctx) {
   const {
     sendJson, sendError, parseBody, log, corsHeaders, path, fs, spawn, ipc,
@@ -378,6 +380,12 @@ function createEventHandlers(ctx) {
         log,
       });
       log(`session-snapshot watcher armed (${intervalMs / 1000}s tick)`);
+      daemonStatus.set('session_snapshot', { armed: true, reason: `armed (${intervalMs / 1000}s tick)` });
+    } else {
+      // Previously invisible: bridge_health inferred this from the MCP server's
+      // OWN env, which cannot see the daemon's. Report it from the daemon.
+      daemonStatus.set('session_snapshot', { armed: false, reason: 'WEZBRIDGE_SESSION_SNAPSHOT=0 (explicit off)' });
+      log('session-snapshot watcher NOT armed: WEZBRIDGE_SESSION_SNAPSHOT=0');
     }
     try {
       const restored = teamManifest.replay();
@@ -433,26 +441,40 @@ function createEventHandlers(ctx) {
       log(`pane0-watchdog failed to start: ${e.message}`);
     }
     // Orchestrator waker (walksim pilot, 2026-08-05): poke pane-0 when a
-    // watched repo's pane finishes a turn. Default OFF — WEZBRIDGE_ORCH_WAKER=1.
-    if (process.env.WEZBRIDGE_ORCH_WAKER === '1') {
-      try {
-        const { createWaker } = require('../orchestrator-waker.cjs');
-        const verifiedSend = require('../verified-send.cjs');
-        const intelDir = process.env.WEZBRIDGE_INTEL_DIR
-          || path.join(SRC_DIR, '..', '..', '_intel');
+    // watched repo's pane finishes a turn.
+    //
+    // Arming is resolved from _intel/orch-waker.json with an env override, NOT
+    // from the env alone: on 2026-08-06 a daemon restart via the documented
+    // `npm run dashboard` dropped WEZBRIDGE_ORCH_WAKER=1 with the old shell and
+    // the loop went dark for 2h45m. Both branches register with daemon-status
+    // and both LOG — a silent fall-through is what made that outage invisible.
+    try {
+      const { createWaker, resolveWakerConfig } = require('../orchestrator-waker.cjs');
+      const verifiedSend = require('../verified-send.cjs');
+      const intelDir = process.env.WEZBRIDGE_INTEL_DIR
+        || path.join(SRC_DIR, '..', '..', '_intel');
+      const wakerCfg = resolveWakerConfig({ env: process.env, intelDir });
+      if (!wakerCfg.enabled) {
+        daemonStatus.set('orchestrator_waker', { armed: false, reason: wakerCfg.reason });
+        log(`orchestrator-waker NOT armed: ${wakerCfg.reason}`);
+      } else {
         const waker = createWaker({
           eventsPath: path.join(intelDir, 'pane-events.jsonl'),
           stateDir: path.join(intelDir, '.orch-waker-state'),
-          watchRepos: (process.env.WEZBRIDGE_ORCH_WAKER_REPOS || 'walksim').split(',').map((s) => s.trim()).filter(Boolean),
+          watchRepos: wakerCfg.repos,
           discoverPanes: () => (discoverPanes ? discoverPanes() : []),
           send: verifiedSend,
           log,
         });
         waker.startWatcher();
-        log('orchestrator-waker armed (60s tick, idle-gated verified pokes, cap 3 + 5min cooldown)');
-      } catch (e) {
-        log(`orchestrator-waker failed to start: ${e.message}`);
+        daemonStatus.set('orchestrator_waker', {
+          armed: true, reason: wakerCfg.reason, probe: () => waker.status(),
+        });
+        log(`orchestrator-waker armed (60s tick, idle-gated verified pokes, cap 3 + 5min cooldown) — ${wakerCfg.reason}`);
       }
+    } catch (e) {
+      daemonStatus.set('orchestrator_waker', { armed: false, reason: `failed to start: ${e.message}` });
+      log(`orchestrator-waker failed to start: ${e.message}`);
     }
   }
 
