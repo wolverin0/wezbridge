@@ -17,6 +17,8 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');
+const fs = require('node:fs');
+const os = require('node:os');
 
 const { resolveWakerConfig } = require('../src/orchestrator-waker.cjs');
 const daemonStatus = require('../src/daemon-status.cjs');
@@ -145,7 +147,7 @@ test('COMPOSITION ROOT: startBackgroundServices registers the waker when config 
   const prev = { ...process.env };
   process.env.WEZBRIDGE_ORCH_WAKER = '1';
   process.env.WEZBRIDGE_ORCH_WAKER_REPOS = 'brlite';
-  process.env.WEZBRIDGE_INTEL_DIR = path.join(__dirname, 'fixtures', 'intel-empty');
+  process.env.WEZBRIDGE_INTEL_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'arming-intel-'));
   process.env.WEZBRIDGE_SESSION_SNAPSHOT = '0';
   try {
     const { ctx, logs } = makeCtx();
@@ -163,7 +165,7 @@ test('COMPOSITION ROOT: the OFF path registers and logs instead of falling throu
   daemonStatus._reset();
   const prev = { ...process.env };
   process.env.WEZBRIDGE_ORCH_WAKER = '0';
-  process.env.WEZBRIDGE_INTEL_DIR = path.join(__dirname, 'fixtures', 'intel-empty');
+  process.env.WEZBRIDGE_INTEL_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'arming-intel-'));
   process.env.WEZBRIDGE_SESSION_SNAPSHOT = '0';
   try {
     const { ctx, logs } = makeCtx();
@@ -184,7 +186,7 @@ test('COMPOSITION ROOT: session_snapshot reports its own arming (was inferred fr
   const prev = { ...process.env };
   process.env.WEZBRIDGE_SESSION_SNAPSHOT = '0';
   process.env.WEZBRIDGE_ORCH_WAKER = '0';
-  process.env.WEZBRIDGE_INTEL_DIR = path.join(__dirname, 'fixtures', 'intel-empty');
+  process.env.WEZBRIDGE_INTEL_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'arming-intel-'));
   try {
     const { ctx } = makeCtx();
     createEventHandlers(ctx).startBackgroundServices();
