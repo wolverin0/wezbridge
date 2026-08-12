@@ -20,15 +20,20 @@ test('workspace spawn opens a fresh GUI when the running GUI socket is stale', (
   const originalSpawn = childProcess.spawn;
   const originalHome = process.env.USERPROFILE;
   const spawnCalls = [];
+  let freshGuiStarted = false;
   process.env.USERPROFILE = home;
   process.env.WEZBRIDGE_WEZTERM_BIN = marker;
 
   childProcess.execFileSync = function patched(file, args, options) {
     if (file === 'tasklist') {
-      return '"wezterm-gui.exe","999","Console","1","1,000 K"\n';
+      return freshGuiStarted
+        ? '"wezterm-gui.exe","999","Console","1","1,000 K"\n"wezterm-gui.exe","1000","Console","1","1,000 K"\n'
+        : '"wezterm-gui.exe","999","Console","1","1,000 K"\n';
     }
     if (file === marker) {
-      if ((args || []).includes('spawn')) return '42\n';
+      const socket = options?.env?.WEZTERM_UNIX_SOCKET || '';
+      if ((args || []).includes('list') && socket.endsWith('gui-sock-1000')) return '[{}]';
+      if ((args || []).includes('spawn') && socket.endsWith('gui-sock-1000')) return '42\n';
       throw new Error('stale gui socket');
     }
     if (file === 'sleep' || file === 'timeout') return '';
@@ -36,6 +41,8 @@ test('workspace spawn opens a fresh GUI when the running GUI socket is stale', (
   };
   childProcess.spawn = function patchedSpawn(file, args, options) {
     spawnCalls.push({ file, args: [...args], options });
+    freshGuiStarted = true;
+    fs.writeFileSync(path.join(socketDirectory, 'gui-sock-1000'), '', 'utf8');
     return { on() {}, unref() {} };
   };
 
