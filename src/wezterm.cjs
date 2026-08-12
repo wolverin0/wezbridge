@@ -487,7 +487,7 @@ function switchWorkspace(name) {
 /** Spawn a pane in a specific workspace. */
 function spawnInWorkspace(workspace, { cwd, program, args: spawnArgs } = {}) {
   ensureGui();
-  const cmdArgs = ['spawn', '--workspace', workspace];
+  const cmdArgs = ['spawn', '--new-window', '--workspace', workspace];
   if (cwd) cmdArgs.push('--cwd', cwd);
   if (program) {
     cmdArgs.push('--');
