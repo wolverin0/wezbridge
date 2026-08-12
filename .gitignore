@@ -68,3 +68,5 @@ dist/
 .omc/
 graphify-out/
 .vibecode/
+.gitnexus
+poke-pane.log
