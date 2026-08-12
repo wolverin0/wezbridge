@@ -120,6 +120,23 @@ function findGuiSocket() {
   return null;
 }
 
+function buildCliInvocation(args) {
+  if (process.env.WEZBRIDGE_PREFER_MUX === '1') {
+    return {
+      cliArgs: ['cli', '--prefer-mux', '--no-auto-start', ...args],
+      env: process.env,
+    };
+  }
+
+  const guiSocket = findGuiSocket();
+  return {
+    cliArgs: guiSocket ? ['cli', ...args] : ['cli', '--no-auto-start', ...args],
+    env: guiSocket
+      ? { ...process.env, WEZTERM_UNIX_SOCKET: guiSocket }
+      : process.env,
+  };
+}
+
 // Note: execFileSync blocks the event loop. For N sessions, pollAll blocks N * timeout_ms.
 // TODO: Consider async execFile for high session counts.
 function wezCmd(args, opts = {}) {
@@ -133,15 +150,7 @@ function wezCmd(args, opts = {}) {
   let lastErr;
   for (let attempt = 0; attempt <= attempts; attempt++) {
     try {
-      const guiSocket = findGuiSocket();
-      const env = guiSocket
-        ? { ...process.env, WEZTERM_UNIX_SOCKET: guiSocket }
-        : process.env;
-
-      // Connect to GUI only — --no-auto-start prevents spawning zombie mux-servers
-      const cliArgs = guiSocket
-        ? ['cli', ...args]
-        : ['cli', '--no-auto-start', ...args];
+      const { cliArgs, env } = buildCliInvocation(args);
 
       const result = execFileSync(WEZTERM, cliArgs, {
         encoding: 'utf-8',
@@ -210,6 +219,11 @@ function invalidateListPanesCache() {
 /** Ensure a visible WezTerm GUI is connected to the mux. */
 function ensureGui() {
   if (guiLaunched) return;
+  if (process.env.WEZBRIDGE_PREFER_MUX === '1') {
+    wezCmd(['list'], { retries: 0 });
+    guiLaunched = true;
+    return;
+  }
   // A running wezterm-gui process is not proof that its socket is usable.
   // Prefer a socket that answered a bounded list call; stale GUI processes
   // are common after long-lived Windows sessions.
@@ -288,11 +302,9 @@ function spawnPane({ cwd, program, args: spawnArgs, splitFrom, splitDirection } 
 
 /** Send text to a pane (simulates typing + Enter). */
 function sendText(paneId, text) {
-  const guiSocket = findGuiSocket();
-  const cliArgs = guiSocket
-    ? ['cli', 'send-text', '--pane-id', String(paneId), '--no-paste']
-    : ['cli', '--no-auto-start', 'send-text', '--pane-id', String(paneId), '--no-paste'];
-  const env = guiSocket ? { ...process.env, WEZTERM_UNIX_SOCKET: guiSocket } : process.env;
+  const { cliArgs, env } = buildCliInvocation([
+    'send-text', '--pane-id', String(paneId), '--no-paste',
+  ]);
   execFileSync(WEZTERM, cliArgs, {
     input: text + '\r',
     encoding: 'utf-8',
@@ -304,11 +316,9 @@ function sendText(paneId, text) {
 
 /** Send text WITHOUT pressing Enter (for partial input). */
 function sendTextNoEnter(paneId, text) {
-  const guiSocket = findGuiSocket();
-  const cliArgs = guiSocket
-    ? ['cli', 'send-text', '--pane-id', String(paneId), '--no-paste']
-    : ['cli', '--no-auto-start', 'send-text', '--pane-id', String(paneId), '--no-paste'];
-  const env = guiSocket ? { ...process.env, WEZTERM_UNIX_SOCKET: guiSocket } : process.env;
+  const { cliArgs, env } = buildCliInvocation([
+    'send-text', '--pane-id', String(paneId), '--no-paste',
+  ]);
   execFileSync(WEZTERM, cliArgs, {
     input: text,
     encoding: 'utf-8',
@@ -332,11 +342,9 @@ function sendTextNoEnter(paneId, text) {
  * Timeout scales with size (large pastes take longer to stream to the mux).
  */
 function sendTextBracketed(paneId, text) {
-  const guiSocket = findGuiSocket();
-  const cliArgs = guiSocket
-    ? ['cli', 'send-text', '--pane-id', String(paneId)]
-    : ['cli', '--no-auto-start', 'send-text', '--pane-id', String(paneId)];
-  const env = guiSocket ? { ...process.env, WEZTERM_UNIX_SOCKET: guiSocket } : process.env;
+  const { cliArgs, env } = buildCliInvocation([
+    'send-text', '--pane-id', String(paneId),
+  ]);
   const bytes = Buffer.byteLength(String(text), 'utf8');
   execFileSync(WEZTERM, cliArgs, {
     input: text,

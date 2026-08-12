@@ -102,6 +102,7 @@ const STATUS_PATTERNS = {
  * @property {string|null} project - Detected project path (from cwd)
  * @property {string|null} projectName - Short project name (last dir component)
  * @property {string} title - Tab/pane title
+ * @property {string} tabTitle - User-set WezTerm tab title
  * @property {string} workspace - WezTerm workspace name
  * @property {string} lastLines - Last few lines of terminal output
  * @property {number} confidence - 0-100 confidence that this is a Claude session
@@ -114,6 +115,7 @@ function discoverPanes() {
   for (const pane of rawPanes) {
     const paneId = parseInt(pane.pane_id || pane.paneid || pane.PANEID || '0', 10);
     const title = pane.title || pane.tab_title || '';
+    const tabTitle = pane.tab_title || '';
     const workspace = pane.workspace || 'default';
     const cwd = pane.cwd || null;
 
@@ -130,7 +132,7 @@ function discoverPanes() {
       // Pane may be dead or inaccessible
       discovered.push({
         paneId, isClaude: false, isCodex: false, agent: null, status: 'error', project: null,
-        projectName: null, title, workspace, lastLines: '', confidence: 0,
+        projectName: null, title, tabTitle, workspace, lastLines: '', confidence: 0,
         persona: null, ctx: null, sessionPct: null, weeklyPct: null, model: null,
       });
       continue;
@@ -154,7 +156,7 @@ function discoverPanes() {
     // avoid false positives (goal/usage lines can appear in either tool).
     let codexMatch = 0;
     for (const pattern of CODEX_INDICATORS) if (pattern.test(text)) codexMatch++;
-    if (/\bcodex\b/i.test(title)) codexMatch++;
+    if (/\bcodex\b/i.test(`${tabTitle} ${title}`)) codexMatch++;
     const isCodex = codexMatch >= 2;
 
     // Detect status
@@ -181,7 +183,6 @@ function discoverPanes() {
     // Extract persona from tab_title (wezterm's user-set title) or title (process title).
     // setTabTitle sets tab_title, but title is the process name (e.g. "bash.exe").
     // Check both fields — tab_title is the primary source for persona markers.
-    const tabTitle = pane.tab_title || '';
     const combinedTitle = tabTitle + ' ' + title;
     const personaMatch = combinedTitle.match(/\[([a-zA-Z0-9._-]+)\]/);
     let persona = personaMatch ? personaMatch[1] : null;
@@ -207,7 +208,7 @@ function discoverPanes() {
 
     discovered.push({
       paneId, isClaude, isCodex, agent, status, project, projectName,
-      title, workspace, lastLines, confidence, rawText: text, persona,
+      title, tabTitle, workspace, lastLines, confidence, rawText: text, persona,
       ctx, sessionPct, weeklyPct, model,
     });
   }
