@@ -210,6 +210,13 @@ function invalidateListPanesCache() {
 /** Ensure a visible WezTerm GUI is connected to the mux. */
 function ensureGui() {
   if (guiLaunched) return;
+  // A running wezterm-gui process is not proof that its socket is usable.
+  // Prefer a socket that answered a bounded list call; stale GUI processes
+  // are common after long-lived Windows sessions.
+  if (findGuiSocket()) {
+    guiLaunched = true;
+    return;
+  }
   // Check if mux is already reachable by listing panes
   try {
     const result = execFileSync(WEZTERM, ['cli', '--no-auto-start', 'list'], {
@@ -220,15 +227,6 @@ function ensureGui() {
       return;
     }
   } catch { /* mux not reachable */ }
-  // Also check tasklist for the GUI process
-  try {
-    const { execSync } = require('child_process');
-    const tasks = execSync('tasklist', { encoding: 'utf-8', windowsHide: true });
-    if (tasks.includes('wezterm-gui.exe')) {
-      guiLaunched = true;
-      return;
-    }
-  } catch { /* ignore */ }
   // Launch GUI connected to the unix mux domain (makes panes visible)
   try {
     const child = spawn(WEZTERM, ['connect', 'unix'], {
