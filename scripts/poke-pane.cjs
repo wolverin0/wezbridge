@@ -42,9 +42,14 @@ function die(code, msg) {
 }
 
 const project = arg('project');
+// --tab-title is the BEST selector for a machine that must find one specific
+// pane: the operator names the tab (LEADER-free, just rename it) and the name
+// is his, stable, and survives pane renumbering. Six panes currently share the
+// cwd basename "whatsappbot-final"; exactly one is named "wabot".
+const tabTitle = arg('tab-title');
 const text = arg('file') ? fs.readFileSync(arg('file'), 'utf8') : arg('text');
-if (!project || !text) {
-  die(2, 'usage: --project <name> (--text "..." | --file <path>) [--dry-run]');
+if ((!project && !tabTitle) || !text) {
+  die(2, 'usage: (--project <name> | --tab-title <substr> | both) (--text "..." | --file <path>) [--dry-run]');
 }
 
 // ---------- resolve, at fire time, never from a stored id ----------
@@ -62,7 +67,8 @@ for (let i = 0; i < 3; i += 1) {
 }
 if (!list) die(3, `wezterm unreachable after 3 attempts: ${lastErr}`);
 
-const wanted = String(project).toLowerCase();
+const wantedProject = project ? String(project).toLowerCase() : null;
+const wantedTab = tabTitle ? String(tabTitle).toLowerCase() : null;
 const seen = new Set();
 const matches = [];
 for (const p of list) {
@@ -70,12 +76,16 @@ for (const p of list) {
   seen.add(p.pane_id);
   const cwd = decodeURIComponent(String(p.cwd || '')).replace(/^file:\/\/[^/]*/, '');
   const name = cwd.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || '';
-  if (name.toLowerCase() === wanted) matches.push({ ...p, cwd, name });
+  if (wantedProject && name.toLowerCase() !== wantedProject) continue;
+  // tab_title is the operator's own label; title is whatever the program set.
+  if (wantedTab && !String(p.tab_title || '').toLowerCase().includes(wantedTab)) continue;
+  matches.push({ ...p, cwd, name });
 }
 
-if (!matches.length) die(4, `no pane whose cwd basename is "${project}"`);
+const criteria = [project && `project "${project}"`, tabTitle && `tab-title "${tabTitle}"`].filter(Boolean).join(' + ');
+if (!matches.length) die(4, `no pane matching ${criteria}`);
 if (matches.length > 1) {
-  die(5, `ambiguous — ${matches.length} panes match "${project}": ${
+  die(5, `ambiguous — ${matches.length} panes match ${criteria}: ${
     matches.map((m) => `pane ${m.pane_id} (win${m.window_id}/tab${m.tab_id}, "${(m.title || '').slice(0, 30)}")`).join(' | ')
   }. Refusing to guess.`);
 }
@@ -106,8 +116,17 @@ let verified = 'UNVERIFIED (read-back unavailable)';
 try {
   const tail = execFileSync(WEZTERM, ['cli', 'get-text', '--pane-id', String(target.pane_id), '--start-line', '-40'],
     { encoding: 'utf8', timeout: 20000 });
-  const probe = text.trim().slice(0, 40);
-  verified = probe && tail.includes(probe) ? 'VERIFIED (echo found in pane)' : 'UNVERIFIED (echo not found)';
+  // A TUI WRAPS the text it received, so a contiguous substring match fails on
+  // every message longer than the pane is wide — which reported UNVERIFIED for
+  // a message sitting visibly in the composer. Collapse all whitespace on both
+  // sides first; then wrapping, indentation and the composer's gutter stop
+  // mattering. A verifier that cries wolf on healthy sends gets ignored, which
+  // is worse than not having one.
+  const flat = (s) => s.replace(/\s+/g, ' ').trim();
+  const probe = flat(text).slice(0, 60);
+  verified = probe && flat(tail).includes(probe)
+    ? 'VERIFIED (echo found in pane)'
+    : 'UNVERIFIED (echo not found)';
 } catch { /* leave as unavailable */ }
 
 console.log(`${new Date().toISOString()} poke-pane OK: ${text.length} chars -> pane ${target.pane_id} (${target.name}, win${target.window_id}/tab${target.tab_id}) — ${verified}`);
