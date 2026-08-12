@@ -430,7 +430,17 @@ function createEventHandlers(ctx) {
         log(`clawtrol operator message ${message.intent_id} delivered to wezbridge reasoner`);
         return true;
       };
-      log(bridge.start({ notifyOperatorMessage }) ? 'clawtrol-bridge armed (outbound sync loop)' : 'clawtrol-bridge disabled (CLAWTROL_URL/TOKEN unset)');
+      const bridgeArmed = bridge.start({ notifyOperatorMessage });
+      log(bridgeArmed ? 'clawtrol-bridge armed (outbound sync loop)' : 'clawtrol-bridge disabled (CLAWTROL_URL/TOKEN unset)');
+      // The bridge was the ONLY background loop with no entry here, so its
+      // health — including the 2026-08-12 flood-containment counters — could
+      // not be read from outside the process. A loop nobody can query is a loop
+      // nobody can prove is behaving; that is how the flood ran unseen for a day.
+      daemonStatus.set('clawtrol_bridge', {
+        armed: Boolean(bridgeArmed),
+        reason: bridgeArmed ? 'armed (outbound sync loop)' : 'disabled (CLAWTROL_URL/TOKEN unset)',
+        probe: () => bridge.health(),
+      });
     } catch (e) {
       log(`clawtrol-bridge failed to start: ${e.message}`);
     }
