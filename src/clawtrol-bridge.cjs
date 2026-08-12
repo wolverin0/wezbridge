@@ -38,11 +38,31 @@
  */
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { execFile } = require('node:child_process');
 
 const POLL_MS = 5_000;
 const SNAPSHOT_EVERY = 6;          // every 6th poll (~30s) adds the full snapshot
 const BACKOFF_MAX_MS = 300_000;
+// UNCHANGED TASK SNAPSHOTS ARE NOT SENT (Solid Cable flood, 2026-08-12).
+// Every 30s this bridge shipped ~76 mirrored tasks whether or not a single byte
+// had changed. The receiving ingestor assigns attributes and calls save!
+// UNCONDITIONALLY, so each arrival fired task callbacks on three channels — one
+// of which carries fully rendered kanban-column HTML — measured at 300-600
+// messages/min, ~494k retained rows and ~5.2 GB of table in 24h.
+//
+// The producer is the cheapest place to break that chain: a snapshot that is
+// byte-identical to the last one the server ACCEPTED tells it nothing, so it is
+// omitted. Panes are deliberately NOT suppressed — they carry ctx/session/weekly
+// percentages that legitimately change every tick, and they are not the
+// amplification path.
+//
+// RECONCILE_EVERY_TICKS is the safety valve: suppression is an optimisation, not
+// a source of truth, so a full task snapshot ships on a fixed cadence regardless
+// of the digest. If the server's view ever diverges (restore, partial write, a
+// dropped POST that still returned ok) it self-heals within this window instead
+// of waiting for the next unrelated task edit.
+const RECONCILE_EVERY_TICKS = 240; // ~20 min at POLL_MS=5s
 // Consecutive failures before an outage is worth a log line. 1 was too eager:
 // this endpoint blips and self-heals constantly, so every blip printed.
 const SUSTAINED_FAILURES = 2;
@@ -491,7 +511,35 @@ const state = {
   // Set when a sync applied at least one intent: the next sync is expedited AND
   // forced to carry a full snapshot so the new task card ships with the ack.
   forceSnapshot: false,
+  // Digest of the task snapshot the server last ACCEPTED (committed only after
+  // res.ok, exactly like cursors — a snapshot that failed to land must never be
+  // treated as delivered, or the next identical one would be suppressed and the
+  // change would be lost until the reconcile tick).
+  // Deliberately in-memory: a daemon restart re-baselines by sending one
+  // snapshot, which is the correct behaviour after losing knowledge of server
+  // state, and it avoids adding a state file that could itself drift.
+  lastTasksDigest: null,
+  lastTasksSentTick: 0,
+  tasksSent: 0,
+  tasksSuppressed: 0,
 };
+
+/** Stable digest of the task snapshot — key order is code-determined, so JSON is stable. */
+function tasksDigest(tasks) {
+  return crypto.createHash('sha1').update(JSON.stringify(tasks)).digest('hex');
+}
+
+/**
+ * Does this tick owe the server a task snapshot?
+ * Forced (an intent was applied, the operator is waiting on the card) and the
+ * reconcile cadence both win over suppression; otherwise only a CHANGED
+ * snapshot ships.
+ */
+function shouldSendTasks({ forced, digest, lastDigest, tick, lastSentTick }) {
+  if (forced) return true;
+  if (digest !== lastDigest) return true;
+  return (tick - lastSentTick) >= RECONCILE_EVERY_TICKS;
+}
 
 /** Task ids belonging to allowlisted canary projects (fail-closed on empty allowlist). */
 function allowedTaskIds(projects) {
@@ -537,7 +585,7 @@ async function deliverOperatorMessages(projects, notify) {
   return { delivered, pending: pending.length - delivered };
 }
 
-async function syncOnce(cfg, { fullSnapshot, notifyOperatorMessage = state.notifyOperatorMessage }) {
+async function syncOnce(cfg, { fullSnapshot, forcedTasks = false, notifyOperatorMessage = state.notifyOperatorMessage }) {
   const cursors = readCursors();
   const nextCursors = { ...cursors };
   const canaryIds = allowedTaskIds(cfg.projects);
@@ -566,6 +614,27 @@ async function syncOnce(cfg, { fullSnapshot, notifyOperatorMessage = state.notif
     nextCursors[MESSAGE_FILE] = nextOffset;
   }
   const acked = readAckState();
+
+  // Tasks and panes are decided SEPARATELY. Panes ride every full snapshot as
+  // before; tasks ship only when they actually differ from what the server last
+  // accepted (or when forced/reconciling) — see RECONCILE_EVERY_TICKS above.
+  let tasks = null;
+  let digest = null;
+  if (fullSnapshot) {
+    tasks = buildTasks(cfg.projects);
+    digest = tasksDigest(tasks);
+    if (!shouldSendTasks({
+      forced: forcedTasks,
+      digest,
+      lastDigest: state.lastTasksDigest,
+      tick: state.tick,
+      lastSentTick: state.lastTasksSentTick,
+    })) {
+      tasks = null;                       // unchanged: the server learns nothing from it
+      state.tasksSuppressed += 1;
+    }
+  }
+
   const body = {
     profile: cfg.profile,
     generated_at: new Date().toISOString(),
@@ -577,7 +646,8 @@ async function syncOnce(cfg, { fullSnapshot, notifyOperatorMessage = state.notif
     ...(events.length ? { events } : {}),
     ...(messages.length ? { messages } : {}),
     intent_results: unackedResults(acked),
-    ...(fullSnapshot ? { tasks: buildTasks(cfg.projects), panes: await buildPanes() } : {}),
+    ...(tasks ? { tasks } : {}),
+    ...(fullSnapshot ? { panes: await buildPanes() } : {}),
   };
 
   const res = await fetch(`${cfg.url}/api/v1/orchestration/sync`, {
@@ -592,6 +662,14 @@ async function syncOnce(cfg, { fullSnapshot, notifyOperatorMessage = state.notif
   // POST accepted: cursors advance; delivered results are acked (server-side
   // external_id/intent-id dedup makes any re-send harmless).
   writeCursors(nextCursors);
+  // Same durable-before-ack ordering as cursors: a snapshot counts as delivered
+  // ONLY after the server accepted it. Committing the digest on the optimistic
+  // path would let a failed POST suppress the retry of a real change.
+  if (tasks) {
+    state.lastTasksDigest = digest;
+    state.lastTasksSentTick = state.tick;
+    state.tasksSent += 1;
+  }
   for (const r of body.intent_results) acked.add(r.id);
   writeAckState(acked);
 
@@ -619,9 +697,10 @@ async function tick() {
   state.inFlight = true;
   try {
     state.tick += 1;
+    const forcedTasks = state.forceSnapshot;   // an applied intent owes the operator a card
     const fullSnapshot = state.forceSnapshot || state.tick % SNAPSHOT_EVERY === 1;
     state.forceSnapshot = false;           // consume before the await; re-set below if needed
-    const r = await syncOnce(cfg, { fullSnapshot });
+    const r = await syncOnce(cfg, { fullSnapshot, forcedTasks });
     // Recovery from a SUSTAINED outage is news; recovery from a single blip is
     // not. Without this line an outage had a beginning and no end in the log,
     // so a reader could never tell whether it was still happening.
@@ -705,6 +784,12 @@ function health() {
     last_error: state.lastError,
     stale_seconds: staleSeconds,
     stalled: state.failures > 0 || staleSeconds === null || staleSeconds > 120,
+    // Flood containment, made OBSERVABLE. Without these two counters the fix is
+    // unfalsifiable from outside: a suppressed snapshot and a snapshot that was
+    // never built look identical. tasks_suppressed climbing while tasks_sent
+    // stays flat is the fix working; both flat means the loop is not running.
+    tasks_sent: state.tasksSent,
+    tasks_suppressed: state.tasksSuppressed,
   };
 }
 
@@ -717,6 +802,8 @@ module.exports = {
   appliedIntentIds, persistResult, unackedResults, readAckState,
   writeAckState, readNotifiedState, writeNotifiedState,
   deliverOperatorMessages, syncOnce, buildTasks, buildPanes, INTENT_KINDS, SYNC_FILES,
+  // Solid Cable flood containment (2026-08-12) — unchanged snapshots must not ship.
+  tasksDigest, shouldSendTasks, RECONCILE_EVERY_TICKS,
   // config() is internal; tests need it to prove the allowlist refresh path.
   __test_config: config,
   FILE_SEQ_BASE, PAYLOAD_FIELDS,

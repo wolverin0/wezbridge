@@ -538,3 +538,60 @@ test('allowlist edits take effect without a daemon restart', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Solid Cable flood containment (2026-08-12).
+// The bridge shipped ~76 mirrored tasks every 30s regardless of whether
+// anything changed; the receiving ingestor save!s unconditionally and each
+// arrival broadcast rendered kanban HTML — 300-600 msgs/min, ~5.2 GB/24h.
+// These assert the PRODUCER never spends a write on a snapshot that says
+// nothing, while never suppressing one that does.
+// ---------------------------------------------------------------------------
+
+test('an unchanged task snapshot is NOT sent', () => {
+  const tasks = [{ id: 't1', state: 'ready' }];
+  const digest = bridge.tasksDigest(tasks);
+  assert.strictEqual(
+    bridge.shouldSendTasks({ forced: false, digest, lastDigest: digest, tick: 10, lastSentTick: 9 }),
+    false,
+    'a byte-identical snapshot teaches the server nothing and must not ship');
+});
+
+test('a CHANGED task snapshot is always sent', () => {
+  const before = bridge.tasksDigest([{ id: 't1', state: 'ready' }]);
+  const after = bridge.tasksDigest([{ id: 't1', state: 'done' }]);
+  assert.notStrictEqual(before, after, 'the digest must actually observe the change');
+  assert.strictEqual(
+    bridge.shouldSendTasks({ forced: false, digest: after, lastDigest: before, tick: 10, lastSentTick: 9 }),
+    true,
+    'suppression must never swallow a real state transition');
+});
+
+test('an applied intent forces the snapshot even when unchanged', () => {
+  const digest = bridge.tasksDigest([{ id: 't1', state: 'ready' }]);
+  assert.strictEqual(
+    bridge.shouldSendTasks({ forced: true, digest, lastDigest: digest, tick: 10, lastSentTick: 9 }),
+    true,
+    'the operator is waiting on the card — forced always wins');
+});
+
+test('reconcile cadence ships an unchanged snapshot so the server can self-heal', () => {
+  const digest = bridge.tasksDigest([{ id: 't1', state: 'ready' }]);
+  const n = bridge.RECONCILE_EVERY_TICKS;
+  assert.strictEqual(
+    bridge.shouldSendTasks({ forced: false, digest, lastDigest: digest, tick: n, lastSentTick: 0 }),
+    true,
+    'divergence must heal on a fixed cadence, not on the next unrelated edit');
+  assert.strictEqual(
+    bridge.shouldSendTasks({ forced: false, digest, lastDigest: digest, tick: n - 1, lastSentTick: 0 }),
+    false,
+    'and not one tick early, or suppression buys nothing');
+});
+
+test('the first snapshot after a restart ships (no remembered digest)', () => {
+  const digest = bridge.tasksDigest([{ id: 't1', state: 'ready' }]);
+  assert.strictEqual(
+    bridge.shouldSendTasks({ forced: false, digest, lastDigest: null, tick: 1, lastSentTick: 0 }),
+    true,
+    'a daemon that has lost its memory of server state must re-baseline');
+});
