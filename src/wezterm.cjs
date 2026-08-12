@@ -243,6 +243,10 @@ function ensureGui() {
     // The blocking sleep is acceptable here because ensureGui only runs once per process.
     try { execFileSync('sleep', ['3'], { windowsHide: true, stdio: 'ignore' }); }
     catch { try { execFileSync('timeout', ['/t', '3', '/nobreak'], { windowsHide: true, stdio: 'ignore' }); } catch {} }
+    // findGuiSocket() may have cached "no live GUI" immediately before this
+    // launch. Force the first mutating CLI call to discover the new socket.
+    _cachedGuiSocket = undefined;
+    _socketCacheTime = 0;
   } catch {
     // GUI launch failed but mux may still work — mark as launched to avoid retrying
     guiLaunched = true;
