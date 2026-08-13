@@ -24,6 +24,7 @@
  */
 const { execFileSync } = require('child_process');
 const fs = require('fs');
+const path = require('path');
 
 const WEZTERM = process.env.WEZTERM_BIN || 'wezterm';
 
@@ -52,28 +53,52 @@ if ((!project && !tabTitle) || !text) {
   die(2, 'usage: (--project <name> | --tab-title <substr> | both) (--text "..." | --file <path>) [--dry-run]');
 }
 
+function liveSocketEnvironments() {
+  if (process.env.WEZTERM_UNIX_SOCKET || process.platform !== 'win32') return [process.env];
+  const socketDir = path.join(process.env.USERPROFILE || process.env.HOME || '', '.local', 'share', 'wezterm');
+  try {
+    const tasks = execFileSync('tasklist', ['/fi', 'imagename eq wezterm-gui.exe', '/fo', 'csv', '/nh'], {
+      encoding: 'utf8', timeout: 5000, windowsHide: true,
+    });
+    const socketNames = new Set(fs.readdirSync(socketDir));
+    const sockets = [...tasks.matchAll(/"wezterm-gui\.exe","(\d+)"/gi)]
+      .map((match) => `gui-sock-${match[1]}`)
+      .filter((name) => socketNames.has(name))
+      .map((name) => path.join(socketDir, name));
+    if (sockets.length) {
+      return sockets.map((socket) => ({ ...process.env, WEZTERM_UNIX_SOCKET: socket }));
+    }
+  } catch { /* the normal retry/failure path below records a distinct failure */ }
+  return [process.env];
+}
+
 // ---------- resolve, at fire time, never from a stored id ----------
 // `wezterm cli list` goes through the mux and keeps working when a per-GUI
 // socket is unhappy, so it is the reliable half. Retry anyway: it ETIMEDOUTs
 // under load (16 panes running test suites is enough).
-let list = null;
+let list = [];
 let lastErr = '';
-for (let i = 0; i < 3; i += 1) {
-  try {
-    list = JSON.parse(execFileSync(WEZTERM, ['cli', 'list', '--format', 'json'],
-      { encoding: 'utf8', timeout: 20000 }));
-    break;
-  } catch (e) { lastErr = String(e.message || e).split('\n')[0]; }
+for (const socketEnv of liveSocketEnvironments()) {
+  for (let i = 0; i < 3; i += 1) {
+    try {
+      const panes = JSON.parse(execFileSync(WEZTERM, ['cli', 'list', '--format', 'json'], {
+        encoding: 'utf8', timeout: 20000, env: socketEnv, windowsHide: true,
+      }));
+      list.push(...panes.map((pane) => ({ ...pane, _socketEnv: socketEnv })));
+      break;
+    } catch (e) { lastErr = String(e.message || e).split('\n')[0]; }
+  }
 }
-if (!list) die(3, `wezterm unreachable after 3 attempts: ${lastErr}`);
+if (!list.length) die(3, `wezterm unreachable after 3 attempts: ${lastErr}`);
 
 const wantedProject = project ? String(project).toLowerCase() : null;
 const wantedTab = tabTitle ? String(tabTitle).toLowerCase() : null;
 const seen = new Set();
 const matches = [];
 for (const p of list) {
-  if (seen.has(p.pane_id)) continue;
-  seen.add(p.pane_id);
+  const socketKey = `${p._socketEnv.WEZTERM_UNIX_SOCKET || 'default'}:${p.pane_id}`;
+  if (seen.has(socketKey)) continue;
+  seen.add(socketKey);
   const cwd = decodeURIComponent(String(p.cwd || '')).replace(/^file:\/\/[^/]*/, '');
   const name = cwd.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || '';
   if (wantedProject && name.toLowerCase() !== wantedProject) continue;
@@ -96,13 +121,15 @@ if (has('dry-run')) {
   process.exit(0);
 }
 
-function sendViaStdin(paneId, payload, { noPaste = true } = {}) {
+function sendViaStdin(paneId, payload, socketEnv, { noPaste = true } = {}) {
   const args = ['cli', 'send-text', '--pane-id', String(paneId)];
   if (noPaste) args.push('--no-paste');
   execFileSync(WEZTERM, args, {
     input: payload,
     encoding: 'utf8',
     timeout: 20000,
+    env: socketEnv,
+    windowsHide: true,
   });
 }
 
@@ -129,36 +156,33 @@ function composerStillHolds(tail, payload) {
 // sees it. A successful send-text exit is not submission proof, so read the
 // live composer and nudge Enter once more if the prompt is still sitting there.
 try {
-  sendViaStdin(target.pane_id, text);
-  sendViaStdin(target.pane_id, '\r');
+  sendViaStdin(target.pane_id, text, target._socketEnv);
+  sendViaStdin(target.pane_id, '\r', target._socketEnv);
 } catch (e) {
   die(6, `send to pane ${target.pane_id} failed: ${String(e.message || e).split('\n')[0]}`);
 }
 
 // ---------- verify actual submission, not mere echo ----------
-let verified = 'UNVERIFIED (composer read-back unavailable)';
+const verified = 'VERIFIED (composer cleared)';
 try {
   const readTail = () => execFileSync(
     WEZTERM,
     ['cli', 'get-text', '--pane-id', String(target.pane_id), '--start-line', '-40'],
-    { encoding: 'utf8', timeout: 20000 },
+    { encoding: 'utf8', timeout: 20000, env: target._socketEnv, windowsHide: true },
   );
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 700);
   let tail = readTail();
   if (composerStillHolds(tail, text)) {
-    sendViaStdin(target.pane_id, '\r');
+    sendViaStdin(target.pane_id, '\r', target._socketEnv);
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 900);
     tail = readTail();
   }
   if (composerStillHolds(tail, text)) {
     die(7, `prompt remained in pane ${target.pane_id} composer after two Enter writes`);
   }
-  verified = 'VERIFIED (composer cleared)';
 } catch (e) {
   if (e && typeof e === 'object' && e.status === 7) process.exit(7);
-  // The payload and two Enter writes succeeded, but read-back could not prove
-  // submission. Keep this visibly unverified so the monitor will not advance
-  // its success watermark.
+  die(8, `composer verification unavailable for pane ${target.pane_id}: ${String(e.message || e).split('\n')[0]}`);
 }
 
 console.log(`${new Date().toISOString()} poke-pane OK: ${text.length} chars -> pane ${target.pane_id} (${target.name}, win${target.window_id}/tab${target.tab_id}) — ${verified}`);
