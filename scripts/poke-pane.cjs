@@ -19,8 +19,8 @@
  * exits non-zero and names both rather than guessing. Guessing is how the wrong
  * agent gets a payment-adjacent task.
  *
- * Exit codes:  0 sent · 2 bad usage · 3 wezterm unreachable · 4 no match ·
- *              5 ambiguous · 6 send failed
+ * Exit codes:  0 submitted · 2 bad usage · 3 wezterm unreachable · 4 no match ·
+ *              5 ambiguous · 6 send failed · 7 submit remained stuck
  */
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -96,37 +96,69 @@ if (has('dry-run')) {
   process.exit(0);
 }
 
+function sendViaStdin(paneId, payload, { noPaste = true } = {}) {
+  const args = ['cli', 'send-text', '--pane-id', String(paneId)];
+  if (noPaste) args.push('--no-paste');
+  execFileSync(WEZTERM, args, {
+    input: payload,
+    encoding: 'utf8',
+    timeout: 20000,
+  });
+}
+
+function composerStillHolds(tail, payload) {
+  const flat = (value) => String(value).replace(/\s+/g, ' ').trim().toLowerCase();
+  const probe = flat(payload).slice(0, 60);
+  if (!probe) return false;
+  const lines = String(tail).split(/\r?\n/);
+  const markers = lines.filter((line) => /^[\s│|]*[❯>›]/u.test(line));
+  const last = markers.at(-1) || '';
+  const content = flat(last.replace(/^[\s│|]*[❯>›]\s*/u, ''));
+  return Boolean(content) && (
+    probe.startsWith(content.slice(0, 40)) ||
+    content.startsWith(probe.slice(0, 40)) ||
+    (content.length >= 8 && flat(payload).includes(content.slice(0, 60))) ||
+    /\[?pasted (text|content)|\+\s*\d+\s+lines?\]?/i.test(content)
+  );
+}
+
 // ---------- send ----------
 // --no-paste: bracketed paste makes some TUIs hold the text without accepting
-// it. The CR is a SEPARATE call for the same reason — a trailing \r inside the
-// payload is swallowed by composers that treat the paste as one atom.
+// it. The CR is a SEPARATE stdin write for the same reason — on Windows a
+// control character passed as an argv element can be swallowed before wezterm
+// sees it. A successful send-text exit is not submission proof, so read the
+// live composer and nudge Enter once more if the prompt is still sitting there.
 try {
-  execFileSync(WEZTERM, ['cli', 'send-text', '--pane-id', String(target.pane_id), '--no-paste', text],
-    { encoding: 'utf8', timeout: 20000 });
-  execFileSync(WEZTERM, ['cli', 'send-text', '--pane-id', String(target.pane_id), '--no-paste', '\r'],
-    { encoding: 'utf8', timeout: 20000 });
+  sendViaStdin(target.pane_id, text);
+  sendViaStdin(target.pane_id, '\r');
 } catch (e) {
   die(6, `send to pane ${target.pane_id} failed: ${String(e.message || e).split('\n')[0]}`);
 }
 
-// ---------- verify, and be honest when we cannot ----------
-// A send returning success is NOT proof of delivery. If the read-back fails we
-// say UNVERIFIED rather than claiming it landed.
-let verified = 'UNVERIFIED (read-back unavailable)';
+// ---------- verify actual submission, not mere echo ----------
+let verified = 'UNVERIFIED (composer read-back unavailable)';
 try {
-  const tail = execFileSync(WEZTERM, ['cli', 'get-text', '--pane-id', String(target.pane_id), '--start-line', '-40'],
-    { encoding: 'utf8', timeout: 20000 });
-  // A TUI WRAPS the text it received, so a contiguous substring match fails on
-  // every message longer than the pane is wide — which reported UNVERIFIED for
-  // a message sitting visibly in the composer. Collapse all whitespace on both
-  // sides first; then wrapping, indentation and the composer's gutter stop
-  // mattering. A verifier that cries wolf on healthy sends gets ignored, which
-  // is worse than not having one.
-  const flat = (s) => s.replace(/\s+/g, ' ').trim();
-  const probe = flat(text).slice(0, 60);
-  verified = probe && flat(tail).includes(probe)
-    ? 'VERIFIED (echo found in pane)'
-    : 'UNVERIFIED (echo not found)';
-} catch { /* leave as unavailable */ }
+  const readTail = () => execFileSync(
+    WEZTERM,
+    ['cli', 'get-text', '--pane-id', String(target.pane_id), '--start-line', '-40'],
+    { encoding: 'utf8', timeout: 20000 },
+  );
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 700);
+  let tail = readTail();
+  if (composerStillHolds(tail, text)) {
+    sendViaStdin(target.pane_id, '\r');
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 900);
+    tail = readTail();
+  }
+  if (composerStillHolds(tail, text)) {
+    die(7, `prompt remained in pane ${target.pane_id} composer after two Enter writes`);
+  }
+  verified = 'VERIFIED (composer cleared)';
+} catch (e) {
+  if (e && typeof e === 'object' && e.status === 7) process.exit(7);
+  // The payload and two Enter writes succeeded, but read-back could not prove
+  // submission. Keep this visibly unverified so the monitor will not advance
+  // its success watermark.
+}
 
 console.log(`${new Date().toISOString()} poke-pane OK: ${text.length} chars -> pane ${target.pane_id} (${target.name}, win${target.window_id}/tab${target.tab_id}) — ${verified}`);
