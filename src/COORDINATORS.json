@@ -1,0 +1,35 @@
+{
+  "_why": "On 2026-04-30 a three-advisor debate (debates/002-orchestrator-cycle-stop) concluded: stop building autonomous multi-pane orchestrators on top of generic LLM CLIs. Its own words: 'without P5, in 6 weeks we will rationalize iteration 4 the same way we rationalized 1->2 and 2->3.' Iteration #3 landed at 8 weeks, then #4 (ClawTrol control plane, 2026-07-27), then #5 (orchestrator-waker, 2026-08-05). The decision was overridden three times because it was PROSE and nothing could fail when it was violated. This file is the enforcement artifact: test/no-new-coordinator.test.cjs fails when a module with the always-on-coordinator shape appears in src/ that is not listed here. Adding an entry is cheap and takes ten seconds - the point is that it cannot happen SILENTLY, and that the next person sees this list and the history before adding number seven.",
+
+  "_what_counts": "A module whose filename suggests a coordinator (waker/watchdog/sentinel/orchestrator/heartbeat/monitor/scheduler), or one that combines setInterval with sending text to panes. Those two shapes are what every failed iteration had in common: a background loop that decides on its own to drive other agents.",
+
+  "_how_to_add": "Add an entry with the module, a one-line what, and the operator ruling that authorised it (date + what was agreed). If there is no operator ruling, that is the signal you are building iteration #7 - stop and say so out loud instead of adding a line here.",
+
+  "allowed": [
+    {
+      "module": "src/a2a-heartbeat.cjs",
+      "what": "5-minute silence SLA watcher for A2A conversations (v3.2)",
+      "ruling": "pre-existing at 2026-08-13 when this check was introduced; grandfathered, not re-authorised"
+    },
+    {
+      "module": "src/orchestrator-waker.cjs",
+      "what": "daemon-side waker that pokes pane-0 on watched-repo turn-end (iteration #5)",
+      "ruling": "pre-existing but DISARMED 2026-08-13 by operator decision (_intel/orch-waker.json enabled=false). Code retained deliberately, same reversible-demolition discipline as the omniclaude-pre-rollback tag. Re-arm only when something downstream of the poke can FAIL."
+    },
+    {
+      "module": "src/pane0-watchdog.cjs",
+      "what": "supervises pane-0 presence, 90s absent-recovery (part of iteration #4)",
+      "ruling": "pre-existing at 2026-08-13; grandfathered, not re-authorised"
+    },
+    {
+      "module": "src/telegram-streamer.cjs",
+      "what": "streams pane output to a Telegram topic (iteration #2 control surface)",
+      "ruling": "pre-existing; autostart DISABLED 2026-08-13 by operator decision - never once produced a log file"
+    },
+    {
+      "module": "src/handlers/event-handlers.cjs",
+      "what": "daemon background-service wiring; arms the loops above rather than being one",
+      "ruling": "pre-existing infrastructure, not itself a coordinator"
+    }
+  ]
+}
