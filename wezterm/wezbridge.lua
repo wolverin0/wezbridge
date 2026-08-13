@@ -185,6 +185,31 @@ local function setup_auto_restore(opts)
 end
 
 -- ============================================================
+-- Pane recorder launch on mux-startup
+-- ============================================================
+
+-- The recorder (the :4200 daemon) used to auto-start at Windows logon. WezTerm
+-- does not start with Windows, so it always came up to a machine with no panes;
+-- on 2026-08-13 it died after its first failed discovery tick and recorded
+-- nothing for 9 hours, which is how a reboot lost the fleet layout. Tying it to
+-- mux-startup means it starts exactly when there is something to record, and
+-- the race cannot exist. start-recorder.cmd refuses to start a second instance.
+local function setup_recorder(opts)
+  local script = opts.wezbridge_dir .. '/scripts/start-recorder.cmd'
+  wezterm.on('mux-startup', function()
+    local ok_spawn, err = pcall(function()
+      wezterm.background_child_process { 'cmd.exe', '/c', script }
+    end)
+    if ok_spawn then
+      wezterm.log_info('wezbridge: pane recorder launch requested')
+    else
+      -- Never fatal: a missing recorder must not stop WezTerm from starting.
+      wezterm.log_error('wezbridge: could not launch pane recorder: ' .. tostring(err))
+    end
+  end)
+end
+
+-- ============================================================
 -- Recent-sessions fuzzy picker (LEADER+r by default)
 -- ============================================================
 
@@ -286,11 +311,17 @@ end
 --- @param config table — your wezterm config table (from wezterm.config_builder())
 --- @param opts table   — { wezbridge_dir, auto_restore, auto_restore_max_age_min,
 ---                          auto_restore_min_entries, restore_keybind, launcher_keybind,
----                          launch_presets, stagger_ms }
+---                          launch_presets, stagger_ms, start_recorder }
 function M.apply(config, opts)
   opts = opts or {}
   if not opts.wezbridge_dir then
     error('wezbridge.apply: opts.wezbridge_dir is required (path to your wezbridge repo)')
+  end
+  -- Opt-IN: starting a background daemon is a side effect nobody should get by
+  -- surprise from a terminal config. The auto-restore below depends on the
+  -- recorder having run, so the two belong to the same decision.
+  if opts.start_recorder then
+    setup_recorder(opts)
   end
   if opts.auto_restore ~= false then
     setup_auto_restore(opts)
