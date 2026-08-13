@@ -119,7 +119,7 @@ function Invoke-VerifiedPoke {
             $summary = ($output -join ' ') -replace '[\r\n]+', ' '
             if ($summary.Length -gt 500) { $summary = $summary.Substring(0, 500) }
             Write-MonitorLog ("poke-attempt exit={0} socket={1} result={2}" -f $exitCode, (Split-Path -Leaf $socket), $summary)
-            $deliveryVerified = $summary -match '(?<!UN)VERIFIED \(echo found in pane\)'
+            $deliveryVerified = $summary -match '(?<!UN)VERIFIED \(composer cleared\)'
             if ($exitCode -eq 0 -and ($ProbeOnly -or $deliveryVerified)) {
                 return $(if ($ProbeOnly -or $deliveryVerified) { 'verified' } else { 'enqueued' })
             }
