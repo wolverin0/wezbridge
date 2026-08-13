@@ -74,6 +74,12 @@ const INPUT_BYTE_LIMITS = {
 };
 const MIN_SWITCH_WORKSPACE_WEZTERM_VERSION = 20230408;
 
+// Refuse over-long A2A bodies BEFORE sending. Lives in its own module because
+// this file has no exports and requiring it would start a server, so anything
+// defined here can only be "tested" by grepping source — which is how the first
+// version of this guard passed a mutation that disabled it entirely.
+const { a2aLengthRefusal, A2A_BODY_SOFT_LIMIT } = require('./a2a-length-guard.cjs');
+
 function isValidResumeSession(resume) {
   return resume === 'last' || RESUME_SESSION_RE.test(String(resume || ''));
 }
@@ -502,6 +508,7 @@ const TOOLS = [
         type: { type: 'string', enum: ['request', 'ack', 'progress', 'result', 'error'], description: 'A2A message type. Default: request.' },
         corr: { type: 'string', description: 'Correlation id — keep it stable across a thread. Default: generated (returned in the response; reuse it for follow-ups).' },
         from_pane: { type: 'number', description: 'Sender pane ID. Default: WEZTERM_PANE env (your own pane).' },
+        allow_long: { type: 'boolean', description: `Send a body over ${A2A_BODY_SOFT_LIMIT} chars anyway. Long envelopes are TRUNCATED in transit by the recipient's composer; the fix is almost always to write the content to a repo file and send a short pointer. Only set this when you have a specific reason the payload must go inline.` },
       },
       required: ['to_pane', 'body'],
     },
@@ -522,10 +529,13 @@ function handleToolCall(name, args) {
       const summary = filtered.map(p => ({
         pane_id: p.paneId,
         is_claude: p.isClaude,
+        is_codex: p.isCodex,
+        agent: p.agent,
         status: p.status,
         project: verbose ? p.project : redactHomePath(p.project),
         project_name: p.projectName,
         title: p.title,
+        tab_title: p.tabTitle,
         workspace: p.workspace,
         confidence: p.confidence,
         last_line: formatLastText(
@@ -681,10 +691,13 @@ function handleToolCall(name, args) {
             text: JSON.stringify({
               pane_id: pane.paneId,
               is_claude: pane.isClaude,
+              is_codex: pane.isCodex,
+              agent: pane.agent,
               status: pane.status,
               project: verbose ? pane.project : redactHomePath(pane.project),
               project_name: pane.projectName,
               title: pane.title,
+              tab_title: pane.tabTitle,
               workspace: pane.workspace,
               confidence: pane.confidence,
               last_lines: formatLastText(
@@ -1303,6 +1316,15 @@ function handleToolCall(name, args) {
       }
       const bodyLimitError = validateByteLength('prompt', body, INPUT_BYTE_LIMITS.prompt);
       if (bodyLimitError) return bodyLimitError;
+      // REFUSE BEFORE SENDING, not after. This tool already detected truncation
+      // post-hoc and reported DELIVERY INTEGRITY FAILURE — but a warning that
+      // arrives after the fact only teaches the caller to retry shorter, which
+      // means the rule is re-learned every session and obeyed only once caught.
+      // On 2026-08-13 pane-0 truncated FIVE envelopes in one session, including
+      // one an hour after publishing a self-audit about this exact failure.
+      // A rule you follow only after being caught is not a rule you follow.
+      const lengthRefusal = a2aLengthRefusal(body, args.allow_long);
+      if (lengthRefusal) return { content: [{ type: 'text', text: lengthRefusal }], isError: true };
       const msgType = args.type === undefined || args.type === null ? 'request' : String(args.type);
       if (!['request', 'ack', 'progress', 'result', 'error'].includes(msgType)) {
         return { content: [{ type: 'text', text: `Error: invalid type "${msgType}" (request|ack|progress|result|error)` }], isError: true };
