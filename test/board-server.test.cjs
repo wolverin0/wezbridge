@@ -19,6 +19,7 @@ process.env.WEZBRIDGE_INTEL_DIR = TMP_INTEL;
 
 const srv = require('../board-app/server.cjs');
 const { rulingCovers } = require('../scripts/steward-gate.cjs');
+const { gateOf } = require('../scripts/fleet-board.cjs');
 
 const TOKEN = 'test-token-abcdef';
 let server;
@@ -309,6 +310,99 @@ test('failure path: the task write fails, the ruling still stands, the response 
     'THE RULING STANDS — it is the source of truth and was written first');
   assert.strictEqual(transition.applied, false);
   assert.ok(transition.error, 'the failure is reported, not swallowed into a success');
+});
+
+// --- T-0143 follow-up: the gate lives in EITHER place -----------------------
+//
+// Found in production 2026-08-16 on the FIRST real approve. T-0145 carried
+// `contract.gate: null` and a TOP-LEVEL `gate: "operator"`. gateOf() reads
+// both; applyTransition wrote only contract.gate. The task moved to `ready`
+// and the approved card stayed on the board — the exact defect T-0143 existed
+// to kill, reintroduced through the write path. fleet-steward paid for the
+// identical mistake on 2026-08-14 ("the gate lives in EITHER place" in its
+// classify()); the board repeated it. Live ledger that day: 13 tasks gated via
+// contract.gate, 3 via the top-level field, 2 via both — 5 of 18 in the crack.
+
+test('approve un-gates a TOP-LEVEL gate (the real T-0145 shape)', async () => {
+  // Exactly as recorded from the live file: contract present, contract.gate
+  // null, gate at the top level.
+  seedTask('T-9105', {
+    gate: 'operator',
+    contract: { mode: 'scoped_write', gate: null, allowed_paths: ['bot/'], evaluator: 'bot-suite' },
+  });
+  const before4 = await (await api('/api/state')).json();
+  assert.ok(before4.decisions.some((d) => d.id === 'T-9105'), 'top-level gate puts it on DECISIONES');
+
+  const res = await api('/api/rulings', {
+    method: 'POST', body: JSON.stringify({ task: 'T-9105', verb: 'approved', note: 'dale' }),
+  });
+  const { transition } = await res.json();
+  assert.strictEqual(transition.ungated, true, 'reported un-gated');
+  assert.ok(!transition.still_gated);
+
+  const after = readTask('T-9105');
+  assert.strictEqual(after.gate, null, 'top-level gate cleared');
+  assert.strictEqual(after.contract.mode, 'scoped_write', 'rest of the contract survives');
+  assert.strictEqual(after.contract.evaluator, 'bot-suite');
+
+  const state = await (await api('/api/state')).json();
+  assert.ok(!state.decisions.some((d) => d.id === 'T-9105'), 'THE CARD LEAVES — the defect that shipped');
+});
+
+test('approve un-gates when the gate is in BOTH places', async () => {
+  seedTask('T-9106', { gate: 'operator', contract: { gate: 'operator', mode: 'read_mostly' } });
+  const res = await api('/api/rulings', {
+    method: 'POST', body: JSON.stringify({ task: 'T-9106', verb: 'approved', note: 'dale' }),
+  });
+  const { transition } = await res.json();
+  assert.strictEqual(transition.ungated, true);
+  const after = readTask('T-9106');
+  assert.strictEqual(after.gate, null, 'top-level cleared');
+  assert.strictEqual(after.contract.gate, null, 'contract cleared');
+  assert.strictEqual(after.contract.mode, 'read_mostly');
+
+  const state = await (await api('/api/state')).json();
+  assert.ok(!state.decisions.some((d) => d.id === 'T-9106'));
+});
+
+test('ungateTask agrees with gateOf for EVERY gate shape', () => {
+  // The post-condition, stated as a property: `ungated` is true exactly when
+  // the task WAS gated and is no longer. This is what stops the writer from
+  // drifting away from the reader again — including for a third gate location
+  // nobody has invented yet, which would make `ungated` report false rather
+  // than silently leave an approved card on the board.
+  const shapes = [
+    ['contract only', { contract: { gate: 'operator' } }],
+    ['top level only', { gate: 'operator' }],
+    ['both', { gate: 'operator', contract: { gate: 'operator' } }],
+    ['top level + null contract gate (T-0145)', { gate: 'operator', contract: { gate: null } }],
+  ];
+  for (const [name, task] of shapes) {
+    const out = srv.ungateTask({ id: 'T-1', ...task });
+    assert.strictEqual(out.wasGated, true, `${name}: was gated`);
+    assert.strictEqual(out.ungated, true, `${name}: un-gated`);
+    assert.notStrictEqual(gateOf(out.next), 'operator', `${name}: gateOf agrees it is gone`);
+  }
+
+  // A task that was never gated must NOT report ungated:true. The lazy version
+  // of this fix ("is it gated now? no → ungated") would claim credit for work
+  // it never did, and that lie would hide the next regression.
+  for (const [name, task] of [
+    ['no gate at all', {}],
+    ['non-operator gate', { gate: 'ci' }],
+    ['already cleared', { gate: null, contract: { gate: null } }],
+  ]) {
+    const out = srv.ungateTask({ id: 'T-1', ...task });
+    assert.strictEqual(out.wasGated, false, `${name}: not gated going in`);
+    assert.strictEqual(out.ungated, false, `${name}: must not claim an un-gate it did not perform`);
+  }
+});
+
+test('ungateTask does not mutate the task it is given', () => {
+  const task = { id: 'T-1', gate: 'operator', contract: { gate: 'operator', mode: 'x' } };
+  srv.ungateTask(task);
+  assert.strictEqual(task.gate, 'operator', 'input untouched');
+  assert.strictEqual(task.contract.gate, 'operator', 'nested input untouched');
 });
 
 // --- T-0143 D1: the whitelist is a whitelist --------------------------------

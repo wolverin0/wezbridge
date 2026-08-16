@@ -129,6 +129,16 @@ export default function App() {
           `Ojo: la decisión de ${input.task} quedó registrada, pero la tarea NO se movió (${transition.error}). `
           + 'No la vuelvas a mandar: avisale al orquestador para que la mueva.');
       }
+
+      // The other half-success: the task moved but the gate survived, so the
+      // card stays on the board. Silence here would look exactly like the
+      // T-0143 defect returning, and the operator would reasonably re-approve
+      // and double-write the ruling.
+      if (transition?.still_gated) {
+        pushToast('warn',
+          `Ojo: ${input.task} pasó a ${transition.to}, pero quedó gateada y la tarjeta sigue acá. `
+          + 'No la vuelvas a aprobar: avisale al orquestador.');
+      }
       await refresh();
     } catch (e) {
       pushToast('bad', `No se pudo registrar la decisión de ${input.task}: ${e instanceof Error ? e.message : 'error'}`);

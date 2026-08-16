@@ -51,13 +51,16 @@ const OPEN_STATES = ['ready', 'queued', 'running', 'review', 'blocked', 'failed'
  * nothing. Adding a key here is the only way to widen it, which is the point.
  *
  *   cancelled → cancelled   the work is dead; *cancelar* means what it says.
- *   approved  → ready + UN-GATE. Clearing `contract.gate` is not optional
+ *   approved  → ready + UN-GATE. Clearing the operator gate is not optional
  *               garnish: DECISIONES is built from open tasks with
  *               gateOf(t) === 'operator', and `ready` is an OPEN state, so a
  *               state-only move would leave the approved card on screen
  *               forever — the exact defect being fixed. Un-gating is what
  *               `_intel/templates/decision-task.md` means by "the task
  *               un-gates: state moves and the work dispatches like any other".
+ *               The gate lives in EITHER `contract.gate` OR a top-level
+ *               `gate`; see ungateTask() for why reading both and writing one
+ *               shipped this same defect a second time.
  *   deferred  → nothing. Still legitimately gated; only the CARD hides, and
  *               only while the ruling still covers it (see buildState).
  */
@@ -393,9 +396,42 @@ function appendLine(file, obj) {
 function transitionNote(line, rule) {
   const verb = line.ruling === 'cancelled' ? 'Cancelled' : 'Approved';
   const tail = rule.ungate
-    ? ' Un-gated (contract.gate cleared) — dispatchable as ordinary ready work.'
+    ? ' Un-gated (operator gate cleared) — dispatchable as ordinary ready work.'
     : '';
   return `${verb} by the operator via the fleet board ${line.at}: "${line.why}".${tail}`;
+}
+
+/**
+ * Remove the operator gate WHEREVER IT LIVES, and prove it is gone using the
+ * same predicate that put the card on screen.
+ *
+ * Found in production 2026-08-16 on the first real approve: T-0145 carries
+ * `contract.gate: null` AND a TOP-LEVEL `gate: "operator"`. `gateOf()` reads
+ * both (`(t.contract && t.contract.gate) || t.gate`), the original transition
+ * wrote only `contract.gate`, so the task moved to `ready` and the card stayed.
+ * Reading through one predicate and writing through another is the whole bug.
+ * On the live ledger that day: 13 gated tasks used contract.gate, 3 used the
+ * top-level field, and 2 used both.
+ *
+ * fleet-steward paid for the identical mistake on 2026-08-14 — see the "gate
+ * lives in EITHER place" comment in its classify(). This is that bug a second
+ * time in a second component, which is why the fix below is not just "clear
+ * both fields".
+ *
+ * THE POST-CONDITION IS THE REAL FIX. `ungated` is derived from `gateOf` rather
+ * than from which assignments ran, so the writer can never again disagree with
+ * the reader: if someone adds a third gate location tomorrow, this reports
+ * `ungated: false` and the caller surfaces it, instead of silently leaving an
+ * approved card on the board.
+ */
+function ungateTask(task) {
+  const wasGated = gateOf(task) === 'operator';
+  const next = { ...task };
+  if (next.contract && next.contract.gate === 'operator') {
+    next.contract = { ...next.contract, gate: null };
+  }
+  if (next.gate === 'operator') next.gate = null;
+  return { next, wasGated, ungated: wasGated && gateOf(next) !== 'operator' };
 }
 
 /**
@@ -420,14 +456,22 @@ function applyTransition(taskId, line) {
   try {
     const task = JSON.parse(fs.readFileSync(file, 'utf8'));
     const from = task.state;
-    const next = { ...task, state: rule.state, updated_at: line.at, next_action: transitionNote(line, rule) };
+    let next = { ...task, state: rule.state, updated_at: line.at, next_action: transitionNote(line, rule) };
     let ungated = false;
-    if (rule.ungate && next.contract && next.contract.gate === 'operator') {
-      next.contract = { ...next.contract, gate: null };
-      ungated = true;
+    let stillGated = false;
+    if (rule.ungate) {
+      const out = ungateTask(next);
+      next = out.next;
+      ungated = out.ungated;
+      // Gated going in, still gated coming out: the state moved but the card
+      // will NOT leave the board. That is a half-success and must be reported
+      // as one — the operator has to know his approval did not fully land.
+      stillGated = out.wasGated && !out.ungated;
     }
     fs.writeFileSync(file, JSON.stringify(next, null, 2));
-    return { applied: true, from, to: rule.state, ungated };
+    const result = { applied: true, from, to: rule.state, ungated };
+    if (stillGated) result.still_gated = true;
+    return result;
   } catch (e) {
     return { applied: false, error: String(e.message || e) };
   }
@@ -546,6 +590,9 @@ function createServer(token, { rateLimiter = makeRateLimiter() } = {}) {
         const transition = applyTransition(line.task, line);
         if (transition.applied) {
           log(`task transitioned: ${line.task} ${transition.from} → ${transition.to}${transition.ungated ? ' (un-gated)' : ''}`);
+          if (transition.still_gated) {
+            log(`STILL GATED: ${line.task} moved to ${transition.to} but gateOf() still reads 'operator' — the card will NOT leave the board`);
+          }
         } else if (transition.error) {
           log(`TASK NOT MOVED: ${line.task} — ${transition.error} (the ruling stands)`);
         }
@@ -598,6 +645,6 @@ if (require.main === module) {
 
 module.exports = {
   createServer, loadToken, buildState, activityFeed, makeRateLimiter,
-  validateRuling, validateInboxNote, applyTransition, detailOf,
+  validateRuling, validateInboxNote, applyTransition, ungateTask, detailOf,
   VERBS, INBOX_KINDS, PAGE_SIZE, TASK_TRANSITION,
 };

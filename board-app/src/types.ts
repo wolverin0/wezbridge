@@ -44,6 +44,8 @@ export interface Transition {
   from?: string;
   to?: string;
   ungated?: boolean;
+  /** State moved but the operator gate survived — the card will NOT leave. */
+  still_gated?: boolean;
   reason?: string;
   error?: string;
 }

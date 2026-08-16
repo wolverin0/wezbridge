@@ -95,6 +95,36 @@ would silently hide a live operator gate for a day because somebody dispatched s
 decision vanish is worse than the defect being fixed. Hidden cards are counted back into
 `deferred_hidden[]` and shown as "N diferidas, ocultas hasta su fecha" — hidden never means gone.
 
+### D1 follow-up — THE GATE LIVES IN EITHER PLACE (production bug, 2026-08-16)
+
+Found on the **first real approve**. T-0145 carried `contract.gate: null` and a **top-level
+`gate: "operator"`**. `gateOf()` reads both (`(t.contract && t.contract.gate) || t.gate`); the
+first transition wrote only `contract.gate`. The task moved to `ready` and the approved card
+**stayed on DECISIONES** — the exact defect T-0143 existed to kill, reintroduced through the write
+path. Reading through one predicate and writing through another IS the bug.
+
+`fleet-steward` had already paid for the identical mistake on 2026-08-14 — see "the gate lives in
+EITHER place" in its `classify()`, where T-0072 was misclassified for the same reason. The board
+repeated it in a second component, which is why the fix is not merely "clear both fields":
+
+- `ungateTask()` clears the gate in **both** locations, and
+- **derives `ungated` from `gateOf()` itself** rather than from which assignments ran. Writer and
+  reader are now bound to the same predicate, so they cannot drift again. If a third gate location
+  is ever added, this reports `ungated: false` instead of silently leaving an approved card up.
+- A task that was never gated reports `ungated: false`, not `true`. The lazy version ("is it gated
+  now? no → success") would claim credit for work it never did and would mask the next regression.
+- `still_gated: true` is returned when the state moved but the gate survived, and the UI raises the
+  amber half-success toast telling the operator not to re-approve — re-approving would write a
+  second ruling, i.e. record a decision he never made.
+
+Measured on the live ledger the day it was found: **13 gated tasks used `contract.gate`, 3 used the
+top-level field, 2 used both** — 5 of 18 in the crack. Not an edge case.
+
+Verified with a mutation proof (`ungated:false, still_gated:true` when the old contract-only
+behaviour is restored on a COPY of `server.cjs`, never in place) plus the reconstructed real
+T-0145 shape. The live row was repaired by pane-0 clearing the stray gate WITHOUT writing a second
+ruling.
+
 ### D2 — the word *fallo* is BANNED from this UI
 
 `Fallo registrado para T-0129` read to the operator as "FAILURE recorded" on his own successful
