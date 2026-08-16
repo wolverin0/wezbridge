@@ -1,0 +1,23 @@
+{
+  "name": "fleet-board-app",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Fleet cockpit PWA: three-zone board with decision actions appending to _intel/rulings.jsonl",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "serve": "node server.cjs",
+    "test": "node --test --test-reporter=spec ../test/board-server.test.cjs"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}
