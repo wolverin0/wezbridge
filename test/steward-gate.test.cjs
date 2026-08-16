@@ -225,3 +225,29 @@ test('`resolved` permanently covers a finding, and an unknown word never does', 
       `"${word}" was accepted as a ruling`);
   }
 });
+
+test('`approved` covers NOTHING, and that is deliberate — do not "fix" this', () => {
+  // READ THIS BEFORE CHANGING IT. The board app writes `approved` when the
+  // operator approves a gated decision, and it also clears the gate and sets
+  // the task to `ready`. Clearing the gate is what removes the card and the
+  // awaiting-operator finding — the ruling word does no covering work at all.
+  //
+  // The consequence is intended: approved work that nobody then picks up
+  // resurfaces as an ordinary `idle` finding after the normal deadline. The
+  // first person to see that WILL read it as a regression and will be tempted
+  // to give `approved` a permanent cover. That would be wrong — it would let
+  // "yes, do this" silence a task forever while the work never happens, which
+  // is the exact class of silence this whole gate exists to defeat.
+  //
+  // Flagged by the board-app builder on 2026-08-16 as a trap for whoever meets
+  // it next; encoded here rather than left in prose, because prose is hope.
+  const now = Date.parse('2026-08-16T12:00:00Z');
+  const at = '2026-08-16T11:00:00Z';
+  for (const category of ['awaiting-operator', 'idle', 'stale-review']) {
+    assert.strictEqual(
+      gate.rulingCovers({ task: 'T-1', category, ruling: 'approved', at }, { id: 'T-1', category, age_hours: 999 }, now),
+      false,
+      '`approved` must not cover a finding — un-gating is what closes the decision, not the word',
+    );
+  }
+});
