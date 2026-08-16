@@ -35,9 +35,25 @@ function seedTask(id, extra = {}) {
   return task;
 }
 
+const taskFile = (id) => path.join(TMP_INTEL, 'tasks', `${id}.json`);
+const readTask = (id) => JSON.parse(fs.readFileSync(taskFile(id), 'utf8'));
+
 before(async () => {
   fs.mkdirSync(path.join(TMP_INTEL, 'tasks'), { recursive: true });
   seedTask('T-9001');
+  // T-0143 transition fixtures — one per verb plus an untouched control, each
+  // carrying fields the transition must NOT damage.
+  const rich = {
+    goal: 'the goal text', acceptance_criteria: ['a', 'b'], depends_on: ['T-9000'],
+    corr: 'corr-9', attempt: 3, origin_key: 'keep-me',
+    contract: { gate: 'operator', mode: 'scoped_write', allowed_paths: ['src/**'], _note: 'the question' },
+  };
+  seedTask('T-9101', rich);
+  seedTask('T-9102', rich);
+  seedTask('T-9103', rich);
+  // The FLOTA control: ungated + ready, so it lands in by_repo, which is where
+  // the operator complained the rows say nothing.
+  seedTask('T-9104', { ...rich, state: 'ready', contract: { ...rich.contract, gate: null } });
   // Generous limiter here: these tests exercise validation, not the limiter.
   // The limiter has its own server below — it counts REJECTED posts too, on
   // purpose, so a flood of invalid requests is capped like a valid one.
@@ -166,6 +182,191 @@ test('approved appends the ruling AND mirrors an approval into operator-actions.
     .trim().split('\n').map(JSON.parse);
   const mirror = actions.find((a) => a.kind === 'approval' && a.task === 'T-9001');
   assert.ok(mirror, 'approval reached the orchestrator inbox');
+});
+
+// --- T-0143 D1: a terminal ruling must move the task ------------------------
+
+test('cancel: ruling lands AND the task goes cancelled AND the card disappears', async () => {
+  const before2 = readTask('T-9101');
+  const seen = await (await api('/api/state')).json();
+  assert.ok(seen.decisions.some((d) => d.id === 'T-9101'), 'card is on screen before the ruling');
+
+  const res = await api('/api/rulings', {
+    method: 'POST',
+    body: JSON.stringify({ task: 'T-9101', verb: 'cancelled', note: 'no lo necesitamos mas' }),
+  });
+  assert.strictEqual(res.status, 200);
+  const { line, transition } = await res.json();
+
+  const rulings = fs.readFileSync(path.join(TMP_INTEL, 'rulings.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.ok(rulings.some((r) => r.task === 'T-9101' && r.ruling === 'cancelled'), 'ruling is on disk');
+  assert.strictEqual(line.ruling, 'cancelled');
+
+  const after = readTask('T-9101');
+  assert.strictEqual(after.state, 'cancelled', 'task moved');
+  assert.deepStrictEqual(transition, { applied: true, from: 'blocked', to: 'cancelled', ungated: false });
+
+  // WHO and WHY are in the file that changed, not only in another file.
+  assert.match(after.next_action, /operator/i);
+  assert.match(after.next_action, /fleet board/i);
+  assert.ok(after.next_action.includes('no lo necesitamos mas'), 'the why is recorded verbatim');
+  assert.ok(after.next_action.includes(line.at), 'the when is recorded');
+  assert.strictEqual(after.updated_at, line.at);
+
+  // Every other field preserved, byte for byte.
+  for (const k of ['id', 'title', 'repo', 'goal', 'acceptance_criteria', 'depends_on', 'corr', 'attempt', 'origin_key', 'contract', 'created_at']) {
+    assert.deepStrictEqual(after[k], before2[k], `${k} survived the transition`);
+  }
+
+  const state = await (await api('/api/state')).json();
+  assert.ok(!state.decisions.some((d) => d.id === 'T-9101'), 'card is gone on refresh');
+});
+
+test('approve: task goes ready AND is un-gated, so the card is gone too', async () => {
+  const res = await api('/api/rulings', {
+    method: 'POST',
+    body: JSON.stringify({ task: 'T-9102', verb: 'approved', note: 'dale, arrancá' }),
+  });
+  assert.strictEqual(res.status, 200);
+  const { transition } = await res.json();
+  assert.deepStrictEqual(transition, { applied: true, from: 'blocked', to: 'ready', ungated: true });
+
+  const after = readTask('T-9102');
+  assert.strictEqual(after.state, 'ready');
+  assert.strictEqual(after.contract.gate, null, 'the operator gate is cleared — that is what un-gate means');
+  // Un-gating must not gut the rest of the contract.
+  assert.strictEqual(after.contract.mode, 'scoped_write');
+  assert.deepStrictEqual(after.contract.allowed_paths, ['src/**']);
+  assert.match(after.next_action, /Approved by the operator via the fleet board/);
+
+  const state = await (await api('/api/state')).json();
+  assert.ok(!state.decisions.some((d) => d.id === 'T-9102'), 'approved card leaves DECISIONES');
+  const inFleet = Object.values(state.by_repo).flat().some((t) => t.id === 'T-9102');
+  assert.ok(inFleet, 'and reappears as ordinary dispatchable work in FLOTA');
+});
+
+test('defer: task state UNCHANGED, card hidden while the ruling covers it', async () => {
+  const before3 = readTask('T-9103');
+  const until = new Date(Date.now() + 86400000).toISOString();
+  const res = await api('/api/rulings', {
+    method: 'POST',
+    body: JSON.stringify({ task: 'T-9103', verb: 'deferred', until, note: 'la semana que viene' }),
+  });
+  assert.strictEqual(res.status, 200);
+  const { transition } = await res.json();
+  assert.strictEqual(transition.applied, false, 'a deferral moves no task state');
+  assert.ok(!transition.error, 'and that is not an error');
+
+  assert.deepStrictEqual(readTask('T-9103'), before3, 'the task file is untouched, blocker and all');
+
+  const state = await (await api('/api/state')).json();
+  assert.ok(!state.decisions.some((d) => d.id === 'T-9103'), 'card hidden while deferred');
+  const hidden = state.deferred_hidden.find((d) => d.id === 'T-9103');
+  assert.ok(hidden, 'hidden is surfaced, never silently gone');
+  assert.strictEqual(hidden.until, until);
+});
+
+test('deferred card RETURNS once `until` passes — hiding is not deleting', async () => {
+  // Supersede the live deferral with an expired one. The latest ruling is what
+  // the board reads, and this one no longer covers.
+  fs.appendFileSync(path.join(TMP_INTEL, 'rulings.jsonl'), `${JSON.stringify({
+    task: 'T-9103', category: 'awaiting-operator', ruling: 'deferred',
+    why: 'vencida', at: new Date(Date.now() - 7200000).toISOString(),
+    until: new Date(Date.now() - 1000).toISOString(),
+  })}\n`);
+
+  const state = await (await api('/api/state')).json();
+  assert.ok(state.decisions.some((d) => d.id === 'T-9103'), 'the card is back on the board');
+  assert.ok(!state.deferred_hidden.some((d) => d.id === 'T-9103'), 'and is no longer counted as hidden');
+  assert.strictEqual(readTask('T-9103').state, 'blocked', 'still legitimately gated the whole time');
+});
+
+test('a covering NON-deferred ruling does NOT hide a live operator gate', async () => {
+  // `dispatched` covers for 24h in the gate's vocabulary. Honouring that here
+  // would make a decision vanish for a day because someone dispatched
+  // something — strictly worse than the defect this task fixes.
+  fs.appendFileSync(path.join(TMP_INTEL, 'rulings.jsonl'), `${JSON.stringify({
+    task: 'T-9103', category: 'awaiting-operator', ruling: 'dispatched',
+    why: 'sent to a pane', at: new Date().toISOString(),
+  })}\n`);
+
+  const state = await (await api('/api/state')).json();
+  assert.ok(state.decisions.some((d) => d.id === 'T-9103'), 'still on screen — only deferrals hide');
+});
+
+test('failure path: the task write fails, the ruling still stands, the response is honest', async () => {
+  // T-9404 has no task file. Deterministic on every platform, unlike chmod.
+  const res = await api('/api/rulings', {
+    method: 'POST',
+    body: JSON.stringify({ task: 'T-9404', verb: 'cancelled', note: 'ruling must survive a failed move' }),
+  });
+  assert.strictEqual(res.status, 200, 'not a 500 — half the work succeeded and the operator must be told which half');
+  const { ok, line, transition } = await res.json();
+  assert.strictEqual(ok, true);
+
+  const rulings = fs.readFileSync(path.join(TMP_INTEL, 'rulings.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.ok(rulings.some((r) => r.task === 'T-9404' && r.ruling === 'cancelled' && r.at === line.at),
+    'THE RULING STANDS — it is the source of truth and was written first');
+  assert.strictEqual(transition.applied, false);
+  assert.ok(transition.error, 'the failure is reported, not swallowed into a success');
+});
+
+// --- T-0143 D1: the whitelist is a whitelist --------------------------------
+
+test('TASK_TRANSITION is the complete set of task-state writes', () => {
+  assert.deepStrictEqual(Object.keys(srv.TASK_TRANSITION).sort(), [...srv.VERBS].sort(),
+    'every verb is accounted for — no verb may fall through undeclared');
+  assert.strictEqual(srv.TASK_TRANSITION.deferred, null);
+  assert.deepStrictEqual(srv.TASK_TRANSITION.cancelled, { state: 'cancelled', ungate: false });
+  assert.deepStrictEqual(srv.TASK_TRANSITION.approved, { state: 'ready', ungate: true });
+});
+
+test('applyTransition refuses a task id that escapes the tasks directory', () => {
+  const out = srv.applyTransition('../../escape', { ruling: 'cancelled', at: 'now', why: 'x' });
+  assert.strictEqual(out.applied, false);
+  assert.match(out.error, /outside the tasks directory/);
+});
+
+test('NO OTHER PATH writes a task file', async () => {
+  const ids = fs.readdirSync(path.join(TMP_INTEL, 'tasks'));
+  const snapshot = Object.fromEntries(ids.map((f) => [f, fs.readFileSync(path.join(TMP_INTEL, 'tasks', f), 'utf8')]));
+
+  await api('/api/state');
+  await api('/api/activity?page=0');
+  await api('/api/orchestrator-inbox', { method: 'POST', body: JSON.stringify({ kind: 'note', text: 'una nota' }) });
+  await api('/api/orchestrator-inbox', { method: 'POST', body: JSON.stringify({ kind: 'call-me', text: 'llamame' }) });
+  await api('/api/rulings', {
+    method: 'POST',
+    body: JSON.stringify({ task: 'T-9104', verb: 'deferred', until: new Date(Date.now() + 86400000).toISOString(), note: 'no toca nada' }),
+  });
+  await api('/api/rulings', { method: 'POST', body: JSON.stringify({ task: 'T-9104', verb: 'resolved', note: 'rejected verb' }) });
+
+  assert.deepStrictEqual(fs.readdirSync(path.join(TMP_INTEL, 'tasks')), ids, 'no task file created or deleted');
+  for (const [f, text] of Object.entries(snapshot)) {
+    assert.strictEqual(fs.readFileSync(path.join(TMP_INTEL, 'tasks', f), 'utf8'), text, `${f} byte-identical`);
+  }
+});
+
+// --- T-0143 D3: rows carry what you decide with -----------------------------
+
+test('every task payload carries the detail the operator decides with', async () => {
+  const state = await (await api('/api/state')).json();
+  const row = Object.values(state.by_repo).flat().find((t) => t.id === 'T-9104');
+  assert.ok(row, 'T-9104 is listed');
+  assert.ok(row.detail, 'row carries a detail block, not just a title');
+  assert.strictEqual(row.detail.goal, 'the goal text');
+  assert.deepStrictEqual(row.detail.acceptance_criteria, ['a', 'b']);
+  assert.deepStrictEqual(row.detail.depends_on, ['T-9000']);
+  assert.strictEqual(row.detail.corr, 'corr-9');
+  assert.strictEqual(row.detail.contract_mode, 'scoped_write');
+});
+
+test('detailOf survives a task missing every optional field', () => {
+  const d = srv.detailOf({ id: 'T-0', state: 'ready' });
+  assert.deepStrictEqual(d.acceptance_criteria, [], 'arrays default to empty, never undefined');
+  assert.deepStrictEqual(d.depends_on, []);
+  assert.strictEqual(d.goal, '');
+  assert.strictEqual(d.lease, null);
 });
 
 // --- orchestrator inbox -----------------------------------------------------

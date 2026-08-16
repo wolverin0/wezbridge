@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ApiError, clearToken, fetchState, getToken, postInbox, postRuling, setToken } from './api';
 import type { BoardState, Verb } from './types';
-import { ageMinutes } from './format';
+import { ageMinutes, fmtDate } from './format';
 import TopBar from './components/TopBar';
 import Decisions from './components/Decisions';
 import Fleet from './components/Fleet';
@@ -9,9 +9,26 @@ import Activity from './components/Activity';
 import { ErrorBox, Skeletons } from './components/bits';
 
 type Tab = 'decisiones' | 'flota' | 'actividad';
-type Toast = { id: number; kind: 'ok' | 'bad'; text: string; line?: string };
+type Toast = { id: number; kind: 'ok' | 'warn' | 'bad'; text: string; line?: string };
 
 let toastSeq = 0;
+
+/**
+ * Confirmation copy, per verb (T-0143 D2).
+ *
+ * The old toast said "Fallo registrado para T-0129". In Argentina *fallo* is a
+ * judicial ruling, which is what the fleet's `rulings.jsonl` vocabulary means —
+ * but the operator, the only user, read it as "FAILURE recorded" on his own
+ * successful action. He is the arbiter of what the words mean here. The word is
+ * banned from this UI; every confirmation now names the verb and its
+ * consequence, so success can never be mistaken for a fault.
+ */
+const CONFIRMATION: Record<Verb, (task: string, until?: string) => string> = {
+  cancelled: (task) => `${task} cancelada.`,
+  approved: (task) => `${task} aprobada — pasa a la cola de trabajo.`,
+  deferred: (task, until) =>
+    `${task} diferida hasta ${until ? fmtDate.format(new Date(until)) : 'nueva fecha'}.`,
+};
 
 function TokenGate({ onDone }: { onDone: () => void }) {
   const [value, setValue] = useState('');
@@ -60,10 +77,12 @@ export default function App() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [resolving, setResolving] = useState<Set<string>>(new Set());
 
-  const pushToast = useCallback((kind: 'ok' | 'bad', text: string, line?: string) => {
+  const pushToast = useCallback((kind: Toast['kind'], text: string, line?: string) => {
     const id = ++toastSeq;
     setToasts((prev) => [...prev, { id, kind, text, line }]);
-    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), kind === 'ok' ? 8000 : 10000);
+    // Anything that isn't a clean success stays up longer: it is asking the
+    // operator to do something about it.
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), kind === 'ok' ? 8000 : 14000);
   }, []);
 
   const refresh = useCallback(async () => {
@@ -97,11 +116,22 @@ export default function App() {
   const onRule = useCallback(async (input: { task: string; verb: Verb; until?: string; note: string }) => {
     setResolving((prev) => new Set(prev).add(input.task));
     try {
-      const { line } = await postRuling(input);
-      pushToast('ok', `Fallo registrado para ${input.task}.`, JSON.stringify(line));
+      const { line, transition } = await postRuling(input);
+      const moved = transition?.applied ? ` La tarea pasó a ${transition.to}.` : '';
+      pushToast('ok', CONFIRMATION[input.verb](input.task, input.until) + moved, JSON.stringify(line));
+
+      // Half-success is reported as half-success. The ruling is written first
+      // and is authoritative, so a failed task write must never be dressed up
+      // as a clean confirmation — nor as a total failure, because the decision
+      // itself DID land and re-submitting would double-write it.
+      if (transition && !transition.applied && transition.error) {
+        pushToast('warn',
+          `Ojo: la decisión de ${input.task} quedó registrada, pero la tarea NO se movió (${transition.error}). `
+          + 'No la vuelvas a mandar: avisale al orquestador para que la mueva.');
+      }
       await refresh();
     } catch (e) {
-      pushToast('bad', `No se registró el fallo de ${input.task}: ${e instanceof Error ? e.message : 'error'}`);
+      pushToast('bad', `No se pudo registrar la decisión de ${input.task}: ${e instanceof Error ? e.message : 'error'}`);
       throw e;
     } finally {
       setResolving((prev) => { const next = new Set(prev); next.delete(input.task); return next; });
@@ -111,7 +141,7 @@ export default function App() {
   const onNote = useCallback(async (text: string) => {
     try {
       await postInbox({ kind: 'note', text });
-      pushToast('ok', 'Nota enviada al orquestador (la lee en <1 min).');
+      pushToast('ok', 'Nota enviada al orquestador.');
     } catch (e) {
       pushToast('bad', `La nota no salió: ${e instanceof Error ? e.message : 'error'}`);
       throw e;
@@ -147,6 +177,7 @@ export default function App() {
             <Decisions
               decisions={state.decisions}
               findings={state.findings_list || []}
+              deferred={state.deferred_hidden || []}
               lastRuling={state.last_ruling}
               onRule={onRule}
               onNote={onNote}

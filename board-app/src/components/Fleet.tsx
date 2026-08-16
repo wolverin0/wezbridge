@@ -1,7 +1,44 @@
 import { useMemo, useState } from 'react';
-import type { BoardState } from '../types';
+import type { BoardState, TaskDetail as Detail } from '../types';
 import { ageText } from '../format';
 import { EmptyBox, StateTag } from './bits';
+import TaskDetail from './TaskDetail';
+
+/**
+ * A task row that opens in place (T-0143 D3). Click expands; no navigation, no
+ * modal. The whole row is the target — a 44px hit area the operator can reach
+ * with a thumb on the phone, which is where he reads these.
+ */
+function TaskRow({ id, detail, cols, children }: {
+  id: string;
+  detail: Detail;
+  cols: number;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <tr
+        className={`task-row${open ? ' open' : ''}`}
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-controls={`detail-${id}`}
+        tabIndex={0}
+        role="button"
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen((v) => !v); }
+        }}
+      >
+        {children}
+      </tr>
+      {open && (
+        <tr className="task-row-detail" id={`detail-${id}`}>
+          <td colSpan={cols}><TaskDetail d={detail} id={id} /></td>
+        </tr>
+      )}
+    </>
+  );
+}
 
 function Sparkline({ buckets }: { buckets: number[] }) {
   const max = Math.max(1, ...buckets);
@@ -32,7 +69,9 @@ export default function Fleet({ state }: { state: BoardState }) {
         repo,
         tasks.filter((t) =>
           (stateFilter === 'todos' || t.state === stateFilter) &&
-          (!needle || `${t.id} ${t.title} ${repo}`.toLowerCase().includes(needle))
+          // Search reaches the goal too: the row's title was never enough to
+          // find a task by, which is the same complaint as D3.
+          (!needle || `${t.id} ${t.title} ${repo} ${t.detail?.goal || ''}`.toLowerCase().includes(needle))
         ),
       ] as const)
       .filter(([, tasks]) => tasks.length)
@@ -54,13 +93,13 @@ export default function Fleet({ state }: { state: BoardState }) {
             </thead>
             <tbody>
               {state.in_flight.map((t) => (
-                <tr key={t.id}>
+                <TaskRow key={t.id} id={t.id} detail={t.detail} cols={5}>
                   <td className="mono">{t.id}</td>
                   <td><StateTag state={t.state} /></td>
                   <td className="mono dim">{t.owner || '—'}</td>
                   <td>{t.title}</td>
                   <td className="mono dim">{ageText(t.updated_at)}</td>
-                </tr>
+                </TaskRow>
               ))}
             </tbody>
           </table>
@@ -120,12 +159,12 @@ export default function Fleet({ state }: { state: BoardState }) {
             <table>
               <tbody>
                 {tasks.map((t) => (
-                  <tr key={t.id}>
+                  <TaskRow key={t.id} id={t.id} detail={t.detail} cols={4}>
                     <td className="mono">{t.id}</td>
                     <td><StateTag state={t.state} /></td>
                     <td>{t.title}</td>
                     <td className="mono dim">{ageText(t.updated_at)}</td>
-                  </tr>
+                  </TaskRow>
                 ))}
               </tbody>
             </table>

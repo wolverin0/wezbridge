@@ -25,7 +25,7 @@ export default function TopBar({ state }: { state: BoardState | null }) {
   const gateClass = !gate ? 'warn' : gate.verdict === 'GREEN' ? 'ok' : 'bad';
   const gateLabel = !gate
     ? 'gate: DESCONOCIDO'
-    : `gate: ${gate.verdict}${gate.unruled ? ` (${gate.unruled} sin fallo)` : ''}`;
+    : `gate: ${gate.verdict}${gate.unruled ? ` (${gate.unruled} sin decidir)` : ''}`;
 
   const turnMins = state ? ageMinutes(state.last_turn_at) : null;
   const snapMins = state ? ageMinutes(state.snapshot_at) : null;

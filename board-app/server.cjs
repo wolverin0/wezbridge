@@ -5,9 +5,16 @@
  *
  * Serves the built SPA (dist/) plus a narrow, deterministic API. No model in
  * any path. The board acts the way every fleet component acts: by APPENDING
- * to _intel files. It never edits tasks, never deletes, never holds state of
- * its own — _intel/ remains the only truth and every payload declares its own
- * generated_at so staleness is honest.
+ * to _intel files, and it holds no state of its own — _intel/ remains the only
+ * truth and every payload declares its own generated_at so staleness is honest.
+ *
+ * ONE exception, added by T-0143 and deliberately narrow: a TERMINAL ruling
+ * must move its task. Before it did, cancelling a decision appended the ruling
+ * and changed nothing, so the card the operator had just killed came back on
+ * every refresh. `TASK_TRANSITION` below is the complete list of task-state
+ * writes this process may ever perform — a whitelist, not a door. The ruling
+ * append stays FIRST and authoritative; if the task write then fails, the
+ * ruling still stands and the response says so rather than claiming success.
  *
  *   GET  /api/state               full cockpit state (token required)
  *   GET  /api/activity?page=N     unified feed, 25 per page (token required)
@@ -30,13 +37,35 @@ const PORT = Number(process.env.WEZBRIDGE_BOARD_PORT || 4272);
 const ENV_FILE = path.join(HERE, '.env.local');
 
 const { audit, loadTasks } = require(path.join(HERE, '..', 'scripts', 'fleet-steward.cjs'));
-const { evaluate } = require(path.join(HERE, '..', 'scripts', 'steward-gate.cjs'));
+const { evaluate, rulingCovers } = require(path.join(HERE, '..', 'scripts', 'steward-gate.cjs'));
 const { gateOf } = require(path.join(HERE, '..', 'scripts', 'fleet-board.cjs'));
 
 const VERBS = ['approved', 'deferred', 'cancelled'];
 const INBOX_KINDS = ['note', 'new-task', 'call-me'];
 const PAGE_SIZE = 25;
 const OPEN_STATES = ['ready', 'queued', 'running', 'review', 'blocked', 'failed'];
+
+/**
+ * THE WHITELIST (T-0143 D1). Every task-state write this process is capable of
+ * making is a value in this object. A verb mapped to `null` legitimately moves
+ * nothing. Adding a key here is the only way to widen it, which is the point.
+ *
+ *   cancelled → cancelled   the work is dead; *cancelar* means what it says.
+ *   approved  → ready + UN-GATE. Clearing `contract.gate` is not optional
+ *               garnish: DECISIONES is built from open tasks with
+ *               gateOf(t) === 'operator', and `ready` is an OPEN state, so a
+ *               state-only move would leave the approved card on screen
+ *               forever — the exact defect being fixed. Un-gating is what
+ *               `_intel/templates/decision-task.md` means by "the task
+ *               un-gates: state moves and the work dispatches like any other".
+ *   deferred  → nothing. Still legitimately gated; only the CARD hides, and
+ *               only while the ruling still covers it (see buildState).
+ */
+const TASK_TRANSITION = {
+  cancelled: { state: 'cancelled', ungate: false },
+  approved: { state: 'ready', ungate: true },
+  deferred: null,
+};
 
 // ---------------------------------------------------------------------------
 // token
@@ -157,6 +186,36 @@ function sparkline(now) {
   return buckets;
 }
 
+/**
+ * Everything a task file knows that the operator needs in order to DECIDE
+ * (T-0143 D3). The rows used to carry the title alone, so "T-0008 ready
+ * Oversight: whatsappbot self-driving wave program" was the whole of what the
+ * board could tell him about a task whose file already held the goal, the
+ * blocker, five acceptance criteria and its lease. The information existed and
+ * the UI threw it away.
+ *
+ * Only open tasks are ever projected, so this stays a small payload.
+ */
+function detailOf(t) {
+  const arr = (v) => (Array.isArray(v) ? v : []);
+  return {
+    goal: t.goal || '',
+    next_action: t.next_action || '',
+    blocker: t.blocker || '',
+    acceptance_criteria: arr(t.acceptance_criteria),
+    depends_on: arr(t.depends_on),
+    context_refs: arr(t.context_refs),
+    corr: t.corr || '',
+    kind: t.kind || '',
+    repo: t.repo || '',
+    attempt: t.attempt || null,
+    contract_mode: (t.contract && t.contract.mode) || null,
+    lease: t.lease ? { owner: t.lease.owner || null, expires_at: t.lease.expires_at || null } : null,
+    created_at: t.created_at || null,
+    updated_at: t.updated_at || null,
+  };
+}
+
 function buildState(now = Date.now()) {
   const tasks = loadTasks();
   const report = audit(tasks, now, INTEL);
@@ -167,8 +226,34 @@ function buildState(now = Date.now()) {
   const findingByTask = {};
   for (const f of report.findings) findingByTask[f.id] = f;
 
+  // Latest ruling per task — the deferral check below needs the CURRENT
+  // judgement, not any historical one.
+  const latestRuling = new Map();
+  for (const r of rulings) if (r && r.task) latestRuling.set(r.task, r);
+
+  const categoryOf = (t) => (findingByTask[t.id] && findingByTask[t.id].category) || 'awaiting-operator';
+
+  /**
+   * A deferred card hides while its ruling still covers it, using the gate's
+   * own `rulingCovers` rather than a second, divergent date rule.
+   *
+   * Scoped to `deferred` ON PURPOSE. `dispatched` also covers (24h grace), and
+   * honouring that here would silently hide a live operator gate for a day
+   * because someone else dispatched something — making a decision vanish is a
+   * worse defect than the one being fixed. Hidden cards are counted back into
+   * the payload below so "hidden" never means "gone".
+   */
+  const deferredHidden = [];
+  const isDeferredNow = (t) => {
+    const r = latestRuling.get(t.id);
+    if (!r || r.ruling !== 'deferred') return false;
+    if (!rulingCovers(r, { id: t.id, category: categoryOf(t) }, now)) return false;
+    deferredHidden.push({ id: t.id, repo: t.repo, title: t.title, until: r.until || null, why: r.why || '' });
+    return true;
+  };
+
   // DECISIONES: operator-gated open tasks — the reason this app exists.
-  const decisions = open.filter((t) => gateOf(t) === 'operator').map((t) => ({
+  const decisions = open.filter((t) => gateOf(t) === 'operator').filter((t) => !isDeferredNow(t)).map((t) => ({
     id: t.id,
     repo: t.repo,
     title: t.title,
@@ -176,7 +261,8 @@ function buildState(now = Date.now()) {
     updated_at: t.updated_at || t.created_at || null,
     question: t.blocker || (t.contract && t.contract._note) || t.next_action
       || (findingByTask[t.id] && findingByTask[t.id].why) || '',
-    category: (findingByTask[t.id] && findingByTask[t.id].category) || 'awaiting-operator',
+    category: categoryOf(t),
+    detail: detailOf(t),
   })).sort((a, b) => new Date(a.updated_at || 0) - new Date(b.updated_at || 0));
 
   const lastRuling = rulings.length ? rulings[rulings.length - 1] : null;
@@ -184,6 +270,7 @@ function buildState(now = Date.now()) {
   const inFlight = open.filter((t) => ['running', 'review'].includes(t.state)).map((t) => ({
     id: t.id, repo: t.repo, title: t.title, state: t.state,
     owner: (t.lease && t.lease.owner) || null, updated_at: t.updated_at || null,
+    detail: detailOf(t),
   }));
 
   const rest = open.filter((t) => gateOf(t) !== 'operator' && !['running', 'review'].includes(t.state));
@@ -191,6 +278,7 @@ function buildState(now = Date.now()) {
   for (const t of rest) {
     (byRepo[t.repo] = byRepo[t.repo] || []).push({
       id: t.id, title: t.title, state: t.state, updated_at: t.updated_at || t.created_at || null,
+      detail: detailOf(t),
     });
   }
 
@@ -224,6 +312,9 @@ function buildState(now = Date.now()) {
     last_turn_at: turn ? new Date(turn.at).toISOString() : null,
     snapshot_at: snapshotAt ? new Date(snapshotAt).toISOString() : null,
     decisions,
+    // Hidden, not gone: a deferral the operator forgot he made must still be
+    // countable from the screen he made it on.
+    deferred_hidden: deferredHidden,
     last_ruling: lastRuling,
     in_flight: inFlight,
     by_repo: byRepo,
@@ -291,6 +382,55 @@ function validateInboxNote(body) {
 
 function appendLine(file, obj) {
   fs.appendFileSync(file, JSON.stringify(obj) + '\n');
+}
+
+/**
+ * The audit trail the transition leaves IN the task file. A state change whose
+ * cause is only in another file is the same defect class as a ruling that never
+ * lands: readable from one side only. WHO, WHAT, WHEN and WHY, in the record
+ * that changed. Wording follows the line pane-0 wrote by hand on T-0126.
+ */
+function transitionNote(line, rule) {
+  const verb = line.ruling === 'cancelled' ? 'Cancelled' : 'Approved';
+  const tail = rule.ungate
+    ? ' Un-gated (contract.gate cleared) — dispatchable as ordinary ready work.'
+    : '';
+  return `${verb} by the operator via the fleet board ${line.at}: "${line.why}".${tail}`;
+}
+
+/**
+ * Apply the whitelisted transition for an already-appended ruling.
+ *
+ * Read-modify-write of the single task JSON: every other field is preserved by
+ * spread, so a field this file has never heard of survives untouched. NEVER
+ * throws — the caller has already written the ruling, and a thrown error there
+ * would turn "the ruling stands, the task did not move" into a 500 that tells
+ * the operator nothing about which half happened.
+ */
+function applyTransition(taskId, line) {
+  const rule = TASK_TRANSITION[line.ruling];
+  if (!rule) return { applied: false, reason: `${line.ruling} moves no task state` };
+
+  const dir = path.resolve(path.join(INTEL, 'tasks'));
+  const file = path.resolve(path.join(dir, `${taskId}.json`));
+  // validateRuling already whitelists the id charset, but a whitelist enforced
+  // only upstream is one refactor away from being a traversal.
+  if (path.dirname(file) !== dir) return { applied: false, error: 'task path outside the tasks directory' };
+
+  try {
+    const task = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const from = task.state;
+    const next = { ...task, state: rule.state, updated_at: line.at, next_action: transitionNote(line, rule) };
+    let ungated = false;
+    if (rule.ungate && next.contract && next.contract.gate === 'operator') {
+      next.contract = { ...next.contract, gate: null };
+      ungated = true;
+    }
+    fs.writeFileSync(file, JSON.stringify(next, null, 2));
+    return { applied: true, from, to: rule.state, ungated };
+  } catch (e) {
+    return { applied: false, error: String(e.message || e) };
+  }
 }
 
 /**
@@ -397,7 +537,19 @@ function createServer(token, { rateLimiter = makeRateLimiter() } = {}) {
         const report = audit(tasks, Date.now(), INTEL);
         const { error, line } = validateRuling(body, report.findings);
         if (error) return sendJson(res, 400, { error });
+        // ORDER IS THE CONTRACT: the ruling is the source of truth, so it lands
+        // before anything else is attempted. Everything below may fail without
+        // unwriting it.
         appendLine(path.join(INTEL, 'rulings.jsonl'), line);
+        log(`ruling appended: ${JSON.stringify(line)}`);
+
+        const transition = applyTransition(line.task, line);
+        if (transition.applied) {
+          log(`task transitioned: ${line.task} ${transition.from} → ${transition.to}${transition.ungated ? ' (un-gated)' : ''}`);
+        } else if (transition.error) {
+          log(`TASK NOT MOVED: ${line.task} — ${transition.error} (the ruling stands)`);
+        }
+
         // Approvals are a GO the orchestrator must act on, so they ALSO land in
         // the inbox its monitor watches. Deferrals/cancellations are complete
         // in themselves — the gate reads them directly.
@@ -406,10 +558,10 @@ function createServer(token, { rateLimiter = makeRateLimiter() } = {}) {
             type: 'operator-action', kind: 'approval',
             text: `Operator approved ${line.task} from the board: ${line.why}`,
             task: line.task, at: line.at, source: 'board-app',
+            task_transition: transition,
           });
         }
-        log(`ruling appended: ${JSON.stringify(line)}`);
-        return sendJson(res, 200, { ok: true, line });
+        return sendJson(res, 200, { ok: true, line, transition });
       }
 
       if (req.method === 'POST' && url.pathname === '/api/orchestrator-inbox') {
@@ -446,5 +598,6 @@ if (require.main === module) {
 
 module.exports = {
   createServer, loadToken, buildState, activityFeed, makeRateLimiter,
-  validateRuling, validateInboxNote, VERBS, INBOX_KINDS, PAGE_SIZE,
+  validateRuling, validateInboxNote, applyTransition, detailOf,
+  VERBS, INBOX_KINDS, PAGE_SIZE, TASK_TRANSITION,
 };

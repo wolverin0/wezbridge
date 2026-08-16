@@ -1,4 +1,4 @@
-import type { ActivityPage, BoardState, RulingLine, Verb } from './types';
+import type { ActivityPage, BoardState, RulingLine, Transition, Verb } from './types';
 
 const TOKEN_KEY = 'board-token';
 
@@ -38,7 +38,9 @@ export const fetchState = () => call<BoardState>('/api/state');
 export const fetchActivity = (page: number) => call<ActivityPage>(`/api/activity?page=${page}`);
 
 export const postRuling = (input: { task: string; verb: Verb; until?: string; note: string }) =>
-  call<{ ok: true; line: RulingLine }>('/api/rulings', { method: 'POST', body: JSON.stringify(input) });
+  call<{ ok: true; line: RulingLine; transition: Transition }>('/api/rulings', {
+    method: 'POST', body: JSON.stringify(input),
+  });
 
 export const postInbox = (input: { kind: 'note' | 'new-task' | 'call-me'; text: string }) =>
   call<{ ok: true; line: unknown }>('/api/orchestrator-inbox', { method: 'POST', body: JSON.stringify(input) });

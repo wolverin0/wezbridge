@@ -1,0 +1,118 @@
+{
+  "started_at": "2026-08-16T15:33:39.934Z",
+  "shots": [
+    "01-before-1880",
+    "02-decision-detail-1880",
+    "03-cancel-toast-1880",
+    "04-approve-toast-1880",
+    "05-defer-toast-1880",
+    "06-half-success-warn-1880",
+    "07-after-all-three-1880",
+    "08-decisiones-after-390",
+    "09-flota-detail-390",
+    "10-live-T-0105-detail-1880",
+    "11-live-T-0008-detail-1880",
+    "12-live-T-0008-detail-390"
+  ],
+  "checks": [
+    {
+      "name": "4 gated cards on screen before any ruling",
+      "pass": true,
+      "evidence": "4 cards"
+    },
+    {
+      "name": "decision card shows the blocker IN FULL, not truncated",
+      "pass": true,
+      "evidence": "question renders 480 of 480 chars, ending intact"
+    },
+    {
+      "name": "decision detail panel lists acceptance criteria",
+      "pass": true,
+      "evidence": "4 criteria rendered"
+    },
+    {
+      "name": "D2: cancel toast is unambiguous es-AR and never says \"fallo\"",
+      "pass": true,
+      "evidence": "\"T-9801 cancelada. La tarea pasó a cancelled.\""
+    },
+    {
+      "name": "D1: cancel moved the task to cancelled",
+      "pass": true,
+      "evidence": "state=cancelled, next_action=\"Cancelled by the operator via the fleet board 2026-08-16T15:33:41.743Z: \"no lo n…\""
+    },
+    {
+      "name": "D2: approve toast names the consequence",
+      "pass": true,
+      "evidence": "\"T-9802 aprobada — pasa a la cola de trabajo. La tarea pasó a ready.\""
+    },
+    {
+      "name": "D1: approve moved the task to ready AND un-gated it",
+      "pass": true,
+      "evidence": "state=ready gate=null mode kept=scoped_write"
+    },
+    {
+      "name": "D2: defer toast carries the date and never says \"fallo\"",
+      "pass": true,
+      "evidence": "\"T-9803 diferida hasta 23/8, 12:33 p. m..\""
+    },
+    {
+      "name": "D1: defer left the task state alone — it is still legitimately gated",
+      "pass": true,
+      "evidence": "state=blocked"
+    },
+    {
+      "name": "failure path: the ruling STANDS even though the task write failed",
+      "pass": true,
+      "evidence": "rulings 3 → 4, last=cancelled:T-9804"
+    },
+    {
+      "name": "failure path: the UI says which half happened, and says not to resend",
+      "pass": true,
+      "evidence": "\"Ojo: la decisión de T-9804 quedó registrada, pero la tarea NO se movió (ENOENT: no such file or directory, open 'C:\\\\Users\\\\pauol\\\\Ap\""
+    },
+    {
+      "name": "D1 THE DEFECT: cancelled / approved / deferred cards are all GONE on refresh",
+      "pass": true,
+      "evidence": "none of the three remain"
+    },
+    {
+      "name": "deferred is HIDDEN, not silently gone: the count is on screen",
+      "pass": true,
+      "evidence": "1 diferida, oculta hasta su fecha"
+    },
+    {
+      "name": "D3 phone: an expanded row shows goal + next_action, wrapped not clamped",
+      "pass": true,
+      "evidence": "first prose block renders 375 chars"
+    },
+    {
+      "name": "D3 live 1880: a real long-text task renders its full next_action",
+      "pass": true,
+      "evidence": "panel renders 2044 chars including the tail of a 1.3k-char next_action"
+    },
+    {
+      "name": "D3 live: acceptance criteria are a list, not a blob",
+      "pass": true,
+      "evidence": "5 criteria for T-0105"
+    },
+    {
+      "name": "D3 live 390: the same real task is fully readable on the phone",
+      "pass": true,
+      "evidence": "phone panel renders 1310 chars of real task text"
+    },
+    {
+      "name": "D3 live 390: no horizontal overflow with the panel open",
+      "pass": true,
+      "evidence": "scrollWidth - clientWidth = 0px"
+    },
+    {
+      "name": "zero console errors across every phase",
+      "pass": true,
+      "evidence": "clean"
+    }
+  ],
+  "console_errors": [],
+  "finished_at": "2026-08-16T15:33:45.145Z",
+  "sandbox": "C:\\Users\\pauol\\AppData\\Local\\Temp\\board-0143-P94YOw",
+  "verdict": "PASS"
+}

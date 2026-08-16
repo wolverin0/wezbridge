@@ -5,7 +5,7 @@ import { ageText } from '../format';
 import { EmptyBox, ErrorBox, Skeletons } from './bits';
 
 const TYPES: Array<{ key: ActivityItem['type']; label: string }> = [
-  { key: 'ruling', label: 'fallos' },
+  { key: 'ruling', label: 'decisiones' },
   { key: 'event', label: 'eventos' },
   { key: 'operator', label: 'operador' },
   { key: 'routine', label: 'rutinas' },

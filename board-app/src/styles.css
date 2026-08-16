@@ -313,6 +313,144 @@ textarea { min-height: 72px; resize: vertical; }
 }
 .last-ruled .mono { color: var(--dim); }
 
+.deferred-note {
+  margin: 14px 0 4px;
+  color: var(--faint);
+  font-size: 0.82rem;
+}
+.deferred-note summary { cursor: pointer; padding: 6px 0; }
+.deferred-note ul { margin: 4px 0 0; padding-left: 18px; display: grid; gap: 4px; }
+.deferred-note .mono { color: var(--dim); }
+
+/* ------------------------------------------------------------ task detail */
+
+/* Expanded task information. NOT a card: a card inside a decision card would be
+ * nested elevation that means nothing. Structure comes from a left hairline and
+ * label/value rhythm, matching the cockpit density used everywhere else.
+ *
+ * The hierarchy is the whole point (see TaskDetail.tsx). "What it needs" is the
+ * only thing set at full ink and full size; everything under it steps down in
+ * weight and color so the eye lands on the answer first. */
+.tdetail {
+  margin-top: 12px;
+  padding: 12px 0 4px 14px;
+  border-top: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+  display: grid;
+  gap: 14px;
+  font-size: 0.86rem;
+}
+
+.tdetail .k {
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+  margin-bottom: 4px;
+}
+
+/* Long text WRAPS. Clamping a goal or a blocker to one line is the defect this
+ * panel exists to fix, so there is deliberately no line-clamp anywhere here. */
+.tdetail .prose {
+  margin: 0;
+  color: var(--dim);
+  line-height: 1.55;
+  max-width: 68ch;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The lead: the answer to "what does this need next?". Larger, full ink, and
+   first — the five-second read. */
+.tdetail .prose.lead {
+  color: var(--ink);
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+.tdetail .prose.none { color: var(--faint); font-style: italic; }
+
+/* Emphasis comes from type weight, ink and label color — NOT a colored
+   side-stripe. A thick border-left accent is the AI-slop tell impeccable bans
+   outright, and it would fight the 1px hairline this panel already hangs on. */
+.tneed .k { color: var(--accent); }
+.tneed.blocked .k { color: var(--bad); }
+.tneed.blocked .prose.lead { color: color-mix(in oklab, var(--bad) 30%, var(--ink)); }
+
+.tdetail .crit {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 5px;
+  color: var(--dim);
+  max-width: 68ch;
+}
+.tdetail .crit li::marker { color: var(--accent-dim); font-family: var(--mono); font-size: 0.8em; }
+
+.tdetail .refs { margin: 6px 0 0; padding-left: 18px; color: var(--dim); display: grid; gap: 3px; }
+
+/* Three facts that change a decision at a glance. Everything else is folded. */
+.tstrip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.tmeta { display: flex; align-items: baseline; gap: 7px; }
+.tmeta .k {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.tmeta .v { color: var(--dim); font-size: 0.8rem; }
+
+.tmore { font-size: 0.82rem; }
+.tmore summary {
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+  padding: 4px 0;
+}
+.tmore summary:hover { color: var(--dim); }
+.tmore-body { display: grid; gap: 6px; padding: 6px 0 2px; }
+
+.tdetail-src {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--faint);
+  margin-top: 4px;
+}
+
+.detail-toggle {
+  margin-top: 10px;
+  min-height: 34px;
+  padding: 0 10px;
+  font-size: 0.78rem;
+}
+
+/* Expandable rows in FLOTA. The whole row is the target; the caret is the only
+ * added chrome, and it is the same one the repo groups already use. */
+.task-row { cursor: pointer; }
+.task-row td:first-child::before {
+  content: '▸';
+  color: var(--faint);
+  display: inline-block;
+  width: 14px;
+  transition: transform 140ms var(--ease-out);
+}
+.task-row.open td:first-child::before { transform: rotate(90deg); }
+.task-row:hover td { background: var(--panel); }
+.task-row.open td { background: var(--panel); border-bottom-color: transparent; }
+.task-row-detail td { background: var(--panel); padding-bottom: 14px; }
+
 /* ------------------------------------------------------------------ fleet */
 
 .section { margin-bottom: 26px; }
@@ -449,6 +587,16 @@ td.dim { color: var(--dim); }
 }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
 .toast.ok { border-color: color-mix(in oklab, var(--ok) 40%, transparent); }
+/* Half-success: the ruling landed, the task did not move. Amber because it is
+   neither a clean confirmation nor a failure, and the operator must act on it.
+   The BORDER carries the amber; the text stays full ink. This is the most
+   important message the app can show, so it gets the highest contrast, not the
+   most decorative color. */
+.toast.warn {
+  border-color: var(--warn);
+  border-width: 1px;
+  background: color-mix(in oklab, var(--warn) 8%, var(--panel-2));
+}
 .toast.bad { border-color: color-mix(in oklab, var(--bad) 45%, transparent); }
 .toast .line {
   display: block;

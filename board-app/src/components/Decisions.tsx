@@ -1,11 +1,13 @@
 import { useState } from 'react';
-import type { Decision, Finding, RulingLine, Verb } from '../types';
+import type { Decision, DeferredHidden, Finding, RulingLine, Verb } from '../types';
 import { ageText, fmtDate } from '../format';
 import { EmptyBox } from './bits';
+import TaskDetail from './TaskDetail';
 
 interface Props {
   decisions: Decision[];
   findings: Finding[];
+  deferred: DeferredHidden[];
   lastRuling: RulingLine | null;
   onRule: (input: { task: string; verb: Verb; until?: string; note: string }) => Promise<void>;
   onNote: (text: string) => Promise<void>;
@@ -29,6 +31,7 @@ function DecisionCard({ d, onRule, onNote, busy }: {
   const [note, setNote] = useState('');
   const [customDate, setCustomDate] = useState('');
   const [sending, setSending] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
 
   const submit = async () => {
     if (!composer || !note.trim()) return;
@@ -65,7 +68,29 @@ function DecisionCard({ d, onRule, onNote, busy }: {
         <span className="age">{ageText(d.updated_at)}</span>
       </header>
       <div className="title">{d.title}</div>
+      {/* The question is what the operator is answering: it wraps in full,
+          never clamped. A truncated blocker is the same as no blocker. */}
       <div className="question">{d.question || 'Sin pregunta registrada — eso ya es un problema.'}</div>
+
+      {d.detail && (
+        <>
+          <button
+            className="btn ghost detail-toggle"
+            type="button"
+            aria-expanded={detailOpen}
+            aria-controls={`ddetail-${d.id}`}
+            onClick={() => setDetailOpen((v) => !v)}
+          >
+            {detailOpen ? 'Ocultar detalle' : 'Ver detalle'}
+          </button>
+          {detailOpen && (
+            <div id={`ddetail-${d.id}`}>
+              {/* The question above IS the blocker; don't print it twice. */}
+              <TaskDetail d={d.detail} id={d.id} shown={d.question} />
+            </div>
+          )}
+        </>
+      )}
 
       {!composer && (
         <div className="actions">
@@ -132,7 +157,7 @@ function DecisionCard({ d, onRule, onNote, busy }: {
             value={note}
             autoFocus
             onChange={(e) => setNote(e.target.value)}
-            placeholder="El porqué queda escrito en el fallo, textual."
+            placeholder="El porqué queda escrito en la decisión, textual."
           />
           <div className="row">
             <button className="btn ghost" type="button" onClick={() => { setComposer(null); setNote(''); }}>
@@ -148,14 +173,14 @@ function DecisionCard({ d, onRule, onNote, busy }: {
   );
 }
 
-export default function Decisions({ decisions, findings, lastRuling, onRule, onNote, resolving }: Props) {
+export default function Decisions({ decisions, findings, deferred, lastRuling, onRule, onNote, resolving }: Props) {
   const findingCards: Decision[] = findings.map((f) => ({
     id: f.id,
     repo: f.repo,
     title: f.title || f.id,
     state: f.category,
     updated_at: new Date(Date.now() - f.age_hours * 3600000).toISOString(),
-    question: `${f.category}${f.unruled ? ' — SIN FALLO, el gate está rojo por esto' : ''}: ${f.why}`,
+    question: `${f.category}${f.unruled ? ' — SIN DECIDIR, el gate está rojo por esto' : ''}: ${f.why}`,
     category: f.category,
   }));
 
@@ -172,18 +197,34 @@ export default function Decisions({ decisions, findings, lastRuling, onRule, onN
           </EmptyBox>
           {lastRuling && (
             <p className="last-ruled">
-              Último fallo: <span className="mono">{lastRuling.ruling}: {lastRuling.task}</span>{' '}
+              Última decisión: <span className="mono">{lastRuling.ruling}: {lastRuling.task}</span>{' '}
               {ageText(lastRuling.at)} — {lastRuling.why.slice(0, 120)}
             </p>
           )}
         </>
       )}
 
+      {/* Diferidas are HIDDEN, not gone. A deferral the operator forgot making
+          has to stay countable from the screen he made it on. */}
+      {deferred.length > 0 && (
+        <details className="deferred-note">
+          <summary>{deferred.length} diferida{deferred.length > 1 ? 's' : ''}, oculta{deferred.length > 1 ? 's' : ''} hasta su fecha</summary>
+          <ul>
+            {deferred.map((x) => (
+              <li key={x.id}>
+                <span className="mono">{x.id}</span> hasta{' '}
+                {x.until ? fmtDate.format(new Date(x.until)) : 'sin fecha'} — {x.why}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+
       {findingCards.length > 0 && (
         <section aria-label="Hallazgos del steward">
           <h3 className="findings-head">
             Hallazgos del steward · {findingCards.length}
-            {findings.some((f) => f.unruled) && <span className="unruled-flag"> — hay sin fallo</span>}
+            {findings.some((f) => f.unruled) && <span className="unruled-flag"> — hay sin decidir</span>}
           </h3>
           {findingCards.map((d) => (
             <DecisionCard key={`f-${d.id}`} d={d} onRule={onRule} onNote={onNote} busy={resolving.has(d.id)} />
