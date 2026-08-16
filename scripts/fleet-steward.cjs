@@ -28,6 +28,7 @@
  */
 const fs = require('node:fs');
 const path = require('node:path');
+const { auditRoutines } = require('./routine-audit.cjs');
 
 const HOURS = (h) => h * 3600 * 1000;
 
@@ -101,7 +102,14 @@ const ageMs = (task, now, dir) => now - lastActivity(task, dir);
  */
 function classify(task, now, dir = intelDir()) {
   const age = ageMs(task, now, dir);
-  const gated = Boolean(task.contract && task.contract.gate === 'operator');
+  // The gate lives in EITHER place, and reading one is a real bug found
+  // 2026-08-14 by rendering the board: T-0072 (pather) carries a top-level
+  // `gate: "operator"` with `contract: null`, so it was classified
+  // `blocked-not-gated` — a category with a 48h deadline — when it is in fact
+  // waiting on the operator BY DESIGN and should never expire. The effect was
+  // doubly wrong: it nagged about a correct state, and it stayed out of the
+  // "waiting on you" list where the operator would have seen the question.
+  const gated = (task.contract && task.contract.gate) === 'operator' || task.gate === 'operator';
   // `owner` is the lease holder, and it is the correct routing key for any
   // follow-up — NOT the repo. A staleness reconcile for T-0008 was sent to the
   // whatsappbot pane because the task names that repo, while the lease was held
@@ -159,10 +167,23 @@ function classify(task, now, dir = intelDir()) {
 }
 
 function audit(tasks, now = Date.now(), dir = intelDir()) {
-  const findings = tasks.map((t) => classify(t, now, dir)).filter(Boolean);
+  // Two sources, one findings stream. Scheduled routines write evidence files
+  // that nothing used to read; merging them here means they inherit the gate
+  // rather than needing a second enforcement chain that could rot separately.
+  const findings = [
+    ...tasks.map((t) => classify(t, now, dir)).filter(Boolean),
+    ...auditRoutines(dir, now),
+  ];
   // Operator-owed items first: those are the ones that block other people's work.
-  const rank = { 'awaiting-operator': 0, 'abandoned-lease': 1, 'stale-running': 2, 'stale-review': 3, 'stale-failed': 4, 'blocked-not-gated': 5, idle: 6 };
-  findings.sort((a, b) => (rank[a.category] - rank[b.category]) || (b.age_hours - a.age_hours));
+  // routine-silent ranks high because a routine that stopped firing invalidates
+  // every later "clean" reading, the way a dead sensor does.
+  const rank = {
+    'awaiting-operator': 0, 'abandoned-lease': 1, 'routine-silent': 2, 'stale-running': 3,
+    'routine-void': 4, 'routine-findings': 5, 'stale-review': 6, 'stale-failed': 7,
+    'blocked-not-gated': 8, idle: 9,
+  };
+  const order = (f) => (rank[f.category] === undefined ? 99 : rank[f.category]);
+  findings.sort((a, b) => (order(a) - order(b)) || (b.age_hours - a.age_hours));
   const byCategory = {};
   for (const f of findings) byCategory[f.category] = (byCategory[f.category] || 0) + 1;
   const open = tasks.filter((t) => !['done', 'cancelled'].includes(t.state)).length;
@@ -171,9 +192,11 @@ function audit(tasks, now = Date.now(), dir = intelDir()) {
 
 function render(report) {
   if (!report.findings.length) {
-    return `fleet-steward: ${report.open} open tasks, none stale. Nothing owed.`;
+    return `fleet-steward: ${report.open} open tasks, none stale. No routine output pending. Nothing owed.`;
   }
-  const lines = [`fleet-steward: ${report.findings.length} of ${report.open} open tasks need a look.`, ''];
+  // Not "N of M open tasks" any more: routine findings are not tasks, and a
+  // count that mixes them would misreport the backlog in both directions.
+  const lines = [`fleet-steward: ${report.findings.length} item(s) need a look (${report.open} open tasks).`, ''];
   let last = null;
   for (const f of report.findings) {
     if (f.category !== last) { lines.push(`[${f.category}]`); last = f.category; }

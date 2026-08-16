@@ -11,8 +11,25 @@ const script = fs.readFileSync(
 );
 
 test('roadmap monitor rejects UNVERIFIED as delivery success', () => {
-  assert.ok(script.includes("(?<!UN)VERIFIED \\(echo found in pane\\)"));
-  assert.doesNotMatch(script, /-match ['"]VERIFIED['"]/);
+  // Was asserting the literal `(?<!UN)VERIFIED \(echo found in pane\)`, which
+  // went stale when delivery moved from echo-detection to composer-clearance:
+  // red test, correct script. Worse, a string match cannot tell whether the
+  // negative lookbehind actually works — the whole point of the pattern.
+  //
+  // So: extract the pattern the script really uses and RUN it. PowerShell and
+  // JavaScript share this regex syntax, so the behaviour is genuinely testable.
+  const line = script.split(/\r?\n/).find((l) => l.includes('$deliveryVerified'));
+  assert.ok(line, 'no delivery-verification line found at all');
+  const [, pattern] = line.match(/-match\s+'(.+)'\s*$/) || [];
+  assert.ok(pattern, `could not extract the delivery pattern from: ${line}`);
+
+  const rx = new RegExp(pattern);
+  assert.match('poke-pane OK: 182 chars -> pane 7 — VERIFIED (composer cleared)', rx);
+  assert.doesNotMatch('poke-pane: UNVERIFIED (composer cleared)', rx,
+    'UNVERIFIED must not read as delivered — the lookbehind is the whole guard');
+  assert.doesNotMatch('poke-pane: VERIFIED (echo found in pane)', rx,
+    'echo in the pane is not delivery proof');
+  assert.doesNotMatch('VERIFIED', rx, 'a bare VERIFIED must not satisfy the check');
 });
 
 test('roadmap monitor cannot spawn panes or launch an AI CLI', () => {

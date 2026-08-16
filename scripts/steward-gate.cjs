@@ -48,6 +48,13 @@ const DEADLINES = {
   'stale-failed': 48,
   'awaiting-operator': Infinity,   // waiting on the operator IS the correct state
   idle: 72,
+  // Scheduled-routine output. A routine that ran and found something, or that
+  // could not measure, is worthless if nobody looks; these deadlines are what
+  // make looking mandatory. routine-silent is tightest because it means the
+  // schedule itself has stopped, which silently invalidates everything after it.
+  'routine-silent': 24,
+  'routine-void': 48,
+  'routine-findings': 48,
 };
 
 /** A ruling stops covering a finding once this passes (dispatched only). */
@@ -72,6 +79,17 @@ function rulingCovers(ruling, finding, now) {
     case 'cancelled':
     case 'operator-gated':
       return true;                                   // permanent by design
+    // `resolved` — the work was HARVESTED AND CLOSED, verified against its
+    // acceptance criteria. Added 2026-08-14 because the first autonomous turn
+    // hit the gap and said so: step 4 of the routine (harvest and close)
+    // produced a decision that step 3's vocabulary could not express. It had to
+    // log three closures as `dispatched`, which is wrong on its face and only
+    // defensible because it fails safe. `cancelled` was no better — that word
+    // means the work is DEAD, and a reader would misread a completed task as an
+    // abandoned one. Permanent like the other two: finished work does not
+    // become unfinished.
+    case 'resolved':
+      return true;
     case 'deferred': {
       if (!ruling.until) return false;               // a deferral with no end is a shrug
       const until = Date.parse(ruling.until);
@@ -115,21 +133,46 @@ function readRulings(file) {
   } catch { return []; }        // absent file is legitimately zero rulings
 }
 
+/**
+ * Parse a steward report, or throw. Used for both exit paths below so that
+ * "is this a valid report?" is decided by the CONTENT, in one place, rather
+ * than by the exit code in two.
+ */
+function parseReport(text) {
+  const report = JSON.parse(text);
+  if (!report || !Array.isArray(report.findings)) throw new Error('no findings array');
+  return report;
+}
+
 function loadFindings() {
   const from = process.argv.indexOf('--from');
-  if (from > -1) return JSON.parse(fs.readFileSync(process.argv[from + 1], 'utf8'));
+  if (from > -1) return parseReport(fs.readFileSync(process.argv[from + 1], 'utf8'));
   // No --from: run the steward ourselves. If it cannot run we must say UNKNOWN,
   // never "0 findings" — a scan that did not happen is not a clean scan.
-  const out = execFileSync(process.execPath, [path.join(HERE, 'fleet-steward.cjs'), '--json'],
-    { encoding: 'utf8', timeout: 120000, maxBuffer: 32 * 1024 * 1024 });
-  return JSON.parse(out);
+  //
+  // THE STEWARD EXITS 1 ON PURPOSE when the operator personally owes something,
+  // and execFileSync throws on any non-zero exit. So this used to report UNKNOWN
+  // exactly when an operator decision was pending — the gate going blind in the
+  // one situation it exists to surface. Latent until 2026-08-14, when fixing the
+  // top-level `gate` read reclassified T-0072 to awaiting-operator and fired it
+  // for the first time. Exit 3 pokes rather than passing silently, so it failed
+  // loudly, which is the only reason it was noticed at all.
+  //
+  // A REPORT IS VALID BECAUSE IT PARSES, NOT BECAUSE THE EXIT CODE WAS 0. But a
+  // crash must still be UNKNOWN, so unparseable stdout is rethrown either way.
+  try {
+    return parseReport(execFileSync(process.execPath, [path.join(HERE, 'fleet-steward.cjs'), '--json'],
+      { encoding: 'utf8', timeout: 120000, maxBuffer: 32 * 1024 * 1024 }));
+  } catch (e) {
+    if (e && typeof e.status === 'number' && e.status !== 0 && e.stdout) return parseReport(e.stdout);
+    throw e;
+  }
 }
 
 function main() {
   let report;
   try {
-    report = loadFindings();
-    if (!report || !Array.isArray(report.findings)) throw new Error('no findings array');
+    report = loadFindings();      // validates shape itself, see parseReport
   } catch (e) {
     console.log(`steward-gate UNKNOWN: could not obtain findings — ${String(e.message).split('\n')[0]}`);
     process.exit(3);

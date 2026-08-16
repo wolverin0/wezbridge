@@ -8,6 +8,20 @@ const path = require('node:path');
 const steward = require('../scripts/fleet-steward.cjs');
 
 const NOW = Date.parse('2026-07-29T12:00:00.000Z');
+
+// Every audit() call gets an ISOLATED empty intel dir. Without it, audit()
+// falls back to the REAL _intel and live routine-findings leak into these
+// fixtures — which is exactly what happened on 2026-08-14 when the pilot-
+// liveness probe started writing every 15 minutes and seven of these tests
+// went red on production data. A unit test that reads live state is a flake
+// with a delay timer.
+function emptyIntel() {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'steward-empty-'));
+  fs.mkdirSync(path.join(d, 'routine-findings'), { recursive: true });
+  return d;
+}
+const EMPTY = emptyIntel();
+
 const hoursAgo = (h) => new Date(NOW - h * 3600000).toISOString();
 
 test('a gated task the operator never ruled on is the top finding', () => {
@@ -20,7 +34,7 @@ test('a gated task the operator never ruled on is the top finding', () => {
     contract: { gate: 'operator' }, blocker: 'operator gate (graph contract)',
     updated_at: hoursAgo(72),
   };
-  const r = steward.audit([t], NOW);
+  const r = steward.audit([t], NOW, EMPTY);
   assert.strictEqual(r.findings.length, 1);
   assert.strictEqual(r.findings[0].category, 'awaiting-operator');
   assert.strictEqual(r.findings[0].age_hours, 72);
@@ -33,7 +47,7 @@ test('a gated task blocked only an hour is NOT stale — gating is not a defect'
     id: 'T-1', repo: 'mutual', state: 'blocked', contract: { gate: 'operator' },
     updated_at: hoursAgo(1),
   };
-  assert.deepStrictEqual(steward.audit([t], NOW).findings, []);
+  assert.deepStrictEqual(steward.audit([t], NOW, EMPTY).findings, []);
 });
 
 test('the lease field name matches a REAL task record, not an invented one', () => {
@@ -63,7 +77,7 @@ test('an expired lease plus no activity is reported, naming who dropped it', () 
     updated_at: hoursAgo(30),
     lease: { owner: 'pane-29', expires_at: hoursAgo(24) },
   };
-  const f = steward.audit([t], NOW).findings;
+  const f = steward.audit([t], NOW, EMPTY).findings;
   assert.strictEqual(f.length, 1);
   assert.strictEqual(f[0].category, 'abandoned-lease');
   assert.match(f[0].why, /pane-29/, 'the report must name who dropped it');
@@ -77,7 +91,7 @@ test('an expired lease on a task that is still ACTIVE is not abandoned', () => {
     updated_at: hoursAgo(1),
     lease: { owner: 'pane-29', expires_at: hoursAgo(20) },
   };
-  assert.deepStrictEqual(steward.audit([t], NOW).findings, []);
+  assert.deepStrictEqual(steward.audit([t], NOW, EMPTY).findings, []);
 });
 
 test('a running task with a LIVE lease is left alone', () => {
@@ -85,7 +99,7 @@ test('a running task with a LIVE lease is left alone', () => {
     id: 'T-3', repo: 'mutual', state: 'running', updated_at: hoursAgo(20),
     lease: { owner: 'pane-37', expires_at: new Date(NOW + 3600000).toISOString() },
   };
-  assert.deepStrictEqual(steward.audit([t], NOW).findings, []);
+  assert.deepStrictEqual(steward.audit([t], NOW, EMPTY).findings, []);
 });
 
 test('a run log counts as activity even when the ledger has not moved', () => {
@@ -121,7 +135,7 @@ test('done and cancelled tasks are never reported however old', () => {
     { id: 'T-4', state: 'done', updated_at: hoursAgo(10000) },
     { id: 'T-5', state: 'cancelled', updated_at: hoursAgo(10000) },
   ];
-  assert.deepStrictEqual(steward.audit(tasks, NOW).findings, []);
+  assert.deepStrictEqual(steward.audit(tasks, NOW, EMPTY).findings, []);
 });
 
 test('operator-owed items sort above everything else', () => {
@@ -131,12 +145,12 @@ test('operator-owed items sort above everything else', () => {
     { id: 'T-idle', repo: 'a', state: 'queued', updated_at: hoursAgo(500) },
     { id: 'T-gate', repo: 'b', state: 'blocked', contract: { gate: 'operator' }, updated_at: hoursAgo(25) },
   ];
-  const f = steward.audit(tasks, NOW).findings;
+  const f = steward.audit(tasks, NOW, EMPTY).findings;
   assert.strictEqual(f[0].id, 'T-gate', 'the operator-owed item must lead despite being far younger');
 });
 
 test('a clean fleet says so plainly instead of printing an empty report', () => {
-  const out = steward.render(steward.audit([{ id: 'T-6', state: 'done' }], NOW));
+  const out = steward.render(steward.audit([{ id: 'T-6', state: 'done' }], NOW, EMPTY));
   assert.match(out, /none stale/);
 });
 
@@ -144,7 +158,7 @@ test('the steward never proposes closing anything', () => {
   // Guard against a future "helpful" change: auto-closing is how real work
   // disappears. Every category is a judgement call for the operator.
   const t = { id: 'T-7', repo: 'x', state: 'queued', title: 'old', updated_at: hoursAgo(999) };
-  const out = steward.render(steward.audit([t], NOW));
+  const out = steward.render(steward.audit([t], NOW, EMPTY));
   assert.match(out, /never closes anything/);
   assert.ok(!/closed|closing T-/i.test(out.replace(/never closes anything/, '')),
     'the report must not claim to have closed anything');
@@ -176,4 +190,22 @@ test('every finding names the lease owner, because that is the routing key', () 
   } finally {
     fs.rmSync(empty, { recursive: true, force: true });
   }
+});
+
+test('an operator gate declared at the TOP LEVEL is honoured, not just contract.gate', () => {
+  // Found 2026-08-14 by rendering the fleet board: T-0072 (pather) carries
+  // `gate: "operator"` with `contract: null`. Reading only contract.gate
+  // classified it `blocked-not-gated`, a category with a 48h deadline, so the
+  // gate nagged daily about a task that is waiting on the operator BY DESIGN —
+  // and it stayed out of the "waiting on you" list where the question would
+  // actually have been seen. Wrong in both directions at once.
+  const base = {
+    id: 'T-TOP', repo: 'pather', state: 'blocked',
+    updated_at: hoursAgo(200), blocker: 'operator must authorize the migration',
+  };
+  assert.equal(steward.classify({ ...base, gate: 'operator', contract: null }, NOW).category, 'awaiting-operator');
+  assert.equal(steward.classify({ ...base, contract: { gate: 'operator' } }, NOW).category, 'awaiting-operator');
+  // An ungated blocked task must STILL be flagged, or this fix would have
+  // silenced the whole category rather than routing one task correctly.
+  assert.equal(steward.classify({ ...base }, NOW).category, 'blocked-not-gated');
 });

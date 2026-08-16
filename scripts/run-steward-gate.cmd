@@ -41,6 +41,18 @@ set "MSG=%INTEL%\steward-gate-poke.txt"
 node "%REPO%\scripts\steward-gate.cjs" > "%LATEST%" 2>&1
 set "RESULT=%ERRORLEVEL%"
 
+REM Regenerate the operator's board. It runs on EVERY path including UNKNOWN,
+REM because a board that stops updating when the gate cannot see is a board that
+REM shows yesterday's numbers with today's confidence. The page carries its own
+REM generation time and shouts when it is stale, so the honest move is to keep
+REM writing it and let it report what it actually knows.
+REM
+REM Its failure must never change this job's verdict: the gate's exit code is
+REM about the FLEET, and a renderer falling over says nothing about the fleet.
+REM So RESULT is captured above and restored below, and errors go to the log.
+node "%REPO%\scripts\fleet-board.cjs" >> "%INTEL%\steward-gate.log" 2>&1
+if errorlevel 1 echo [%DATE% %TIME%] WARN: fleet-board failed to render, board.html is now STALE >> "%INTEL%\steward-gate.log"
+
 REM One log line on EVERY path. A scheduled job that logs nothing is
 REM indistinguishable from one that never ran.
 echo [%DATE% %TIME%] exit=%RESULT% >> "%INTEL%\steward-gate.log"

@@ -133,3 +133,95 @@ test('mixed board: one ruled, one not — RED, and it names the unruled one', ()
   assert.strictEqual(r.unruled.length, 1);
   assert.strictEqual(r.unruled[0].id, 'T-B');
 });
+
+// ---------------------------------------------------------------------------
+// The gate must not go blind when the operator owes something
+// ---------------------------------------------------------------------------
+
+const { execFileSync } = require('node:child_process');
+const gatePath = require('node:path').join(__dirname, '..', 'scripts', 'steward-gate.cjs');
+
+function runGate(args, intelDir) {
+  try {
+    const stdout = execFileSync(process.execPath, [gatePath, ...args],
+      { encoding: 'utf8', env: { ...process.env, WEZBRIDGE_INTEL_DIR: intelDir } });
+    return { code: 0, stdout };
+  } catch (e) { return { code: e.status, stdout: String(e.stdout || '') }; }
+}
+
+test('a steward that exits NON-ZERO still yields a usable report', () => {
+  // MUST exercise the SPAWNED steward, not --from. The first version of this
+  // test used --from, which never reaches execFileSync at all, so removing the
+  // whole fix left it green: a test passing for the wrong reason, again.
+  // Here the REAL steward runs against a real ledger containing an
+  // operator-gated blocked task, which makes it genuinely exit 1.
+  const os = require('node:os'); const fsx = require('node:fs'); const p = require('node:path');
+  const dir = fsx.mkdtempSync(p.join(os.tmpdir(), 'gate-spawn-'));
+  fsx.mkdirSync(p.join(dir, 'tasks'));
+  const old = new Date(Date.now() - 400 * 3600000).toISOString();
+  // makes the steward exit 1
+  fsx.writeFileSync(p.join(dir, 'tasks', 'T-GATE.json'), JSON.stringify({
+    id: 'T-GATE', repo: 'r', state: 'blocked', gate: 'operator',
+    blocker: 'operator owes an answer', updated_at: old, title: 'gated',
+  }));
+  // and an unruled idle task, so a gate that really evaluated must say RED
+  fsx.writeFileSync(p.join(dir, 'tasks', 'T-IDLE.json'), JSON.stringify({
+    id: 'T-IDLE', repo: 'r', state: 'ready', updated_at: old, title: 'idle',
+  }));
+  fsx.writeFileSync(p.join(dir, 'rulings.jsonl'), '');
+
+  const res = runGate([], dir);
+  assert.notStrictEqual(res.code, 3, 'UNKNOWN here means the gate went blind because the steward exited 1');
+  assert.strictEqual(res.code, 1, 'it must reach the RED verdict the findings warrant');
+  assert.match(res.stdout, /T-IDLE/);
+});
+
+test('a report supplied via --from is validated the same way', () => {
+  // fleet-steward exits 1 on purpose when the operator personally owes
+  // something, and execFileSync throws on any non-zero exit. That made the gate
+  // report UNKNOWN precisely when an operator decision was pending — blind in
+  // the one situation it exists to surface. Found 2026-08-14. A report is valid
+  // because it PARSES, not because the exit code was 0.
+  const os = require('node:os'); const fsx = require('node:fs'); const p = require('node:path');
+  const dir = fsx.mkdtempSync(p.join(os.tmpdir(), 'gate-exit-'));
+  const findings = p.join(dir, 'findings.json');
+  fsx.writeFileSync(findings, JSON.stringify({
+    findings: [{ id: 'T-X', repo: 'r', category: 'idle', age_hours: 999, title: 't' }],
+  }));
+  fsx.writeFileSync(p.join(dir, 'rulings.jsonl'), '');
+  const res = runGate(['--from', findings], dir);
+  assert.strictEqual(res.code, 1, 'must reach a RED verdict, not UNKNOWN(3)');
+  assert.match(res.stdout, /RED/);
+});
+
+test('genuinely unreadable input is still UNKNOWN, never a verdict', () => {
+  // The fix above must not have turned "cannot see" into "nothing found".
+  const os = require('node:os'); const fsx = require('node:fs'); const p = require('node:path');
+  const dir = fsx.mkdtempSync(p.join(os.tmpdir(), 'gate-unk-'));
+  assert.strictEqual(runGate(['--from', p.join(dir, 'missing.json')], dir).code, 3, 'missing file');
+  const bad = p.join(dir, 'bad.json');
+  fsx.writeFileSync(bad, '{not json');
+  assert.strictEqual(runGate(['--from', bad], dir).code, 3, 'unparseable');
+  const wrong = p.join(dir, 'wrong.json');
+  fsx.writeFileSync(wrong, '{"findings":"not an array"}');
+  assert.strictEqual(runGate(['--from', wrong], dir).code, 3, 'right JSON, wrong shape');
+});
+
+test('`resolved` permanently covers a finding, and an unknown word never does', () => {
+  // Added 2026-08-14 after the first autonomous turn reported that the enum had
+  // no word for "harvested and closed" and had to log three closures as
+  // `dispatched`. `cancelled` would have been just as wrong in the other
+  // direction: it says the work is dead, not finished.
+  const f = { id: 'T-1', category: 'stale-review', age_hours: 999 };
+  const now = Date.parse('2026-08-14T12:00:00Z');
+  const at = '2026-01-01T00:00:00Z';          // ancient on purpose: permanence is the point
+  assert.strictEqual(gate.rulingCovers({ task: 'T-1', category: 'stale-review', ruling: 'resolved', at }, f, now), true);
+  // and it must not silently cover a DIFFERENT category — closing a review says
+  // nothing about the same task later going stale-failed
+  assert.strictEqual(gate.rulingCovers({ task: 'T-1', category: 'idle', ruling: 'resolved', at }, f, now), false);
+  // the enum stays closed: a plausible-looking word is not a ruling
+  for (const word of ['closed', 'done', 'harvested', 'complete', '', null]) {
+    assert.strictEqual(gate.rulingCovers({ task: 'T-1', category: 'stale-review', ruling: word, at }, f, now), false,
+      `"${word}" was accepted as a ruling`);
+  }
+});
