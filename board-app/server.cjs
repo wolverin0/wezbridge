@@ -37,6 +37,7 @@ const PORT = Number(process.env.WEZBRIDGE_BOARD_PORT || 4272);
 const ENV_FILE = path.join(HERE, '.env.local');
 
 const { audit, loadTasks } = require(path.join(HERE, '..', 'scripts', 'fleet-steward.cjs'));
+const { loadRuns, boardVerdict } = require(path.join(HERE, '..', 'scripts', 'routine-audit.cjs'));
 const { evaluate, rulingCovers } = require(path.join(HERE, '..', 'scripts', 'steward-gate.cjs'));
 const { gateOf } = require(path.join(HERE, '..', 'scripts', 'fleet-board.cjs'));
 
@@ -119,31 +120,27 @@ function lastTurn() {
   } catch { return null; }
 }
 
+/**
+ * Routine runs for the board. The reading and the verdict wording both come
+ * from routine-audit, which OWNS the findings-file contract (T-0147).
+ *
+ * This function used to re-implement that resolution. So did fleet-board. Both
+ * copies got the cwd wrong and both were fixed separately, which is three
+ * copies of four lines and two identical bugs. `test/routine-findings-single-
+ * reader.test.cjs` now fails if a fourth one appears.
+ */
 function routineRuns() {
   const dir = path.join(INTEL, 'routine-findings');
-  let files;
-  try { files = fs.readdirSync(dir); } catch { return []; }
-  const out = [];
-  for (const f of files) {
-    if (!f.startsWith('run-') || !f.endsWith('.json')) continue;
-    try {
-      const rec = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
-      const at = fs.statSync(path.join(dir, f)).mtimeMs;
-      let verdict = 'no artifact';
-      if (rec.findings_file) {
-        // Relative findings_file resolves against the routine-findings dir,
-        // NOT the server cwd (routine-audit.cjs loadRuns() precedent) — the
-        // cwd-relative read rendered a permanent false "no artifact" amber
-        // on healthy routines.
-        const target = path.isAbsolute(rec.findings_file)
-          ? rec.findings_file
-          : path.join(dir, rec.findings_file);
-        try { verdict = JSON.parse(fs.readFileSync(target, 'utf8')).verdict || '?'; } catch { /* genuinely absent */ }
-      }
-      out.push({ routine: rec.routine, repo: rec.repo, cadence_hours: rec.cadence_hours, exit_status: rec.exit_status, at, verdict });
-    } catch { /* skip */ }
-  }
-  return out.sort((a, b) => b.at - a.at);
+  return loadRuns(dir)
+    .map((r) => ({
+      routine: r.routine,
+      repo: r.repo,
+      cadence_hours: r.cadence_hours,
+      exit_status: r.exit_status,
+      at: r.at_ms,
+      verdict: boardVerdict(r),
+    }))
+    .sort((a, b) => b.at - a.at);
 }
 
 /**

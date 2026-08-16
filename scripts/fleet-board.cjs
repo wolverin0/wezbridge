@@ -34,6 +34,7 @@ const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { audit, loadTasks } = require('./fleet-steward.cjs');
 const { evaluate } = require('./steward-gate.cjs');
+const { loadRuns, boardVerdict } = require('./routine-audit.cjs');
 
 const INTEL = process.env.WEZBRIDGE_INTEL_DIR || path.join(__dirname, '..', '..', '_intel');
 const OUT = path.join(INTEL, 'board.html');
@@ -70,29 +71,20 @@ function lastRun(file) {
   } catch { return null; }
 }
 
+/**
+ * Routine runs for the static board. Both the reading and the verdict wording
+ * come from routine-audit, which OWNS the findings-file contract (T-0147).
+ *
+ * This used to re-implement that resolution, as did board-app. Both copies
+ * resolved against the process cwd and rendered a permanent false 'no artifact'
+ * on healthy routines; both were found and fixed SEPARATELY, which is the whole
+ * argument for one interpreter. `test/routine-findings-single-reader.test.cjs`
+ * fails if a fourth copy appears.
+ */
 function routineRuns(dir = path.join(INTEL, 'routine-findings')) {
-  let files;
-  try { files = fs.readdirSync(dir); } catch { return []; }
-  const out = [];
-  for (const f of files) {
-    if (!f.startsWith('run-') || !f.endsWith('.json')) continue;
-    try {
-      const rec = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
-      const at = fs.statSync(path.join(dir, f)).mtimeMs;
-      let verdict = 'no artifact';
-      // Resolve relative to the routine-findings dir, as routine-audit.cjs
-      // loadRuns() does. Reading it verbatim resolved against process cwd and
-      // rendered a permanent false 'no artifact' on healthy routines — the bug
-      // board-app inherited by porting this line (fixed there in 7729310).
-      try {
-        const ref = rec.findings_file || '';
-        const target = path.isAbsolute(ref) ? ref : path.join(dir, ref);
-        verdict = JSON.parse(fs.readFileSync(target, 'utf8')).verdict || '?';
-      } catch { /* absent */ }
-      out.push({ ...rec, at, verdict });
-    } catch { /* skip */ }
-  }
-  return out.sort((a, b) => b.at - a.at);
+  return loadRuns(dir)
+    .map((r) => ({ ...r, at: r.at_ms, verdict: boardVerdict(r) }))
+    .sort((a, b) => b.at - a.at);
 }
 
 // ---------------------------------------------------------------------------

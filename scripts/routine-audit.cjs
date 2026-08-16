@@ -147,12 +147,35 @@ function loadRuns(findingsDir) {
       at_ms = fs.statSync(full).mtimeMs;
     } catch { continue; }
 
+    // THE ONE INTERPRETER of findings_file. Relative paths resolve against the
+    // findings dir, never the process cwd. Two other components reimplemented
+    // these four lines, both got the cwd wrong, and both were fixed separately
+    // (fleet-board T-0142, board-app 7729310) — see the grep-test in
+    // test/routine-findings-single-reader.test.cjs, which exists to make a
+    // fourth copy fail rather than ship.
+    //
+    // `findings_status` is reported because `findings: null` alone cannot say
+    // WHICH failure happened, and the three answers need different fixes: a
+    // routine that wrote nothing is a scheduling problem, a routine that wrote
+    // garbage is a routine bug. Collapsing them would make the boards lie about
+    // which one occurred.
     let findings = null;
+    let findingsStatus = 'none';          // the record declares no artifact
     if (record.findings_file) {
       const target = path.isAbsolute(record.findings_file)
         ? record.findings_file
         : path.join(findingsDir, record.findings_file);
-      try { findings = JSON.parse(fs.readFileSync(target, 'utf8')); } catch { findings = null; }
+      if (!fs.existsSync(target)) {
+        findingsStatus = 'missing';       // declared it, never wrote it
+      } else {
+        try {
+          findings = JSON.parse(fs.readFileSync(target, 'utf8'));
+          findingsStatus = 'ok';
+        } catch {
+          findings = null;
+          findingsStatus = 'unparseable'; // wrote it, wrote garbage
+        }
+      }
     }
     runs.push({
       id: f.replace(/\.json$/, ''),
@@ -162,9 +185,32 @@ function loadRuns(findingsDir) {
       cadence_hours: record.cadence_hours,
       at_ms,
       findings,
+      findings_status: findingsStatus,
     });
   }
   return runs;
+}
+
+/**
+ * The verdict string a BOARD should show for a run. Lives here, next to the
+ * reader, so the two boards render the same word for the same situation and
+ * neither has to know how a findings artifact is located or parsed.
+ *
+ * Three distinguishable outcomes, because each one is fixed differently:
+ *   no artifact       nothing was written — a scheduling/runner problem
+ *   malformed artifact something was written but cannot be read as a verdict —
+ *                     a bug in the routine itself, NOT the same as silence
+ *   <the verdict>     the routine spoke; show exactly what it said
+ *
+ * Before this existed, an unreadable artifact rendered as "no artifact" on both
+ * boards: a routine emitting garbage was indistinguishable from one that never
+ * ran, which is the precise class of calm lie the fleet's honesty rules forbid.
+ */
+function boardVerdict(run) {
+  if (!run || run.findings_status === 'none' || run.findings_status === 'missing') return 'no artifact';
+  if (run.findings_status === 'unparseable' || !run.findings) return 'malformed artifact';
+  const verdict = run.findings.verdict;
+  return (typeof verdict === 'string' && verdict.trim()) ? verdict : 'malformed artifact';
 }
 
 /** Entry point used by fleet-steward. */
@@ -173,6 +219,6 @@ function auditRoutines(intelDir, now = Date.now()) {
 }
 
 module.exports = {
-  classifyRun, classifySilence, auditRuns, loadRuns, auditRoutines,
+  classifyRun, classifySilence, auditRuns, loadRuns, auditRoutines, boardVerdict,
   DEFAULT_CADENCE_HOURS, SILENCE_GRACE_HOURS,
 };
