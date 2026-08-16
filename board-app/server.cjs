@@ -98,7 +98,16 @@ function routineRuns() {
       const rec = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
       const at = fs.statSync(path.join(dir, f)).mtimeMs;
       let verdict = 'no artifact';
-      try { verdict = JSON.parse(fs.readFileSync(rec.findings_file, 'utf8')).verdict || '?'; } catch { /* absent */ }
+      if (rec.findings_file) {
+        // Relative findings_file resolves against the routine-findings dir,
+        // NOT the server cwd (routine-audit.cjs loadRuns() precedent) — the
+        // cwd-relative read rendered a permanent false "no artifact" amber
+        // on healthy routines.
+        const target = path.isAbsolute(rec.findings_file)
+          ? rec.findings_file
+          : path.join(dir, rec.findings_file);
+        try { verdict = JSON.parse(fs.readFileSync(target, 'utf8')).verdict || '?'; } catch { /* genuinely absent */ }
+      }
       out.push({ routine: rec.routine, repo: rec.repo, cadence_hours: rec.cadence_hours, exit_status: rec.exit_status, at, verdict });
     } catch { /* skip */ }
   }

@@ -213,6 +213,30 @@ test('rate limiter window slides: old hits expire', () => {
   assert.ok(allow('ip', 1500), 'allowed again after the window passes');
 });
 
+// --- routine verdict resolution ---------------------------------------------
+
+test('relative findings_file resolves against routine-findings dir, not cwd', async () => {
+  const dir = path.join(TMP_INTEL, 'routine-findings');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'findings-rel.json'), JSON.stringify({ verdict: 'clean' }));
+  fs.writeFileSync(path.join(dir, 'run-rel.json'), JSON.stringify({
+    routine: 'rel-routine', repo: 'wezbridge', cadence_hours: 24, exit_status: 0,
+    findings_file: 'findings-rel.json',
+  }));
+  fs.writeFileSync(path.join(dir, 'run-absent.json'), JSON.stringify({
+    routine: 'absent-routine', repo: 'wezbridge', cadence_hours: 24, exit_status: 0,
+    findings_file: 'findings-does-not-exist.json',
+  }));
+
+  const state = await (await api('/api/state')).json();
+  const rel = state.routines.find((r) => r.routine === 'rel-routine');
+  const absent = state.routines.find((r) => r.routine === 'absent-routine');
+  assert.ok(rel, 'relative-path run appears');
+  assert.strictEqual(rel.verdict, 'clean', 'relative findings_file renders its real verdict');
+  assert.ok(absent, 'absent-artifact run appears');
+  assert.strictEqual(absent.verdict, 'no artifact', 'only a genuinely missing file is "no artifact"');
+});
+
 // --- pagination -------------------------------------------------------------
 
 test('activity is paginated 25 per pull', async () => {
