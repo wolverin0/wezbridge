@@ -29,6 +29,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { auditRoutines } = require('./routine-audit.cjs');
+const { lintSpecRefs, lintRulings } = require('./dispatch-lint.cjs');
 
 const HOURS = (h) => h * 3600 * 1000;
 
@@ -56,6 +57,15 @@ function loadTasks() {
     try { out.push(JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'))); } catch { /* skip unreadable */ }
   }
   return out;
+}
+
+/** Rulings feed the W2 lint. Unparseable lines are skipped, absent file is zero. */
+function loadRulings(dir = intelDir()) {
+  try {
+    return fs.readFileSync(path.join(dir, 'rulings.jsonl'), 'utf8').split('\n').filter(Boolean)
+      .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+      .filter(Boolean);
+  } catch { return []; }
 }
 
 const hours = (ms) => Math.round(ms / 3600000);
@@ -173,6 +183,11 @@ function audit(tasks, now = Date.now(), dir = intelDir()) {
   const findings = [
     ...tasks.map((t) => classify(t, now, dir)).filter(Boolean),
     ...auditRoutines(dir, now),
+    // W1/W2 hygiene lints (2026-08-16 retro): unspecced dispatches and rulings
+    // whose value never landed in a file. Epoch-gated inside the module so the
+    // pre-existing backlog is never retro-flagged.
+    ...lintSpecRefs(tasks, now),
+    ...lintRulings(loadRulings(dir), now),
   ];
   // Operator-owed items first: those are the ones that block other people's work.
   // routine-silent ranks high because a routine that stopped firing invalidates
@@ -180,7 +195,11 @@ function audit(tasks, now = Date.now(), dir = intelDir()) {
   const rank = {
     'awaiting-operator': 0, 'abandoned-lease': 1, 'routine-silent': 2, 'stale-running': 3,
     'routine-void': 4, 'routine-findings': 5, 'stale-review': 6, 'stale-failed': 7,
-    'blocked-not-gated': 8, idle: 9,
+    // Hygiene before backlog-idle: an unspecced dispatch is about to waste a
+    // builder session; an unlanded value is a live near-miss. Both outrank
+    // "nobody picked this up yet".
+    'dispatch-unspecced': 8, 'ruling-unlanded': 9,
+    'blocked-not-gated': 10, idle: 11,
   };
   const order = (f) => (rank[f.category] === undefined ? 99 : rank[f.category]);
   findings.sort((a, b) => (order(a) - order(b)) || (b.age_hours - a.age_hours));
@@ -207,7 +226,7 @@ function render(report) {
   return lines.join('\n');
 }
 
-module.exports = { classify, audit, render, RULES, loadTasks };
+module.exports = { classify, audit, render, RULES, loadTasks, loadRulings };
 
 if (require.main === module) {
   const report = audit(loadTasks());

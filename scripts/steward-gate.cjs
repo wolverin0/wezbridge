@@ -55,6 +55,11 @@ const DEADLINES = {
   'routine-silent': 24,
   'routine-void': 48,
   'routine-findings': 48,
+  // 2026-08-16 workflow-hardening lints. dispatch-unspecced is 48h because a
+  // builder may already be burning a session on the unspecced work; ruling-
+  // unlanded is 72h — generous on purpose, the fix is a one-line re-append.
+  'dispatch-unspecced': 48,
+  'ruling-unlanded': 72,
 };
 
 /** A ruling stops covering a finding once this passes (dispatched only). */
