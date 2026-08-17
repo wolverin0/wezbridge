@@ -609,10 +609,13 @@ function handleToolCall(name, args) {
       const summary = filtered.map(p => ({
         pane_id: p.paneId,
         is_claude: p.isClaude,
+        is_codex: p.isCodex,
+        agent: p.agent,
         status: p.status,
         project: verbose ? p.project : redactHomePath(p.project),
         project_name: p.projectName,
         title: p.title,
+        tab_title: p.tabTitle,
         workspace: p.workspace,
         confidence: p.confidence,
         last_line: formatLastText(
@@ -768,10 +771,13 @@ function handleToolCall(name, args) {
             text: JSON.stringify({
               pane_id: pane.paneId,
               is_claude: pane.isClaude,
+              is_codex: pane.isCodex,
+              agent: pane.agent,
               status: pane.status,
               project: verbose ? pane.project : redactHomePath(pane.project),
               project_name: pane.projectName,
               title: pane.title,
+              tab_title: pane.tabTitle,
               workspace: pane.workspace,
               confidence: pane.confidence,
               last_lines: formatLastText(
