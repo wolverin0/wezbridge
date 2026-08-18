@@ -90,7 +90,7 @@ test('an expired lease is NOT abandoned when siblings on the same corr are movin
   };
   const child = {
     id: 'T-0154', repo: 'whatsappbot-final', state: 'done', title: 'tranche',
-    corr: 'wa-remediation-full', created_at: hoursAgo(30), state_changed_at: hoursAgo(1),
+    parent: 'T-0146', created_at: hoursAgo(30), state_changed_at: hoursAgo(1),
   };
   assert.deepStrictEqual(steward.audit([umbrella, child], NOW, EMPTY).findings, [],
     'a sibling closing an hour ago proves the owner is alive');
@@ -106,7 +106,7 @@ test('the SAME task with no sibling activity still goes RED', () => {
   };
   const deadChild = { // a sibling that ALSO went quiet — not evidence of life
     id: 'T-0154', repo: 'whatsappbot-final', state: 'done', title: 'tranche',
-    corr: 'wa-remediation-full', created_at: hoursAgo(30), state_changed_at: hoursAgo(20),
+    parent: 'T-0146', created_at: hoursAgo(30), state_changed_at: hoursAgo(20),
   };
   const f = steward.audit([umbrella, deadChild], NOW, EMPTY).findings
     .filter((x) => x.id === 'T-0146');
@@ -125,7 +125,7 @@ test('the finding STATES which progress channels it checked', () => {
     lease: { owner: 'pane-99', expires_at: hoursAgo(20) },
   };
   const [f] = steward.audit([dead], NOW, EMPTY).findings;
-  for (const channel of [/FSM transition/, /run log/, /ruling/, /sibling/]) {
+  for (const channel of [/FSM transition/, /run log/, /ruling/, /child/]) {
     assert.match(f.why, channel, `the finding must name the ${channel} channel`);
   }
 });
@@ -185,7 +185,7 @@ test('a task dead PAST the ceiling fires even while its corr is busy', () => {
   };
   const liveSibling = {
     id: 'T-ALIVE', repo: 'wezbridge', state: 'running',
-    corr: 'busy-corr', created_at: hoursAgo(600), state_changed_at: hoursAgo(0.1),
+    parent: 'T-DEAD-500', created_at: hoursAgo(600), state_changed_at: hoursAgo(0.1),
   };
   const f = steward.audit([dead, liveSibling], NOW, EMPTY).findings.filter((x) => x.id === 'T-DEAD-500');
   assert.strictEqual(f.length, 1, '500h of silence must not be cancelled by a neighbour');
@@ -201,7 +201,7 @@ test('...and at 208 days it is certainly not clean', () => {
   };
   const liveSibling = {
     id: 'T-ALIVE', repo: 'wezbridge', state: 'running',
-    corr: 'busy-corr', created_at: hoursAgo(6000), state_changed_at: hoursAgo(0.1),
+    parent: 'T-DEAD-5000', created_at: hoursAgo(6000), state_changed_at: hoursAgo(0.1),
   };
   const f = steward.audit([dead, liveSibling], NOW, EMPTY).findings.filter((x) => x.id === 'T-DEAD-5000');
   assert.strictEqual(f.length, 1);
@@ -217,7 +217,7 @@ test('BELOW the ceiling a busy corr still defers the alarm — the T-0146 case s
   };
   const child = {
     id: 'T-0154', repo: 'whatsappbot-final', state: 'done',
-    corr: 'wa-remediation-full', created_at: hoursAgo(30), state_changed_at: hoursAgo(1),
+    parent: 'T-0146', created_at: hoursAgo(30), state_changed_at: hoursAgo(1),
   };
   assert.deepStrictEqual(steward.audit([umbrella, child], NOW, EMPTY).findings, []);
 });
@@ -257,10 +257,67 @@ test('the two measures are not interchangeable', () => {
     id: 'T-SPLIT', repo: 'wezbridge', state: 'running',
     corr: 'c-1', created_at: hoursAgo(100), state_changed_at: hoursAgo(100),
   };
-  const peer = { id: 'T-PEER', state: 'done', corr: 'c-1', state_changed_at: hoursAgo(1) };
+  const peer = { id: 'T-PEER', state: 'done', parent: 'T-SPLIT', state_changed_at: hoursAgo(1) };
   const ctx = steward.buildContext([t, peer], EMPTY);
   assert.strictEqual(steward.lastTransition(t), Date.parse(hoursAgo(100)),
     'movement ignores the sibling entirely');
   assert.strictEqual(steward.lastProgress(t, NOW, EMPTY, ctx), Date.parse(hoursAgo(1)),
     'liveness picks up the sibling');
+});
+
+// ─── T-0167: compartir un corr NO es una relacion de trabajo ────────────────
+// El techo de 168h acotaba la suposicion; esto la elimina. Un corr es un hilo
+// de conversacion, un parent es una relacion de trabajo, y nunca fueron la
+// misma afirmacion. Los hijos ahora la DECLARAN.
+
+test('sharing a corr with a busy task no longer suppresses anything', () => {
+  // El caso que el techo solo acotaba: una tarea muerta, y al lado otra muy
+  // activa que apenas comparte el hilo de conversacion. Antes le tapaba la
+  // alarma hasta 7 dias; ahora no le presta nada.
+  const dead = {
+    id: 'T-MERE-PEER', repo: 'wezbridge', state: 'running', title: 'muerta pero acompanada',
+    corr: 'hilo-compartido', created_at: hoursAgo(40), state_changed_at: hoursAgo(30),
+    lease: { owner: 'pane-9', expires_at: hoursAgo(24) },
+  };
+  const busyNeighbour = {
+    id: 'T-NEIGHBOUR', repo: 'wezbridge', state: 'running', title: 'vecina ocupada',
+    corr: 'hilo-compartido', created_at: hoursAgo(40), state_changed_at: hoursAgo(0.1),
+  };
+  const f = steward.audit([dead, busyNeighbour], NOW, EMPTY).findings
+    .filter((x) => x.id === 'T-MERE-PEER');
+  assert.strictEqual(f.length, 1,
+    'compartir corr no es evidencia de que el duenio de ESTA tarea siga vivo');
+  assert.strictEqual(f[0].category, 'abandoned-lease');
+});
+
+test('the same neighbour DECLARED as a child does suppress it', () => {
+  // La otra direccion del par plantado. Si declarar el parent no cambiara nada,
+  // el campo seria decorativo y este test lo probaria.
+  const parent = {
+    id: 'T-MERE-PEER', repo: 'wezbridge', state: 'running', title: 'umbrella real',
+    corr: 'hilo-compartido', created_at: hoursAgo(40), state_changed_at: hoursAgo(30),
+    lease: { owner: 'pane-9', expires_at: hoursAgo(24) },
+  };
+  const child = {
+    id: 'T-NEIGHBOUR', repo: 'wezbridge', state: 'running', title: 'hija declarada',
+    parent: 'T-MERE-PEER', created_at: hoursAgo(40), state_changed_at: hoursAgo(0.1),
+  };
+  assert.deepStrictEqual(steward.audit([parent, child], NOW, EMPTY).findings, [],
+    'una hija declarada que se movio hace 6 minutos si prueba que el duenio vive');
+});
+
+test('the 168h ceiling survives as defence in depth', () => {
+  // T-0167 saca la suposicion, pero el techo se queda: si los canales PROPIOS
+  // del padre callan mas de 7 dias, el ruido de sus hijas ya no lo tapa.
+  const parent = {
+    id: 'T-OLD-PARENT', repo: 'wezbridge', state: 'running', title: 'padre callado hace 500h',
+    created_at: hoursAgo(600), state_changed_at: hoursAgo(500),
+  };
+  const child = {
+    id: 'T-LIVE-CHILD', repo: 'wezbridge', state: 'running',
+    parent: 'T-OLD-PARENT', created_at: hoursAgo(600), state_changed_at: hoursAgo(0.1),
+  };
+  const f = steward.audit([parent, child], NOW, EMPTY).findings
+    .filter((x) => x.id === 'T-OLD-PARENT');
+  assert.strictEqual(f.length, 1, '500h de silencio propio no los tapa una hija activa');
 });

@@ -138,9 +138,9 @@ function lastTransition(task) {
  *      many hours between ledger transitions (T-0008, at pass 50 with 38h of
  *      ledger silence)
  *   3. a ruling recorded against the task
- *   4. sibling tasks sharing the same `corr` transitioning — an umbrella task
- *      is worked THROUGH its children, which is precisely how T-0146 looked
- *      dead while eleven siblings closed under it
+ *   4. DECLARED CHILD tasks transitioning — a parent is worked THROUGH its
+ *      children, which is precisely how T-0146 looked dead while eleven of
+ *      them closed under it. Sharing a corr is NOT the relationship (T-0167).
  *
  * Channel 4 is scoped to this question ON PURPOSE. It must never suppress
  * `idle`, because "a sibling moved" is not evidence that anyone picked THIS one
@@ -164,28 +164,38 @@ function ownProgress(task, dir = intelDir(), ctx = null) {
 
 function lastProgress(task, now, dir = intelDir(), ctx = null) {
   const own = ownProgress(task, dir, ctx);
-  if (!task.corr) return own;
-  // THE CEILING. Sibling activity defers the alarm; it never cancels it.
+  // A PARENT is worked THROUGH its children, so its children's transitions are
+  // evidence its owner is alive. Nothing else is.
   //
-  // v1 of this fix put the peer stamp straight into the Math.max, so any corr
-  // with a live thread reset `quiet` on every task sharing it. An independent
-  // review (pane-15, 2026-08-18) reproduced a task dead for 208 days still
-  // classified clean, because both `running` branches close over the same
-  // `quiet` and nothing bounded it.
+  // v1 keyed this on a shared `corr`, which conflated two different things: an
+  // umbrella genuinely worked through its children (T-0146, dead-looking while
+  // eleven children closed under it) and a task that merely SHARES a corr with
+  // an active thread. The second got its alarm suppressed by work it had no
+  // relationship to — a reviewer reproduced one dead 208 days still reading
+  // clean (T-0164), and a 168h ceiling was added as a net.
   //
-  // The broken assumption was that every task on a corr is worked THROUGH its
-  // siblings. That holds for an umbrella like T-0146; it is false for a task
-  // that merely SHARES a corr with an active thread, and the data model cannot
-  // tell the two apart. Until it can, the ceiling is the net: past it, the
-  // task's own silence outranks its neighbours' noise.
+  // T-0167 removes the guess instead of bounding it: children now DECLARE their
+  // parent, so the relationship is a fact rather than an inference. A task with
+  // no declared children gets no sibling credit at all, which fails toward more
+  // alarms and never toward silence.
+  //
+  // The ceiling STAYS as defence in depth. If a parent's own channels go silent
+  // past it, its children's noise no longer covers for it.
+  if (!ctx) return own;
+  const childAt = ctx.childAt.get(task.id) || 0;
+  if (!childAt) return own;
   if (now - own > HOURS(RULES.siblingCeiling)) return own;
-  const c = ctx || buildContext([task], dir);
-  return Math.max(own, c.peerAt.get(task.corr) || 0);
+  return Math.max(own, childAt);
 }
 
 /**
  * Pre-index the two cross-record channels once per audit rather than per task:
- * rulings are one file scan, peers are one pass over the task list.
+ * rulings are one file scan, children are one pass over the task list.
+ *
+ * `childAt` is keyed by PARENT id, not by corr. A task earns its children's
+ * liveness only if those children point back at it with `parent`. Sharing a
+ * corr is no longer enough, because a corr is a conversation thread and a
+ * parent is a work relationship — they were never the same claim.
  */
 function buildContext(tasks, dir = intelDir()) {
   const rulingAt = new Map();
@@ -193,13 +203,13 @@ function buildContext(tasks, dir = intelDir()) {
     const at = ms(r.at);
     if (r.task && at > (rulingAt.get(r.task) || 0)) rulingAt.set(r.task, at);
   }
-  const peerAt = new Map();
+  const childAt = new Map();
   for (const t of tasks) {
-    if (!t.corr) continue;
+    if (!t.parent) continue;
     const at = lastTransition(t);
-    if (at > (peerAt.get(t.corr) || 0)) peerAt.set(t.corr, at);
+    if (at > (childAt.get(t.parent) || 0)) childAt.set(t.parent, at);
   }
-  return { rulingAt, peerAt };
+  return { rulingAt, childAt };
 }
 
 const ageMs = (task, now) => now - lastTransition(task);
@@ -258,11 +268,11 @@ function classify(task, now, dir = intelDir(), ctx = null) {
         // evidence anywhere this still goes RED, because a genuinely dead
         // worker is exactly what this category is for.
         return quiet > HOURS(RULES.staleRunning)
-          ? { ...common, age_hours: hours(quiet), category: 'abandoned-lease', why: `lease expired ${hours(now - until)}h ago (owner ${task.lease.owner || '?'}) and no progress on any channel since: no FSM transition, no run log, no ruling, no sibling task on corr ${task.corr || '(none)'}` }
+          ? { ...common, age_hours: hours(quiet), category: 'abandoned-lease', why: `lease expired ${hours(now - until)}h ago (owner ${task.lease.owner || '?'}) and no progress on any channel since: no FSM transition, no run log, no ruling, no declared child task moved` }
           : null;
       }
       if (until !== null) return null;   // live lease: someone is on it
-      if (quiet > HOURS(RULES.staleRunning)) return { ...common, age_hours: hours(quiet), category: 'stale-running', why: 'running with no lease and no progress on ledger, run log, rulings or sibling tasks' };
+      if (quiet > HOURS(RULES.staleRunning)) return { ...common, age_hours: hours(quiet), category: 'stale-running', why: 'running with no lease and no progress on ledger, run log, rulings or declared child tasks' };
       return null;
     }
     case 'review':
