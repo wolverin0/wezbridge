@@ -86,9 +86,14 @@ test('an expired lease plus no activity is reported, naming who dropped it', () 
 test('an expired lease on a task that is still ACTIVE is not abandoned', () => {
   // Leases are minute-bounded and long loops routinely outlive them without
   // harm. Expiry alone must not accuse a working owner of dying.
+  //
+  // Liveness is asserted with state_changed_at, NOT updated_at. The fixture used
+  // updated_at until 2026-08-18, which made this test pass for the wrong reason:
+  // it was proving that touching the file counts as being alive, which is the
+  // defect T-0144 removed. Anchored on a real transition, it tests the rule.
   const t = {
     id: 'T-2b', repo: 'wezbridge', state: 'running',
-    updated_at: hoursAgo(1),
+    created_at: hoursAgo(90), state_changed_at: hoursAgo(1), updated_at: hoursAgo(1),
     lease: { owner: 'pane-29', expires_at: hoursAgo(20) },
   };
   assert.deepStrictEqual(steward.audit([t], NOW, EMPTY).findings, []);

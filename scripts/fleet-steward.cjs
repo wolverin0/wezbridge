@@ -40,6 +40,14 @@ const RULES = {
   staleReview: 24,     // finished work waiting on a reviewer
   awaitingOperator: 24, // gated + blocked: the operator owes an answer
   staleFailed: 12,     // failed and not retried or triaged
+  // Hard ceiling on the sibling-corr channel (added 2026-08-18 after an
+  // independent review). Sibling activity may DEFER the abandonment alarm; it
+  // may never cancel it. Without this, a task whose corr stays busy is
+  // suppressed forever — the reviewer reproduced one dead for 208 days still
+  // reporting clean. Trading a false RED for a permanent false GREEN is a
+  // strictly worse defect, because the gate exists to contradict a false
+  // all-clear and silence is the one direction it must never fail in.
+  siblingCeiling: 168, // 7 days with no sign of life of the task's OWN
 };
 
 function intelDir() {
@@ -85,33 +93,123 @@ function leaseExpiry(task) {
   return Number.isFinite(t) ? t : null;
 }
 
+const ms = (v) => { const t = new Date(v || 0).getTime(); return Number.isFinite(t) ? t : 0; };
+
 /**
- * When this task last showed a sign of life.
+ * When this task last MOVED — a real FSM transition, nothing else.
  *
- * The ledger is NOT the only channel work is reported on: long-running
- * oversight loops append to _intel/runs/<id>/log.md and may go many hours
- * between ledger state transitions. A staleness detector that reads only the
- * ledger is blind to the channel where the work actually shows up, so it flags
- * healthy long tasks every single run — and a steward that cries wolf is a
- * steward the operator stops reading. Diagnosed by pane-5 on T-0008, which was
- * at pass 50 of an active loop while the ledger had not moved in 38h.
+ * Deliberately does NOT read `updated_at`, except as a last resort for records
+ * so old they predate both other fields. `updated_at` means "the file was
+ * written", and reading it as movement is what let annotation clear the gate:
+ * on 2026-08-16 writing triage notes onto 8 stale tasks dropped their measured
+ * idle age from 300-478h to ~0h and the findings fell 13 -> 3 with no work done
+ * (T-0144).
+ *
+ * The trap this avoids in the other direction: measuring from `created_at`
+ * outright would flag legitimately reopened work (done -> ready) as instantly
+ * ancient. `state_changed_at` is stamped by ledger.cjs on the reopen, so the
+ * clock restarts where it should. `created_at` is only the fallback for legacy
+ * records that have never transitioned since the stamp was introduced — for a
+ * task sitting untouched in `ready` since it was filed, that is the right
+ * answer anyway.
  */
-function lastActivity(task, dir = intelDir()) {
-  const stamps = [new Date(task.updated_at || task.created_at || 0).getTime()];
+function lastTransition(task) {
+  return Math.max(ms(task.state_changed_at), 0)
+    || Math.max(ms(task.created_at), 0)
+    || ms(task.updated_at);
+}
+
+/**
+ * When someone last showed a sign of LIFE on this work — a different question
+ * from `lastTransition`, and the two must not be collapsed.
+ *
+ * "Has this card moved?" and "is the worker alive?" have different right
+ * answers, and answering the second with the first is what made the steward go
+ * RED on healthy work: on 2026-08-17 T-0146 was reported as an abandoned lease
+ * at 14h while fifteen PRs were being reviewed and merged under it, because
+ * nothing renews a lease during continuous work (T-0164). abandoned-lease was
+ * carrying two meanings — the owner died, and the owner is alive and busy — and
+ * only the first deserves an alarm. Every false RED spends the credibility of
+ * the one gate whose job is to contradict a false all-clear.
+ *
+ * The four channels progress is legible on, all already on disk:
+ *   1. the task's own FSM transitions
+ *   2. _intel/runs/<id>/log.md — long oversight loops report here and can go
+ *      many hours between ledger transitions (T-0008, at pass 50 with 38h of
+ *      ledger silence)
+ *   3. a ruling recorded against the task
+ *   4. sibling tasks sharing the same `corr` transitioning — an umbrella task
+ *      is worked THROUGH its children, which is precisely how T-0146 looked
+ *      dead while eleven siblings closed under it
+ *
+ * Channel 4 is scoped to this question ON PURPOSE. It must never suppress
+ * `idle`, because "a sibling moved" is not evidence that anyone picked THIS one
+ * up — letting it count there would hide a live programme's own untouched
+ * backlog behind its siblings' progress.
+ */
+/**
+ * Channels 1-3: signs of life belonging to THIS task. Kept separate from the
+ * sibling channel because only these can hold the alarm off indefinitely — they
+ * are evidence about the task itself, not about its neighbours.
+ */
+function ownProgress(task, dir = intelDir(), ctx = null) {
+  const stamps = [lastTransition(task)];
   try {
     stamps.push(fs.statSync(path.join(dir, 'runs', task.id, 'log.md')).mtimeMs);
-  } catch { /* no run log — ledger timestamp stands alone */ }
+  } catch { /* no run log — the other channels stand alone */ }
+  const c = ctx || buildContext([task], dir);
+  stamps.push(c.rulingAt.get(task.id) || 0);
   return Math.max(...stamps.filter(Number.isFinite));
 }
 
-const ageMs = (task, now, dir) => now - lastActivity(task, dir);
+function lastProgress(task, now, dir = intelDir(), ctx = null) {
+  const own = ownProgress(task, dir, ctx);
+  if (!task.corr) return own;
+  // THE CEILING. Sibling activity defers the alarm; it never cancels it.
+  //
+  // v1 of this fix put the peer stamp straight into the Math.max, so any corr
+  // with a live thread reset `quiet` on every task sharing it. An independent
+  // review (pane-15, 2026-08-18) reproduced a task dead for 208 days still
+  // classified clean, because both `running` branches close over the same
+  // `quiet` and nothing bounded it.
+  //
+  // The broken assumption was that every task on a corr is worked THROUGH its
+  // siblings. That holds for an umbrella like T-0146; it is false for a task
+  // that merely SHARES a corr with an active thread, and the data model cannot
+  // tell the two apart. Until it can, the ceiling is the net: past it, the
+  // task's own silence outranks its neighbours' noise.
+  if (now - own > HOURS(RULES.siblingCeiling)) return own;
+  const c = ctx || buildContext([task], dir);
+  return Math.max(own, c.peerAt.get(task.corr) || 0);
+}
+
+/**
+ * Pre-index the two cross-record channels once per audit rather than per task:
+ * rulings are one file scan, peers are one pass over the task list.
+ */
+function buildContext(tasks, dir = intelDir()) {
+  const rulingAt = new Map();
+  for (const r of loadRulings(dir)) {
+    const at = ms(r.at);
+    if (r.task && at > (rulingAt.get(r.task) || 0)) rulingAt.set(r.task, at);
+  }
+  const peerAt = new Map();
+  for (const t of tasks) {
+    if (!t.corr) continue;
+    const at = lastTransition(t);
+    if (at > (peerAt.get(t.corr) || 0)) peerAt.set(t.corr, at);
+  }
+  return { rulingAt, peerAt };
+}
+
+const ageMs = (task, now) => now - lastTransition(task);
 
 /**
  * Classify one task. Returns null when it needs no attention.
  * `now` is injected so this is testable without clock mocking.
  */
-function classify(task, now, dir = intelDir()) {
-  const age = ageMs(task, now, dir);
+function classify(task, now, dir = intelDir(), ctx = null) {
+  const age = ageMs(task, now);
   // The gate lives in EITHER place, and reading one is a real bug found
   // 2026-08-14 by rendering the board: T-0072 (pather) carries a top-level
   // `gate: "operator"` with `contract: null`, so it was classified
@@ -148,17 +246,23 @@ function classify(task, now, dir = intelDir()) {
       // it would train the operator to ignore the steward, which costs more
       // than the occasional missed stall.
       const until = leaseExpiry(task);
-      // An expired lease alone is NOT proof of abandonment: leases are minute-
-      // bounded and owners routinely outlive them on long loops without harm.
-      // Only an expired lease AND no recent sign of life on either channel
-      // means the owner is actually gone.
+      // THIS is the "is the worker alive" question, and the ONLY branch that
+      // asks it — so it is the only branch that reads progress rather than
+      // movement. An expired lease alone is NOT proof of abandonment: leases
+      // are minute-bounded and owners routinely outlive them on long loops
+      // without harm. Only an expired lease AND silence on every progress
+      // channel means the owner is actually gone.
+      const quiet = now - lastProgress(task, now, dir, ctx);
       if (until !== null && until < now) {
-        return age > HOURS(RULES.staleRunning)
-          ? { ...common, category: 'abandoned-lease', why: `lease expired ${hours(now - until)}h ago (owner ${task.lease.owner || '?'}) and no activity since` }
+        // The alarm is narrowed, never softened into silence: with no progress
+        // evidence anywhere this still goes RED, because a genuinely dead
+        // worker is exactly what this category is for.
+        return quiet > HOURS(RULES.staleRunning)
+          ? { ...common, age_hours: hours(quiet), category: 'abandoned-lease', why: `lease expired ${hours(now - until)}h ago (owner ${task.lease.owner || '?'}) and no progress on any channel since: no FSM transition, no run log, no ruling, no sibling task on corr ${task.corr || '(none)'}` }
           : null;
       }
       if (until !== null) return null;   // live lease: someone is on it
-      if (age > HOURS(RULES.staleRunning)) return { ...common, category: 'stale-running', why: 'running with no lease and no activity on ledger or run log' };
+      if (quiet > HOURS(RULES.staleRunning)) return { ...common, age_hours: hours(quiet), category: 'stale-running', why: 'running with no lease and no progress on ledger, run log, rulings or sibling tasks' };
       return null;
     }
     case 'review':
@@ -180,8 +284,11 @@ function audit(tasks, now = Date.now(), dir = intelDir()) {
   // Two sources, one findings stream. Scheduled routines write evidence files
   // that nothing used to read; merging them here means they inherit the gate
   // rather than needing a second enforcement chain that could rot separately.
+  // Built once from the whole task list: the sibling-corr channel is a property
+  // of the SET, so a per-task classify() cannot derive it alone.
+  const ctx = buildContext(tasks, dir);
   const findings = [
-    ...tasks.map((t) => classify(t, now, dir)).filter(Boolean),
+    ...tasks.map((t) => classify(t, now, dir, ctx)).filter(Boolean),
     ...auditRoutines(dir, now),
     // W1/W2 hygiene lints (2026-08-16 retro): unspecced dispatches and rulings
     // whose value never landed in a file. Epoch-gated inside the module so the
@@ -226,7 +333,10 @@ function render(report) {
   return lines.join('\n');
 }
 
-module.exports = { classify, audit, render, RULES, loadTasks, loadRulings };
+module.exports = {
+  classify, audit, render, RULES, loadTasks, loadRulings,
+  lastTransition, lastProgress, ownProgress, buildContext,
+};
 
 if (require.main === module) {
   const report = audit(loadTasks());
