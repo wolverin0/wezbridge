@@ -298,11 +298,6 @@ function invalidateListPanesCache() {
 /** Ensure a visible WezTerm GUI is connected to the mux. */
 function ensureGui() {
   if (guiLaunched) return;
-  if (process.env.WEZBRIDGE_PREFER_MUX === '1') {
-    wezCmd(['list'], { retries: 0 });
-    guiLaunched = true;
-    return;
-  }
   // A running wezterm-gui process is not proof that its socket is usable.
   // Prefer a socket that answered a bounded list call; stale GUI processes
   // are common after long-lived Windows sessions.

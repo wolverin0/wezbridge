@@ -133,9 +133,21 @@ function sendViaStdin(paneId, payload, socketEnv, { noPaste = true } = {}) {
   });
 }
 
-// Lives in its own module so it can be tested against real pane text instead of
-// by grepping this file. See composer-state.cjs for why that mattered.
-const { composerStillHolds } = require('./composer-state.cjs');
+function composerStillHolds(tail, payload) {
+  const flat = (value) => String(value).replace(/\s+/g, ' ').trim().toLowerCase();
+  const probe = flat(payload).slice(0, 60);
+  if (!probe) return false;
+  const lines = String(tail).split(/\r?\n/);
+  const markers = lines.filter((line) => /^[\s│|]*[❯>›]/u.test(line));
+  const last = markers.at(-1) || '';
+  const content = flat(last.replace(/^[\s│|]*[❯>›]\s*/u, ''));
+  return Boolean(content) && (
+    probe.startsWith(content.slice(0, 40)) ||
+    content.startsWith(probe.slice(0, 40)) ||
+    (content.length >= 8 && flat(payload).includes(content.slice(0, 60))) ||
+    /\[?pasted (text|content)|\+\s*\d+\s+lines?\]?/i.test(content)
+  );
+}
 
 // ---------- send ----------
 // --no-paste: bracketed paste makes some TUIs hold the text without accepting

@@ -1,13 +1,6 @@
 @echo off
 REM ---------------------------------------------------------------------------
-REM poke-pane.cmd - Task Scheduler entry point. No Claude, no MCP, no API call.
-REM
-REM ASCII ONLY IN THIS FILE. Multi-byte characters (em-dashes) in these comments
-REM were harmless under the default OEM codepage but desynced cmd's parser once
-REM a CALLER ran `chcp 65001` first - cmd then executed fragments of these very
-REM comments ("'M' is not recognized"). Found 2026-08-13 when run-steward-gate
-REM called this script. Delivery still worked, which is worse: a scheduled job
-REM spraying spurious errors is how a real failure gets ignored.
+REM poke-pane.cmd — Task Scheduler entry point. No Claude, no MCP, no API call.
 REM
 REM   schtasks /create /tn "Poke brlite nightly" /sc daily /st 04:30 ^
 REM     /tr "\"G:\_OneDrive\OneDrive\Desktop\Py Apps\wezbridge\scripts\poke-pane.cmd\" brlite \"G:\path\to\message.txt\""
@@ -15,7 +8,7 @@ REM
 REM Arg 1 = project name (cwd basename of the target pane, resolved at fire time)
 REM Arg 2 = path to a file holding the message text
 REM
-REM Every run appends one line to poke-pane.log - success or failure. A silent
+REM Every run appends one line to poke-pane.log — success or failure. A silent
 REM scheduled job is indistinguishable from one that had nothing to do.
 REM ---------------------------------------------------------------------------
 setlocal
