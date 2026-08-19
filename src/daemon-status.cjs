@@ -140,6 +140,13 @@ function assessLiveness({ heartbeat, daemonReachable, now = Date.now(), staleMs 
   if (daemonReachable && !stale) {
     if (!waker) {
       alerts.push('ORCHESTRATOR WAKER MISSING — the daemon is healthy but never registered a waker at all. Pane completions will not reach the orchestrator.');
+    } else if (!waker.armed && waker.deliberate) {
+      // NOT an alert: it is a standing decision, and the config carries the
+      // record plus the condition that would justify re-arming. Alerting on a
+      // choice someone made on purpose pins ok:false forever and teaches every
+      // reader to skip the alert list — which is worse than saying nothing.
+      // The state stays VISIBLE via health.orchestrator_waker, just not as a
+      // fault. (2026-08-19, T-0176.)
     } else if (!waker.armed) {
       alerts.push(`ORCHESTRATOR WAKER OFF — ${waker.reason}. Pane completions will not reach the orchestrator.`);
     } else if (typeof waker.cursorLagBytes === 'number' && waker.cursorLagBytes > 4096) {

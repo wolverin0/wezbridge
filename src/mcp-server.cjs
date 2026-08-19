@@ -1420,7 +1420,24 @@ function probeWezterm() {
     } catch { /* version optional */ }
     return { reachable: true, pane_count: Array.isArray(panes) ? panes.length : 0, version };
   } catch (err) {
-    return { reachable: false, error: err.message };
+    // The fast path timing out is NOT evidence of a wedged mux, and the
+    // difference matters more than almost anything else this tool reports:
+    // the known fix for a wedge is restarting WezTerm, which kills every live
+    // pane. Reporting an unqualified `reachable: false` on a busy box invites
+    // an orchestrator to destroy a working swarm to cure a traffic jam
+    // (observed 2026-08-18: health said unreachable, a direct call 30s later
+    // answered in 191ms while three panes were mid-task).
+    //
+    // A contended mux answers late; a wedged one never answers. So spend one
+    // long deliberate probe and report which it actually was.
+    const timedOut = /ETIMEDOUT/i.test(err.message || '');
+    // 45s, not 25s: a 25s budget expired on a memory-starved box whose mux was
+    // merely slow (2026-08-18 — a leaked tsserver.js held 25GB), which would
+    // have produced the exact false alarm this path exists to prevent. This
+    // probe runs only after the normal one already failed, so it is rare and
+    // can afford to be patient.
+    const confirm = timedOut ? wez.probeMux({ timeoutMs: 45000 }) : null;
+    return wez.classifyMuxProbe({ fastError: err.message, confirm });
   }
 }
 
@@ -1488,9 +1505,26 @@ async function handleBridgeHealth() {
   // gets a top-level verdict rather than being buried in the services blob.
   const waker = services && services.orchestrator_waker;
   if (waker) {
-    health.orchestrator_waker = waker.armed
-      ? { armed: true, repos: waker.repos, pending: waker.pending, last_poke_at: waker.lastPokeAt, cursor_lag_bytes: waker.cursorLagBytes }
-      : { armed: false, reason: waker.reason };
+    if (waker.armed) {
+      health.orchestrator_waker = {
+        armed: true, repos: waker.repos, pending: waker.pending,
+        last_poke_at: waker.lastPokeAt, cursor_lag_bytes: waker.cursorLagBytes,
+      };
+    } else if (waker.deliberate) {
+      // Reported in full, not summarised: the decision record carries the
+      // re-arm condition, and truncating it is how someone ends up "fixing"
+      // this by turning the waker back on.
+      health.orchestrator_waker = {
+        armed: false,
+        disarmed_by_decision: true,
+        decided_at: waker.decidedAt || null,
+        reason: waker.reason,
+        decision: waker.decision || null,
+        note: 'NOT a fault and NOT an alert. Pane completions do not reach the orchestrator by design; an interactive orchestrator must arm its own continuation. Do not re-arm without meeting the condition in the record above.',
+      };
+    } else {
+      health.orchestrator_waker = { armed: false, reason: waker.reason };
+    }
   }
 
   // Liveness verdict in SENTENCES. Two reasons this is not just numbers:

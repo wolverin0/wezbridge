@@ -215,6 +215,80 @@ function listPanes() {
   return result;
 }
 
+/**
+ * One deliberate, uncached, un-retried mux probe with an explicit deadline.
+ *
+ * Exists to separate two failures that are INDISTINGUISHABLE on the normal
+ * path but have opposite remedies: a mux under contention answers late, a
+ * wedged mux never answers. The documented fix for a wedge is restarting
+ * WezTerm, which kills every live pane — so nothing may diagnose a wedge from
+ * a timeout alone. Callers give this a budget far larger than the normal one
+ * and treat a late success as proof it was only busy.
+ *
+ * Deliberately bypasses the listPanes TTL cache: a cached hit would answer
+ * from memory and prove nothing about the socket.
+ */
+function probeMux(opts = {}) {
+  const timeout = opts.timeoutMs || 25000;
+  const started = Date.now();
+  try {
+    const raw = wezCmd(['list', '--format', 'json'], { timeout, retries: 0 });
+    let paneCount = null;
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) paneCount = parsed.length;
+    } catch { /* shape is the caller's problem; the socket answered */ }
+    return { ok: true, elapsed_ms: Date.now() - started, pane_count: paneCount };
+  } catch (err) {
+    return { ok: false, elapsed_ms: Date.now() - started, error: err.message };
+  }
+}
+
+/**
+ * Turn (fast-path error, long-probe result) into a verdict about the mux.
+ *
+ * Pure on purpose: the whole point is a rule that can be tested without an
+ * actually-wedged mux, since the only way to produce one for real is to wedge
+ * the machine everyone is working on.
+ *
+ * The asymmetry that drives every branch: calling a busy mux "wedged" leads to
+ * restarting WezTerm and killing live panes, while calling a wedged mux "busy"
+ * only costs another probe. So a wedge is claimed ONLY when a long deliberate
+ * probe also got nothing.
+ */
+function classifyMuxProbe({ fastError, confirm }) {
+  // A non-timeout failure is a different animal (binary missing, bad args) and
+  // must be surfaced verbatim rather than dressed up as a mux verdict.
+  if (!/ETIMEDOUT/i.test(fastError || '')) {
+    return { reachable: false, error: fastError };
+  }
+  if (confirm && confirm.ok) {
+    return {
+      reachable: true,
+      degraded: true,
+      pane_count: confirm.pane_count,
+      elapsed_ms: confirm.elapsed_ms,
+      note: `mux is SLOW, not wedged — it answered in ${confirm.elapsed_ms}ms after the normal probe timed out. Do NOT restart WezTerm: it would kill every live pane to cure a slowdown. Check the MACHINE before blaming the mux: free memory first, then CPU. (2026-08-18 this exact signature was a leaked tsserver.js holding 25GB with 1.4GB free — nothing to do with WezTerm, and the same probe answered in 612ms once it was killed.)`,
+    };
+  }
+  // Deliberately NOT a wedge verdict. Measured 2026-08-18 on a starved box: the
+  // plain fast path took 25.4s and a 25s confirm probe also expired — while the
+  // same mux had answered in 191ms minutes earlier and every pane was alive.
+  // Root cause that night was a leaked tsserver.js holding 25GB (1.4GB free of
+  // 63.8GB), i.e. the machine, not WezTerm — which is exactly why a slow mux
+  // must never be read as a broken one. So
+  // silence across two probes is genuinely ambiguous, and one sample can never
+  // settle it. What separates the two is TIME, not depth: contention varies
+  // between readings, a wedge never answers at all. Anything that says "wedged"
+  // from a single call is guessing with a live swarm as the stake.
+  return {
+    reachable: false,
+    inconclusive: true,
+    error: fastError,
+    diagnosis: `no answer within ${confirm ? confirm.elapsed_ms : 0}ms across two probes. This is NOT enough to call it wedged: severe contention looks identical in a single reading (measured — a mux that answered in 191ms was later silent for 25s with every pane healthy). To tell them apart, read again in a minute: contention VARIES between readings, a wedge never answers. Only after repeated total silence consider restarting WezTerm — it is the known fix for a real wedge AND it destroys every live pane, so check for a fresh session snapshot first and expect to run \`npm run restore-session\` after.`,
+  };
+}
+
 /** Invalidate the listPanes cache — call after a mutation (spawn/kill/split). */
 function invalidateListPanesCache() {
   _listPanesCache = null;
@@ -549,6 +623,8 @@ module.exports = {
   spawnInWorkspace,
   spawnSshDomain,
   WEZTERM,
+  probeMux,
+  classifyMuxProbe,
   invalidateListPanesCache,
   invalidateGetTextCache,
 };

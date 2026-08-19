@@ -465,7 +465,16 @@ function createEventHandlers(ctx) {
         || path.join(SRC_DIR, '..', '..', '_intel');
       const wakerCfg = resolveWakerConfig({ env: process.env, intelDir });
       if (!wakerCfg.enabled) {
-        daemonStatus.set('orchestrator_waker', { armed: false, reason: wakerCfg.reason });
+        // `deliberate` travels with the status so the health check can tell a
+        // DECISION from a FAULT. Without it, a disarm someone chose on purpose
+        // is reported as a broken daemon for as long as the decision stands.
+        daemonStatus.set('orchestrator_waker', {
+          armed: false,
+          reason: wakerCfg.reason,
+          deliberate: !!wakerCfg.deliberate,
+          decidedAt: wakerCfg.decidedAt || null,
+          decision: wakerCfg.decision || null,
+        });
         log(`orchestrator-waker NOT armed: ${wakerCfg.reason}`);
       } else {
         const waker = createWaker({
