@@ -161,6 +161,17 @@ function assessLiveness({ heartbeat, daemonReachable, now = Date.now(), staleMs 
       alerts.push(`ORCHESTRATOR WAKER OFF — ${waker.reason}. Pane completions will not reach the orchestrator.`);
     } else if (typeof waker.cursorLagBytes === 'number' && waker.cursorLagBytes > 4096) {
       alerts.push(`WAKER FALLING BEHIND — ${waker.cursorLagBytes} bytes of pane events written but unread. Completions are piling up undelivered.`);
+    } else if (typeof waker.flagged === 'number' && waker.flagged > 0) {
+      // An intent that exhausted its attempt cap is a poke the loop could not
+      // deliver no matter what. It never resolves itself — it needs a human look.
+      alerts.push(`WAKER POKES UNDELIVERABLE — ${waker.flagged} intent(s) hit the attempt cap and were flagged. The autonomous loop is broken for those repos until someone looks.`);
+    } else if (typeof waker.pendingOldestMinutes === 'number' && waker.pendingOldestMinutes > 30) {
+      // THE re-arm condition of 2026-08-13, made real: something downstream of
+      // the poke that can FAIL. The disarm happened because 55 intents piled up
+      // at a narrator and nothing measured it. 30 min is generous on purpose —
+      // the orchestrator's own wakeup loop runs every ~15 min, so anything
+      // older than two cycles is genuinely stuck, not merely queued.
+      alerts.push(`WAKER POKES UNATTENDED — oldest pending intent is ${waker.pendingOldestMinutes} min old (${waker.pending} pending). Pokes are being sent but not consumed; this is the exact failure that disarmed the waker on 2026-08-13.`);
     }
   }
   return { ok: alerts.length === 0, alerts, heartbeatAgeMs: ageMs };

@@ -410,10 +410,27 @@ function createWaker(opts) {
   function status() {
     let eventsBytes = 0;
     try { eventsBytes = fs.statSync(cfg.eventsPath).size; } catch { /* no file yet */ }
+    // Age of the OLDEST undelivered intent, in minutes. This is the number that
+    // makes the waker's consumer able to FAIL: a poke that sits undelivered is
+    // invisible in a count ("pending: 3" looks like normal churn) but loud as an
+    // age ("oldest pending: 94 min" is a stuck loop). The 2026-08-13 disarm
+    // happened precisely because 55 intents accumulated with nothing measuring
+    // how long they had been there.
+    let pendingOldestMinutes = 0;
+    for (const it of Object.values(state.pending)) {
+      const t = Date.parse(it.time || '');
+      if (!Number.isNaN(t)) {
+        pendingOldestMinutes = Math.max(pendingOldestMinutes, Math.round((now() - t) / 60000));
+      }
+    }
+    let flagged = 0;
+    try { flagged = Object.keys(readJson(FILES.flags, {})).length; } catch { /* none */ }
     return {
       armed: true,
       repos: cfg.watchRepos,
       pending: Object.keys(state.pending).length,
+      pendingOldestMinutes,
+      flagged,
       lastTickAt: state.lastTickAt || null,
       lastPokeAt: state.lastPokeAt || null,
       cursorBytes: state.cursorBytes,
