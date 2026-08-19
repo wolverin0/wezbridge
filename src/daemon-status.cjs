@@ -35,11 +35,21 @@ function set(name, info) {
   if (!info || typeof info.armed !== 'boolean') {
     throw new Error(`daemon-status.set(${name}): info.armed must be a boolean`);
   }
+  // Everything the component chose to declare, beyond the three fields this
+  // registry always had. Found 2026-08-19 the expensive way: the waker started
+  // reporting `deliberate` (a decision record vs. a fault) and this function
+  // silently DROPPED it, so the health check never saw the flag and kept
+  // alerting on a deliberate disarm. The unit tests passed the whole time
+  // because they handed assessLiveness a hand-built object — they proved the
+  // rule, not the pipe. A registry that quietly discards what a component
+  // declares turns any new field into a no-op nobody notices.
+  const { armed, reason, probe, ...details } = info;
   registry.set(name, {
-    armed: info.armed,
-    reason: info.reason || (info.armed ? 'armed' : 'not armed'),
+    armed,
+    reason: reason || (armed ? 'armed' : 'not armed'),
     at: new Date().toISOString(),
-    probe: typeof info.probe === 'function' ? info.probe : null,
+    probe: typeof probe === 'function' ? probe : null,
+    details,
   });
 }
 
@@ -52,7 +62,7 @@ function set(name, info) {
 function snapshot() {
   const out = {};
   for (const [name, entry] of registry) {
-    const item = { armed: entry.armed, reason: entry.reason, since: entry.at };
+    const item = { armed: entry.armed, reason: entry.reason, since: entry.at, ...entry.details };
     if (entry.probe) {
       try {
         Object.assign(item, entry.probe());
