@@ -1505,9 +1505,26 @@ async function handleBridgeHealth() {
   // gets a top-level verdict rather than being buried in the services blob.
   const waker = services && services.orchestrator_waker;
   if (waker) {
-    health.orchestrator_waker = waker.armed
-      ? { armed: true, repos: waker.repos, pending: waker.pending, last_poke_at: waker.lastPokeAt, cursor_lag_bytes: waker.cursorLagBytes }
-      : { armed: false, reason: waker.reason };
+    if (waker.armed) {
+      health.orchestrator_waker = {
+        armed: true, repos: waker.repos, pending: waker.pending,
+        last_poke_at: waker.lastPokeAt, cursor_lag_bytes: waker.cursorLagBytes,
+      };
+    } else if (waker.deliberate) {
+      // Reported in full, not summarised: the decision record carries the
+      // re-arm condition, and truncating it is how someone ends up "fixing"
+      // this by turning the waker back on.
+      health.orchestrator_waker = {
+        armed: false,
+        disarmed_by_decision: true,
+        decided_at: waker.decidedAt || null,
+        reason: waker.reason,
+        decision: waker.decision || null,
+        note: 'NOT a fault and NOT an alert. Pane completions do not reach the orchestrator by design; an interactive orchestrator must arm its own continuation. Do not re-arm without meeting the condition in the record above.',
+      };
+    } else {
+      health.orchestrator_waker = { armed: false, reason: waker.reason };
+    }
   }
 
   // Liveness verdict in SENTENCES. Two reasons this is not just numbers:

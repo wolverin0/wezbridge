@@ -471,12 +471,34 @@ function resolveWakerConfig({ env = process.env, intelDir, readFile } = {}) {
     return { enabled: true, repos, source: 'file', reason: `armed by _intel/orch-waker.json (repos: ${repos.join(',')})` };
   }
 
+  // A DELIBERATE disarm is not a fault, and conflating the two is expensive in
+  // one specific direction: bridge_health raises an alert and pins ok:false
+  // forever over a decision someone made on purpose, which trains every reader
+  // to ignore its alerts. The config carries its own decision record — a
+  // `_disarmed_*` key holding why it was turned off and what would justify
+  // re-arming — so read it instead of inferring a problem from `enabled:false`.
+  const disarmKey = file
+    ? Object.keys(file).find((k) => k.startsWith('_disarmed'))
+    : null;
+  if (disarmKey) {
+    return {
+      enabled: false,
+      repos: Array.isArray(file.repos) ? file.repos.filter(Boolean) : [],
+      source: 'file',
+      deliberate: true,
+      decidedAt: disarmKey.replace(/^_disarmed_?/, '').replace(/_/g, '-') || null,
+      decision: String(file[disarmKey]),
+      reason: 'disarmed ON PURPOSE — see the decision record in _intel/orch-waker.json',
+    };
+  }
+
   return {
     enabled: false,
     repos: [],
     source: 'default',
+    deliberate: false,
     reason: file
-      ? '_intel/orch-waker.json present but enabled is not true'
+      ? '_intel/orch-waker.json present but enabled is not true, and it carries NO decision record explaining why'
       : 'not armed — no WEZBRIDGE_ORCH_WAKER=1 and no _intel/orch-waker.json',
   };
 }
