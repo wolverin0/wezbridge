@@ -1358,6 +1358,9 @@ function handleToolCall(name, args) {
         // v2 shape check on results, audit every envelope, track open threads.
         const v2 = msgType === 'result' ? a2aIntel.detectV2(body) : undefined;
         a2aIntel.recordEvent({ from_pane: fromPane, to_pane: toPane, corr, type: msgType, submitted, delivered, ...(v2 ? { v2 } : {}) });
+        // Result bodies (the criteria: blocks) persist to the sibling
+        // a2a-results.jsonl — events.jsonl stays metadata-only. Fail-soft.
+        if (msgType === 'result') a2aIntel.recordResultBody({ corr, fromPane, toPane, v2, body });
         const unackedInbound = a2aIntel.updateThreads({ fromPane, toPane, corr, type: msgType, body });
         let note = truncated
           ? 'DELIVERY INTEGRITY FAILURE: the recipient composer did not hold the tail of your envelope before submit — it was likely truncated. Do NOT assume it arrived. Re-send shorter, or write the value to a repo file and send only a pointer.'

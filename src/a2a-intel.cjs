@@ -6,6 +6,7 @@
  * cooperation. All writes are fail-soft: enforcement must never break delivery.
  *
  *   events.jsonl      — append-only envelope audit (metadata only, never bodies)
+ *   a2a-results.jsonl — type=result bodies (the criteria: blocks), capped 16KB
  *   a2a-threads.json  — open-thread state: request opens corr, result awaits ack,
  *                       ack closes. Advisory (last-writer-wins on races).
  */
@@ -38,6 +39,33 @@ function recordEvent(evt) {
   try {
     const line = JSON.stringify({ time: new Date().toISOString(), event: 'a2a.sent', ...evt });
     fs.appendFileSync(path.join(intelDir(), 'events.jsonl'), line + '\n');
+  } catch { /* fail-soft */ }
+}
+
+const RESULT_BODY_CAP = 16 * 1024;
+
+/**
+ * Persist a type=result body to a2a-results.jsonl. events.jsonl's contract is
+ * metadata-only (never bodies), so outcomes get a SIBLING file: 4,180 envelopes
+ * were sent and 0 result bodies retained — the criteria: blocks (the fleet's
+ * machine-checkable outcomes) died with the pane scrollback. Bodies are capped
+ * at 16KB with body_truncated marking the cut. Never throws.
+ */
+function recordResultBody({ corr, fromPane, toPane, v2, body }) {
+  try {
+    const text = String(body ?? '');
+    const truncated = text.length > RESULT_BODY_CAP;
+    const line = JSON.stringify({
+      time: new Date().toISOString(),
+      event: 'a2a.result',
+      corr,
+      from_pane: fromPane,
+      to_pane: toPane,
+      v2,
+      body: truncated ? text.slice(0, RESULT_BODY_CAP) : text,
+      body_truncated: truncated,
+    });
+    fs.appendFileSync(path.join(intelDir(), 'a2a-results.jsonl'), line + '\n');
   } catch { /* fail-soft */ }
 }
 
@@ -119,4 +147,4 @@ function updateThreads({ fromPane, toPane, corr, type, body }) {
     .map(([c]) => c);
 }
 
-module.exports = { intelDir, detectV2, recordEvent, updateThreads };
+module.exports = { intelDir, detectV2, recordEvent, recordResultBody, updateThreads };
