@@ -431,13 +431,15 @@ function telegramPost(method, body) {
   });
 }
 
-async function sendMsg(text, threadId) {
+async function sendMsg(text, threadId, { notify = false } = {}) {
   return telegramPost('sendMessage', {
     chat_id: GROUP_ID,
     message_thread_id: threadId,
     text,
     parse_mode: 'HTML',
-    disable_notification: true,
+    // Live-stream edits stay silent; decision pushes exist to PING the
+    // operator, so they opt into a real notification.
+    disable_notification: !notify,
   });
 }
 
@@ -1064,6 +1066,42 @@ async function pollIncoming() {
   }
 }
 
+// --- Decision push (slice 1, 2026-08-20) ---
+// Rides THIS poll loop — no new process (src/COORDINATORS.json discipline).
+// Detection/dedupe/format live in decision-push.cjs (pure, tested); ledger
+// reading reuses fleet-steward's loadTasks so there is one task reader.
+// Everything here is fail-soft: a broken ledger or a Telegram outage must
+// never take down the live streams.
+const decisionPush = require('./decision-push.cjs');
+const { loadTasks } = require('../scripts/fleet-steward.cjs');
+const DECISION_CHECK_MS = parseInt(process.env.DECISION_CHECK_MS || '60000', 10);
+const DECISION_TOPIC = 'decisiones';
+let lastDecisionCheckAt = 0;
+
+async function checkDecisions() {
+  const now = Date.now();
+  if (now - lastDecisionCheckAt < DECISION_CHECK_MS) return;
+  lastDecisionCheckAt = now;
+  try {
+    const tasks = loadTasks();
+    if (!tasks.length) return; // no ledger visible from here — nothing to push
+    await decisionPush.pushDecisions({
+      tasks,
+      now,
+      send: async (text) => {
+        const threadId = topicMap[DECISION_TOPIC] || await createTopicIfMissing(DECISION_TOPIC);
+        if (!threadId) return { ok: false, description: `no "${DECISION_TOPIC}" topic` };
+        return sendMsg(text, threadId, { notify: true });
+      },
+      onNotified: (taskId) => emit({
+        source: 'telegram-streamer', event: 'decision_notified', task_id: taskId,
+      }),
+    });
+  } catch (err) {
+    stderr(`decision push error: ${err.message}`);
+  }
+}
+
 // --- Main poll loop ---
 async function pollAll() {
   const panes = discoverPanes();
@@ -1087,6 +1125,9 @@ async function pollAll() {
     // Run streams in parallel (non-blocking)
     streamPane(pane, project, isDuplicate).catch(err => stderr(`streamPane fail: ${err.message}`));
   }
+
+  // Push new operator decisions to the 'decisiones' topic (self-throttled).
+  checkDecisions().catch(err => stderr(`decision push fail: ${err.message}`));
 }
 
 // --- Startup ---
