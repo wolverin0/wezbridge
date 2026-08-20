@@ -197,6 +197,68 @@ test('every finding names the lease owner, because that is the routing key', () 
   }
 });
 
+// ---------------------------------------------------------------------------
+// proposal-unledgered (slice 5, 2026-08-20): a report that proposes work emits
+// PROPOSAL:<slug> in its final turn. Two of four such proposals were LOST on
+// 2026-08-18 because nothing checked they became ledger tasks. The steward now
+// contradicts that silence: marker in pane-events within 72h + no task.created
+// for the repo since → finding, flowing through the existing gate/board loop.
+// ---------------------------------------------------------------------------
+
+function proposalIntel({ markerAgeH = 10, markers = ['PROPOSAL:BOARD-PUSH'], events = [] } = {}) {
+  const dir = emptyIntel();
+  fs.writeFileSync(path.join(dir, 'pane-events.jsonl'), JSON.stringify({
+    time: hoursAgo(markerAgeH), repo: 'wezbridge', session: 'abc12345',
+    event: 'turn-end', markers,
+  }) + '\n');
+  if (events.length) {
+    fs.writeFileSync(path.join(dir, 'events.jsonl'),
+      events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+  }
+  return dir;
+}
+
+test('a PROPOSAL marker with no task.created since is proposal-unledgered', () => {
+  const dir = proposalIntel({
+    // a task.created BEFORE the marker proves the check compares TIMES, not
+    // mere existence — old ledger activity must not cover a new proposal
+    events: [{ time: hoursAgo(20), event: 'task.created', task_id: 'T-OLD', repo: 'wezbridge' }],
+  });
+  const f = steward.audit([], NOW, dir).findings;
+  assert.strictEqual(f.length, 1);
+  assert.strictEqual(f[0].category, 'proposal-unledgered');
+  assert.strictEqual(f[0].id, 'proposal:board-push');
+  assert.strictEqual(f[0].repo, 'wezbridge');
+  assert.strictEqual(f[0].age_hours, 10);
+});
+
+test('a task.created for the same repo at-or-after the marker silences it', () => {
+  const dir = proposalIntel({
+    events: [{ time: hoursAgo(5), event: 'task.created', task_id: 'T-NEW', repo: 'wezbridge' }],
+  });
+  assert.deepStrictEqual(steward.audit([], NOW, dir).findings, [],
+    'the proposal became a task — compliant state must be silent');
+});
+
+test('a task.created for a DIFFERENT repo covers nothing', () => {
+  const dir = proposalIntel({
+    events: [{ time: hoursAgo(5), event: 'task.created', task_id: 'T-X', repo: 'otherrepo' }],
+  });
+  assert.strictEqual(steward.audit([], NOW, dir).findings[0].category, 'proposal-unledgered');
+});
+
+test('a proposal older than 72h is outside the window', () => {
+  // The window bounds the check, the GATE bounds the response: past 72h the
+  // marker is history, and re-flagging forever would train everyone to ignore it.
+  const dir = proposalIntel({ markerAgeH: 100 });
+  assert.deepStrictEqual(steward.audit([], NOW, dir).findings, []);
+});
+
+test('ordinary markers without PROPOSAL produce no proposal findings', () => {
+  const dir = proposalIntel({ markers: ['DEPLOYED', 'PR #12'] });
+  assert.deepStrictEqual(steward.audit([], NOW, dir).findings, []);
+});
+
 test('an operator gate declared at the TOP LEVEL is honoured, not just contract.gate', () => {
   // Found 2026-08-14 by rendering the fleet board: T-0072 (pather) carries
   // `gate: "operator"` with `contract: null`. Reading only contract.gate

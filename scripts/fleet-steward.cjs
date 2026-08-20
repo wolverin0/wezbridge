@@ -215,6 +215,73 @@ function buildContext(tasks, dir = intelDir()) {
 const ageMs = (task, now) => now - lastTransition(task);
 
 /**
+ * proposal-unledgered (2026-08-20): a report that proposes work emits
+ * `PROPOSAL:<slug>` in its final turn (the beacon captures it into
+ * pane-events.jsonl, same convention as GATE:). Two of four artifact proposals
+ * were lost on 2026-08-18 because nothing checked they ever became ledger
+ * tasks — an idea that lives only in an HTML file is forgotten by design.
+ *
+ * The check: a PROPOSAL marker within the last 72h with NO `task.created`
+ * event for the same repo at-or-after the marker time is a finding. It flows
+ * through the existing loop entirely — steward report, 24h gate deadline,
+ * board findings, rulings clear it. No new surface, no new file.
+ *
+ * The 72h window bounds the SCAN, the gate bounds the RESPONSE: past the
+ * window the marker is history, and re-flagging forever would train everyone
+ * to ignore the category. Absent/unreadable streams yield zero findings —
+ * same fail-soft posture as loadRulings.
+ */
+const PROPOSAL_WINDOW_HOURS = 72;
+const PROPOSAL_MARKER = /^PROPOSAL:([a-z0-9-]+)$/i;
+
+function readJsonl(file) {
+  try {
+    return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean)
+      .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+      .filter(Boolean);
+  } catch { return []; }
+}
+
+function auditProposals(dir = intelDir(), now = Date.now()) {
+  // Earliest in-window emission per repo+slug: re-emits must not reset the
+  // clock, and a task created after the FIRST ask covers the later echoes too.
+  const proposals = new Map();
+  for (const e of readJsonl(path.join(dir, 'pane-events.jsonl'))) {
+    if (!e || !Array.isArray(e.markers) || !e.repo) continue;
+    const at = ms(e.time);
+    if (!at || at > now || now - at > HOURS(PROPOSAL_WINDOW_HOURS)) continue;
+    for (const marker of e.markers) {
+      const hit = PROPOSAL_MARKER.exec(String(marker));
+      if (!hit) continue;
+      const slug = hit[1].toLowerCase();
+      const key = `${e.repo}|${slug}`;
+      const prev = proposals.get(key);
+      if (!prev || at < prev.at) proposals.set(key, { repo: e.repo, slug, at });
+    }
+  }
+  if (!proposals.size) return [];
+
+  const createdAt = new Map();   // repo -> latest task.created time
+  for (const e of readJsonl(path.join(dir, 'events.jsonl'))) {
+    if (!e || e.event !== 'task.created' || !e.repo) continue;
+    const at = ms(e.time);
+    if (at > (createdAt.get(e.repo) || 0)) createdAt.set(e.repo, at);
+  }
+
+  const findings = [];
+  for (const p of proposals.values()) {
+    if ((createdAt.get(p.repo) || 0) >= p.at) continue;   // it became a task
+    findings.push({
+      id: `proposal:${p.slug}`, repo: p.repo, state: null,
+      title: `PROPOSAL:${p.slug}`, owner: null, age_hours: hours(now - p.at),
+      category: 'proposal-unledgered',
+      why: `a report proposed work (PROPOSAL:${p.slug}) and no task has been created for ${p.repo} since — file it or rule it dead`,
+    });
+  }
+  return findings;
+}
+
+/**
  * Classify one task. Returns null when it needs no attention.
  * `now` is injected so this is testable without clock mocking.
  */
@@ -305,6 +372,9 @@ function audit(tasks, now = Date.now(), dir = intelDir()) {
     // pre-existing backlog is never retro-flagged.
     ...lintSpecRefs(tasks, now),
     ...lintRulings(loadRulings(dir), now),
+    // Proposals that never became tasks (2026-08-20): same enforcement loop,
+    // read from the beacon stream instead of the ledger.
+    ...auditProposals(dir, now),
   ];
   // Operator-owed items first: those are the ones that block other people's work.
   // routine-silent ranks high because a routine that stopped firing invalidates
@@ -315,8 +385,8 @@ function audit(tasks, now = Date.now(), dir = intelDir()) {
     // Hygiene before backlog-idle: an unspecced dispatch is about to waste a
     // builder session; an unlanded value is a live near-miss. Both outrank
     // "nobody picked this up yet".
-    'dispatch-unspecced': 8, 'ruling-unlanded': 9,
-    'blocked-not-gated': 10, idle: 11,
+    'dispatch-unspecced': 8, 'ruling-unlanded': 9, 'proposal-unledgered': 10,
+    'blocked-not-gated': 11, idle: 12,
   };
   const order = (f) => (rank[f.category] === undefined ? 99 : rank[f.category]);
   findings.sort((a, b) => (order(a) - order(b)) || (b.age_hours - a.age_hours));
@@ -345,7 +415,7 @@ function render(report) {
 
 module.exports = {
   classify, audit, render, RULES, loadTasks, loadRulings,
-  lastTransition, lastProgress, ownProgress, buildContext,
+  lastTransition, lastProgress, ownProgress, buildContext, auditProposals,
 };
 
 if (require.main === module) {

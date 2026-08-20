@@ -226,6 +226,29 @@ test('`resolved` permanently covers a finding, and an unknown word never does', 
   }
 });
 
+test('proposal-unledgered is gated at 24h: unruled past deadline goes RED', () => {
+  // Slice 5 closes the loop: a lost proposal is not just a report line — after
+  // 24h without a ruling the gate itself refuses to stay green. Without this
+  // deadline the steward finding would be narration, which is what gets ignored.
+  const pf = (age) => finding({
+    id: 'proposal:board-push', category: 'proposal-unledgered', repo: 'wezbridge', age_hours: age,
+  });
+  assert.strictEqual(gate.DEADLINES['proposal-unledgered'], 24);
+  assert.strictEqual(
+    gate.evaluate({ findings: [pf(30)], rulings: [], now: NOW }).verdict, 'RED',
+    'a proposal lost for 30h with no ruling must fail the gate');
+  assert.strictEqual(
+    gate.evaluate({ findings: [pf(10)], rulings: [], now: NOW }).verdict, 'GREEN',
+    'under the deadline nothing is owed yet');
+  assert.strictEqual(
+    gate.evaluate({
+      findings: [pf(30)],
+      rulings: [{ task: 'proposal:board-push', category: 'proposal-unledgered', ruling: 'cancelled', why: 'proposal rejected', at: iso(0) }],
+      now: NOW,
+    }).verdict, 'GREEN',
+    'a ruling clears it through the existing vocabulary — no new machinery');
+});
+
 test('`approved` covers NOTHING, and that is deliberate — do not "fix" this', () => {
   // READ THIS BEFORE CHANGING IT. The board app writes `approved` when the
   // operator approves a gated decision, and it also clears the gate and sets
