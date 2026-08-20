@@ -18,6 +18,19 @@ export interface TaskDetail {
   updated_at: string | null;
 }
 
+/** Slice 4 join: what the fleet's own records say happened for this task. */
+export interface Evidence {
+  last_result: {
+    corr: string;
+    at: string | null;
+    from_pane: number | null;
+    v2: string | null;
+    excerpt: string;
+    truncated: boolean;
+  } | null;
+  last_commit: { sha: string | null; at: string | null } | null;
+}
+
 export interface Decision {
   id: string;
   repo: string;
@@ -28,6 +41,7 @@ export interface Decision {
   category: string;
   /** Absent on steward-finding cards, which have no task file behind them. */
   detail?: TaskDetail;
+  evidence?: Evidence;
 }
 
 export interface DeferredHidden {
@@ -68,6 +82,7 @@ export interface InFlight {
   owner: string | null;
   updated_at: string | null;
   detail: TaskDetail;
+  evidence?: Evidence;
 }
 
 export interface RepoTask {
@@ -103,6 +118,19 @@ export interface BoardState {
     unruled: number;
     last_run_at: string | null;
     last_run_text: string;
+  };
+  /** Board freshness (slice 4): stale work evidence with untouched open tasks. */
+  freshness?: {
+    verdict: 'GREEN' | 'RED' | 'UNKNOWN';
+    stale: {
+      repo: string;
+      sha: string | null;
+      evidence_kind: string;
+      evidence_at: string;
+      age_hours: number;
+      open_tasks: string[];
+    }[];
+    reason?: string;
   };
   last_turn_at: string | null;
   snapshot_at: string | null;

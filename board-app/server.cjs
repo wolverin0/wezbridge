@@ -40,6 +40,7 @@ const { audit, loadTasks } = require(path.join(HERE, '..', 'scripts', 'fleet-ste
 const { loadRuns, boardVerdict } = require(path.join(HERE, '..', 'scripts', 'routine-audit.cjs'));
 const { evaluate, rulingCovers } = require(path.join(HERE, '..', 'scripts', 'steward-gate.cjs'));
 const { gateOf } = require(path.join(HERE, '..', 'scripts', 'fleet-board.cjs'));
+const { evaluateIntel: freshEvaluate } = require(path.join(HERE, '..', 'scripts', 'board-fresh-gate.cjs'));
 
 const VERBS = ['approved', 'deferred', 'cancelled'];
 const INBOX_KINDS = ['note', 'new-task', 'call-me'];
@@ -216,6 +217,47 @@ function detailOf(t) {
   };
 }
 
+const RESULT_EXCERPT_CAP = 500;
+
+/**
+ * Evidence join (slice 4). The fleet already persists the two work signals —
+ * result bodies in a2a-results.jsonl (by corr) and commit identity in
+ * head_moved beacon lines (by repo) — but the board never joined them onto the
+ * cards, so "¿está actualizado?" was asked out loud instead of read off the
+ * screen. Latest line wins on both sides: the files are append-only, so file
+ * order IS time order.
+ */
+function evidenceIndex() {
+  const resultByCorr = new Map();
+  for (const r of readJsonl(path.join(INTEL, 'a2a-results.jsonl'), 1000)) {
+    if (r.event === 'a2a.result' && r.corr) resultByCorr.set(r.corr, r);
+  }
+  const commitByRepo = new Map();
+  for (const e of readJsonl(path.join(INTEL, 'pane-events.jsonl'), 5000)) {
+    if (e.event === 'turn-end' && e.head_moved === true && e.repo) commitByRepo.set(e.repo, e);
+  }
+  return { resultByCorr, commitByRepo };
+}
+
+/** The evidence block a decision/in-flight card carries. Nulls are honest: no
+ *  join is "nothing recorded", never a stray match from another task. */
+function evidenceOf(t, { resultByCorr, commitByRepo }) {
+  const r = t.corr ? resultByCorr.get(t.corr) : null;
+  const c = commitByRepo.get(t.repo);
+  const body = r ? String(r.body || '') : '';
+  return {
+    last_result: r ? {
+      corr: r.corr,
+      at: r.time || null,
+      from_pane: r.from_pane ?? null,
+      v2: r.v2 || null,
+      excerpt: body.slice(0, RESULT_EXCERPT_CAP),
+      truncated: r.body_truncated === true || body.length > RESULT_EXCERPT_CAP,
+    } : null,
+    last_commit: c ? { sha: c.head || null, at: c.time || null } : null,
+  };
+}
+
 function buildState(now = Date.now()) {
   const tasks = loadTasks();
   const report = audit(tasks, now, INTEL);
@@ -223,6 +265,16 @@ function buildState(now = Date.now()) {
   const { unruled, verdict } = evaluate({ findings: report.findings, rulings, now });
 
   const open = tasks.filter((t) => OPEN_STATES.includes(t.state));
+  const evidence = evidenceIndex();
+  // Freshness verdict, in-process through the SAME evaluate the 09:05 gate
+  // runs (steward-gate pattern): pill and gate can never disagree. Fail-soft:
+  // a broken evaluation reports UNKNOWN, never a calm green.
+  let freshness;
+  try {
+    freshness = freshEvaluate({ intelDir: INTEL, tasks, now });
+  } catch (e) {
+    freshness = { verdict: 'UNKNOWN', stale: [], reason: String(e.message || e).slice(0, 120) };
+  }
   const findingByTask = {};
   for (const f of report.findings) findingByTask[f.id] = f;
 
@@ -263,6 +315,7 @@ function buildState(now = Date.now()) {
       || (findingByTask[t.id] && findingByTask[t.id].why) || '',
     category: categoryOf(t),
     detail: detailOf(t),
+    evidence: evidenceOf(t, evidence),
   })).sort((a, b) => new Date(a.updated_at || 0) - new Date(b.updated_at || 0));
 
   const lastRuling = rulings.length ? rulings[rulings.length - 1] : null;
@@ -271,6 +324,7 @@ function buildState(now = Date.now()) {
     id: t.id, repo: t.repo, title: t.title, state: t.state,
     owner: (t.lease && t.lease.owner) || null, updated_at: t.updated_at || null,
     detail: detailOf(t),
+    evidence: evidenceOf(t, evidence),
   }));
 
   const rest = open.filter((t) => gateOf(t) !== 'operator' && !['running', 'review'].includes(t.state));
@@ -299,6 +353,8 @@ function buildState(now = Date.now()) {
       last_run_at: gateAt ? new Date(gateAt).toISOString() : null,
       last_run_text: gateText,
     },
+    // Slice 4: "¿está actualizado?" answered by the payload, not the operator.
+    freshness,
     // Every steward finding that is NOT an operator gate (those are decision
     // cards already), marked ruled/unruled — so a ruling can be made where the
     // problem is seen, before OR after the deadline forces it.

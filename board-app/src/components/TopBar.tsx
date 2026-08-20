@@ -27,6 +27,16 @@ export default function TopBar({ state }: { state: BoardState | null }) {
     ? 'gate: DESCONOCIDO'
     : `gate: ${gate.verdict}${gate.unruled ? ` (${gate.unruled} sin decidir)` : ''}`;
 
+  // Freshness (slice 4): stale work evidence with untouched open tasks.
+  // UNKNOWN renders amber, never a calm green — same honesty rule as the rest.
+  const fresh = state?.freshness;
+  const freshClass = !fresh || fresh.verdict === 'UNKNOWN' ? 'warn' : fresh.verdict === 'GREEN' ? 'ok' : 'bad';
+  const freshLabel = !fresh || fresh.verdict === 'UNKNOWN'
+    ? 'frescura: DESCONOCIDA'
+    : fresh.verdict === 'RED'
+      ? `frescura: RED (${fresh.stale.map((s) => s.repo).join(', ')})`
+      : 'frescura: GREEN';
+
   const turnMins = state ? ageMinutes(state.last_turn_at) : null;
   const snapMins = state ? ageMinutes(state.snapshot_at) : null;
 
@@ -34,6 +44,9 @@ export default function TopBar({ state }: { state: BoardState | null }) {
     <header className="topbar">
       <span className="brand">Flota</span>
       <span className={`pill ${gateClass}`}>{gateLabel}</span>
+      <span className={`pill ${freshClass}`} title={fresh?.stale.map((s) => `${s.repo} ${s.sha ?? s.evidence_kind} hace ${s.age_hours}h sin tarea tocada`).join('\n') || undefined}>
+        {freshLabel}
+      </span>
       <span className={`pill ${pillClass(turnMins, 150, 300)}`}>
         turno: {state ? ageText(state.last_turn_at) : '…'}
       </span>

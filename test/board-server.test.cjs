@@ -22,6 +22,7 @@ const { rulingCovers } = require('../scripts/steward-gate.cjs');
 const { gateOf } = require('../scripts/fleet-board.cjs');
 
 const TOKEN = 'test-token-abcdef';
+const EVID_SHA = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2';
 let server;
 let base;
 
@@ -55,6 +56,30 @@ before(async () => {
   // The FLOTA control: ungated + ready, so it lands in by_repo, which is where
   // the operator complained the rows say nothing.
   seedTask('T-9104', { ...rich, state: 'ready', contract: { ...rich.contract, gate: null } });
+  // Slice 4 evidence fixtures: a decision and an in-flight task, each with a
+  // corr that has a persisted result body, plus a head_moved beacon for the
+  // repo — the board must JOIN these onto the cards, not make the operator ask.
+  seedTask('T-9107', { corr: 'corr-evid' });
+  seedTask('T-9108', { state: 'running', corr: 'corr-run', contract: { gate: null }, lease: { owner: 'pane-5' } });
+  fs.writeFileSync(path.join(TMP_INTEL, 'a2a-results.jsonl'), [
+    JSON.stringify({
+      time: new Date(Date.now() - 7 * 3600000).toISOString(), event: 'a2a.result',
+      corr: 'corr-evid', from_pane: 5, to_pane: 0, v2: 'missing', body: 'primera respuesta',
+    }),
+    JSON.stringify({
+      time: new Date(Date.now() - 6 * 3600000).toISOString(), event: 'a2a.result',
+      corr: 'corr-evid', from_pane: 5, to_pane: 0, v2: 'ok',
+      body: `criteria:\n- board join: pass — segunda respuesta\n${'x'.repeat(600)}`,
+    }),
+    JSON.stringify({
+      time: new Date(Date.now() - 3600000).toISOString(), event: 'a2a.result',
+      corr: 'corr-run', from_pane: 7, to_pane: 0, v2: 'ok', body: 'criteria:\n- otro corr: pass',
+    }),
+  ].join('\n') + '\n');
+  fs.writeFileSync(path.join(TMP_INTEL, 'pane-events.jsonl'), JSON.stringify({
+    time: new Date(Date.now() - 6 * 3600000).toISOString(), repo: 'wezbridge', session: 'abc',
+    event: 'turn-end', markers: [], head: EVID_SHA, head_prev: 'e'.repeat(40), head_moved: true,
+  }) + '\n');
   // Generous limiter here: these tests exercise validation, not the limiter.
   // The limiter has its own server below — it counts REJECTED posts too, on
   // purpose, so a flood of invalid requests is capped like a valid one.
@@ -99,6 +124,57 @@ test('state exposes the operator-gated task as a decision', async () => {
   const d = state.decisions.find((x) => x.id === 'T-9001');
   assert.ok(d, 'T-9001 is a decision card');
   assert.strictEqual(d.question, 'the question');
+});
+
+// --- slice 4: evidence join + freshness --------------------------------------
+//
+// These run BEFORE any ruling lands: every seeded task still has its 2026-08-01
+// updated_at, so the 6h-old commit evidence is deterministically "untouched".
+
+test('a decision carries evidence.last_result when a2a-results has its corr', async () => {
+  const state = await (await api('/api/state')).json();
+  const d = state.decisions.find((x) => x.id === 'T-9107');
+  assert.ok(d, 'T-9107 is a decision card');
+  assert.ok(d.evidence, 'the card carries an evidence block');
+  const r = d.evidence.last_result;
+  assert.ok(r, 'last_result joined by corr');
+  assert.strictEqual(r.v2, 'ok');
+  assert.ok(r.excerpt.includes('segunda respuesta'), 'the LATEST result for the corr wins');
+  assert.ok(!r.excerpt.includes('primera respuesta'), 'not the older one');
+  assert.ok(r.excerpt.length <= 500, `excerpt is capped at 500 chars, got ${r.excerpt.length}`);
+});
+
+test('a decision carries evidence.last_commit for its repo (sha + time)', async () => {
+  const state = await (await api('/api/state')).json();
+  const d = state.decisions.find((x) => x.id === 'T-9107');
+  assert.strictEqual(d.evidence.last_commit.sha, EVID_SHA);
+  assert.ok(Number.isFinite(Date.parse(d.evidence.last_commit.at)), 'commit evidence carries its time');
+});
+
+test('in-flight tasks carry evidence too, joined by THEIR corr', async () => {
+  const state = await (await api('/api/state')).json();
+  const t = state.in_flight.find((x) => x.id === 'T-9108');
+  assert.ok(t, 'T-9108 is in flight');
+  assert.ok(t.evidence.last_result, 'result joined');
+  assert.ok(t.evidence.last_result.excerpt.includes('otro corr'), 'joined by ITS corr, not any result');
+  assert.strictEqual(t.evidence.last_commit.sha, EVID_SHA);
+});
+
+test('a task with no corr gets last_result null, never a stray join', async () => {
+  const state = await (await api('/api/state')).json();
+  const d = state.decisions.find((x) => x.id === 'T-9001');
+  assert.ok(d.evidence, 'evidence block still present');
+  assert.strictEqual(d.evidence.last_result, null);
+  assert.strictEqual(d.evidence.last_commit.sha, EVID_SHA, 'repo commit still joins');
+});
+
+test('freshness pill: RED while the 6h-old commit has no task touched since', async () => {
+  const state = await (await api('/api/state')).json();
+  assert.ok(state.freshness, 'payload carries the freshness verdict');
+  assert.strictEqual(state.freshness.verdict, 'RED');
+  const s = state.freshness.stale.find((x) => x.repo === 'wezbridge');
+  assert.ok(s, 'names the repo');
+  assert.strictEqual(s.sha, EVID_SHA, 'and the sha');
 });
 
 // --- verb whitelist ---------------------------------------------------------
@@ -310,6 +386,16 @@ test('failure path: the task write fails, the ruling still stands, the response 
     'THE RULING STANDS — it is the source of truth and was written first');
   assert.strictEqual(transition.applied, false);
   assert.ok(transition.error, 'the failure is reported, not swallowed into a success');
+});
+
+// --- slice 4: touching a task clears freshness -------------------------------
+
+test('freshness returns GREEN once a task moved after the evidence', async () => {
+  // The transitions above stamped updated_at = now on T-9101/T-9102 — a task
+  // WAS touched after the 6h-old commit, which is exactly what clears the gate.
+  const state = await (await api('/api/state')).json();
+  assert.strictEqual(state.freshness.verdict, 'GREEN',
+    'updating the ledger after the work is the behaviour the gate trains');
 });
 
 // --- T-0143 follow-up: the gate lives in EITHER place -----------------------
