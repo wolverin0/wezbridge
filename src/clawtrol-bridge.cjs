@@ -401,7 +401,12 @@ async function applyIntent(intent) {
       if (!repo || !p.kind || !p.title || !goal) {
         return { ...base, result: { ...base.result, reason: 'create_task requires payload {project|repo, kind, title, brief|goal}' } };
       }
-      const args = ['create', '--repo', repo, '--kind', p.kind, '--title', p.title, '--goal', goal];
+      // blocked_by es obligatorio en el ledger (assertBlockedBy, T-0183): una
+      // tarea abierta debe declarar a quien espera. Un intent del operador crea
+      // trabajo que queda esperando a un AGENTE; si el kind resulta gateado, el
+      // ledger mismo lo sobreescribe a 'operator' al forzar el gate.
+      const blockedBy = ['operator', 'third_party', 'agent'].includes(p.blocked_by) ? p.blocked_by : 'agent';
+      const args = ['create', '--repo', repo, '--kind', p.kind, '--title', p.title, '--goal', goal, '--blocked-by', blockedBy];
       const criteria = Array.isArray(p.acceptance) ? p.acceptance.join(';') : (typeof p.acceptance === 'string' ? p.acceptance : null);
       if (criteria) args.push('--criteria', criteria);
       const r = await runLedger(args);

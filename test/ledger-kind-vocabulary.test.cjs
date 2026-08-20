@@ -33,7 +33,9 @@ function sandbox() {
 
 function createTask(dir, kind) {
   return execFileSync(process.execPath, [
-    LEDGER, 'create', '--title', 'probe', '--goal', 'probe', '--kind', kind,
+    // --blocked-by es obligatorio desde T-0183 (assertBlockedBy falla cerrado);
+    // este test mide el vocabulario de KINDS, no el de blocked_by.
+    LEDGER, 'create', '--title', 'probe', '--goal', 'probe', '--kind', kind, '--blocked-by', 'agent',
   ], { env: { ...process.env, WEZBRIDGE_INTEL_DIR: dir }, encoding: 'utf8', stdio: 'pipe' });
 }
 
