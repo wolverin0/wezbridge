@@ -755,7 +755,40 @@ function schedule(ms) {
   if (state.timer.unref) state.timer.unref();
 }
 
+/**
+ * ClawTrol burial (T-0191, 2026-08-20). The cockpit was retired by operator
+ * ruling 2026-08-13 and the bridge kept polling a corpse: 274 consecutive sync
+ * failures against a 404, dirtying health on every surface. The burial is a
+ * DECISION RECORD, not an env flag: _intel/clawtrol-bridge.json carries a
+ * `_disarmed_*` key with the reason and the re-arm condition — the exact
+ * convention resolveWakerConfig reads for the orchestrator waker. While the
+ * record exists the bridge refuses to arm even with CLAWTROL_URL/TOKEN still
+ * exported somewhere; deleting the record (an operator act) restores the old
+ * env-driven behavior. Absent or unparseable record → fail-soft, env decides.
+ */
+function resolveClawtrolDecision({ intelDir: dir, readFile } = {}) {
+  const read = readFile || ((p) => fs.readFileSync(p, 'utf8'));
+  let file = null;
+  try {
+    file = JSON.parse(read(path.join(dir || intelDir(), 'clawtrol-bridge.json')));
+  } catch { return { disarmed: false, deliberate: false }; }
+  const disarmKey = file && typeof file === 'object'
+    ? Object.keys(file).find((k) => k.startsWith('_disarmed'))
+    : null;
+  if (!disarmKey) return { disarmed: false, deliberate: false };
+  return {
+    disarmed: true,
+    deliberate: true,
+    decidedAt: disarmKey.replace(/^_disarmed_?/, '').replace(/_/g, '-') || null,
+    decision: String(file[disarmKey]),
+    reason: 'disarmed ON PURPOSE — see the decision record in _intel/clawtrol-bridge.json',
+  };
+}
+
 function start({ notifyOperatorMessage } = {}) {
+  // The burial outranks the env: a machine that still exports the creds must
+  // not be able to resurrect a bridge the operator buried.
+  if (resolveClawtrolDecision().disarmed) return false;
   if (!config()) return false; // unconfigured → disabled silently (fail-soft)
   if (state.running) return true;
   state.notifyOperatorMessage = typeof notifyOperatorMessage === 'function' ? notifyOperatorMessage : null;
@@ -794,7 +827,7 @@ function health() {
 }
 
 module.exports = {
-  start, stop, health,
+  start, stop, health, resolveClawtrolDecision,
   // exported for tests
   shouldLogFailure, shouldLogRecovery,
   readDelta, readCursors, writeCursors, toWireEvent, toWireMessage,
