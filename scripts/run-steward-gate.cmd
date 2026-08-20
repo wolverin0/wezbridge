@@ -53,6 +53,14 @@ REM So RESULT is captured above and restored below, and errors go to the log.
 node "%REPO%\scripts\fleet-board.cjs" >> "%INTEL%\steward-gate.log" 2>&1
 if errorlevel 1 echo [%DATE% %TIME%] WARN: fleet-board failed to render, board.html is now STALE >> "%INTEL%\steward-gate.log"
 
+REM Board freshness gate (slice 4): work evidence (commits, corroborated deploy
+REM markers) older than 4h with untouched open tasks goes RED. Verdict lands in
+REM its own latest file (the board pill recomputes live; this is the daily
+REM durable record) and in the shared log. Like the renderer above, it must
+REM never change this job's exit code - RESULT is restored at :done.
+node "%REPO%\scripts\board-fresh-gate.cjs" > "%INTEL%\board-fresh-gate-latest.txt" 2>&1
+type "%INTEL%\board-fresh-gate-latest.txt" >> "%INTEL%\steward-gate.log"
+
 REM One log line on EVERY path. A scheduled job that logs nothing is
 REM indistinguishable from one that never ran.
 echo [%DATE% %TIME%] exit=%RESULT% >> "%INTEL%\steward-gate.log"
