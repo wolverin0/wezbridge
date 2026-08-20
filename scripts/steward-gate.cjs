@@ -60,6 +60,10 @@ const DEADLINES = {
   // unlanded is 72h — generous on purpose, the fix is a one-line re-append.
   'dispatch-unspecced': 48,
   'ruling-unlanded': 72,
+  // 2026-08-20: a PROPOSAL marker that never became a ledger task. 24h because
+  // the proposing session is usually gone by then — the idea survives only if
+  // someone files it or rules it dead while the context is still warm.
+  'proposal-unledgered': 24,
 };
 
 /** A ruling stops covering a finding once this passes (dispatched only). */
