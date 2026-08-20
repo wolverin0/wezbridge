@@ -18,10 +18,12 @@ fs.mkdirSync(INTEL, { recursive: true });
 fs.mkdirSync(LEDGER, { recursive: true });
 fs.mkdirSync(path.join(REPO, '.agent-workflow'), { recursive: true });
 // Locate the real ledger.cjs regardless of checkout depth: repo root sits at
-// <Py Apps>/wezbridge (2 up from test/) OR <Py Apps>/_worktrees/<name> (3 up).
+// <Py Apps>/wezbridge (2 up from test/), <Py Apps>/_worktrees/<name> (3 up),
+// OR <Py Apps>/wezbridge/.claude/worktrees/<name> (5 up — workflow worktrees).
 const LEDGER_SRC = [
   path.join(__dirname, '..', '..', '_docs-curation', 'ledger.cjs'),
   path.join(__dirname, '..', '..', '..', '_docs-curation', 'ledger.cjs'),
+  path.join(__dirname, '..', '..', '..', '..', '..', '_docs-curation', 'ledger.cjs'),
 ].find((p) => fs.existsSync(p));
 if (!LEDGER_SRC) throw new Error('cannot locate _docs-curation/ledger.cjs from this checkout');
 fs.copyFileSync(LEDGER_SRC, path.join(LEDGER, 'ledger.cjs'));
