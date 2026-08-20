@@ -402,6 +402,25 @@ function createEventHandlers(ctx) {
     // CLAWTROL_URL/TOKEN; watchdog disabled via WEZBRIDGE_WATCHDOG=0.
     try {
       const bridge = require('../clawtrol-bridge.cjs');
+      // ClawTrol burial (T-0191, 2026-08-20): read the decision record BEFORE
+      // touching CLAWTROL_URL/TOKEN. A `_disarmed_*` key in
+      // _intel/clawtrol-bridge.json means the operator buried the cockpit —
+      // skip arming entirely and report a DECISION (deliberate), not a fault,
+      // so 274 dead-cockpit sync failures never dirty health again. Same
+      // convention as resolveWakerConfig + the waker's deliberate branch below.
+      const clawtrolDecision = bridge.resolveClawtrolDecision();
+      if (clawtrolDecision.disarmed) {
+        // No `return` here: this block shares a function with the watchdog and
+        // waker arming below — bailing out would silently disarm THEM too.
+        daemonStatus.set('clawtrol_bridge', {
+          armed: false,
+          deliberate: true,
+          disarmed_by_decision: true,
+          decidedAt: clawtrolDecision.decidedAt || null,
+          reason: clawtrolDecision.decision,
+        });
+        log(`clawtrol-bridge NOT armed: ${clawtrolDecision.reason}`);
+      } else {
       const notifyOperatorMessage = (message) => {
         const candidates = (discoverPanes ? discoverPanes() : []).filter((pane) => {
           const projectName = pane.projectName
@@ -441,6 +460,7 @@ function createEventHandlers(ctx) {
         reason: bridgeArmed ? 'armed (outbound sync loop)' : 'disabled (CLAWTROL_URL/TOKEN unset)',
         probe: () => bridge.health(),
       });
+      }
     } catch (e) {
       log(`clawtrol-bridge failed to start: ${e.message}`);
     }
