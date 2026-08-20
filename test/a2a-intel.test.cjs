@@ -161,6 +161,94 @@ test('an ack for an unknown corr invents nothing', () => {
   }
 });
 
+// --- recordResultBody: type=result bodies persist to a2a-results.jsonl ------
+// 4,180 A2A envelopes were sent and 0 result bodies retained — the criteria:
+// blocks (the fleet's machine-checkable outcomes) died with the pane scrollback.
+// Bodies go to a SIBLING file; events.jsonl's contract stays metadata-only.
+
+function withTmpIntelDir(fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-results-'));
+  const prior = process.env.WEZBRIDGE_INTEL_DIR;
+  process.env.WEZBRIDGE_INTEL_DIR = dir;
+  try {
+    return fn(dir);
+  } finally {
+    if (prior === undefined) delete process.env.WEZBRIDGE_INTEL_DIR; else process.env.WEZBRIDGE_INTEL_DIR = prior;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('recordResultBody: a result body persists as one line with corr + body', () => {
+  withTmpIntelDir((dir) => {
+    const body = 'Done.\ncriteria:\n- tokens expire: pass — tests/auth.test.ts\nfiles_changed:\n- src/auth.ts';
+    intel.recordResultBody({ corr: 'rb-1', fromPane: 4, toPane: 7, v2: 'ok', body });
+    const lines = fs.readFileSync(path.join(dir, 'a2a-results.jsonl'), 'utf8').trim().split('\n');
+    assert.strictEqual(lines.length, 1, 'exactly one line per result');
+    const rec = JSON.parse(lines[0]);
+    assert.strictEqual(rec.event, 'a2a.result');
+    assert.strictEqual(rec.corr, 'rb-1');
+    assert.strictEqual(rec.from_pane, 4);
+    assert.strictEqual(rec.to_pane, 7);
+    assert.strictEqual(rec.v2, 'ok');
+    assert.strictEqual(rec.body, body);
+    assert.strictEqual(rec.body_truncated, false);
+    assert.ok(rec.time);
+  });
+});
+
+test('recordResultBody: a 20KB body is capped at 16KB with body_truncated:true', () => {
+  withTmpIntelDir((dir) => {
+    const big = 'x'.repeat(20 * 1024);
+    intel.recordResultBody({ corr: 'rb-big', fromPane: 1, toPane: 2, v2: 'missing', body: big });
+    const rec = JSON.parse(fs.readFileSync(path.join(dir, 'a2a-results.jsonl'), 'utf8').trim());
+    assert.strictEqual(rec.body.length, 16 * 1024, 'body capped at 16KB');
+    assert.strictEqual(rec.body_truncated, true);
+  });
+});
+
+test('request/progress/ack flow leaves a2a-results.jsonl untouched', () => {
+  withTmpIntelDir((dir) => {
+    // The exact non-result flow mcp-server runs: recordEvent + updateThreads.
+    for (const type of ['request', 'progress', 'ack']) {
+      intel.recordEvent({ from_pane: 1, to_pane: 2, corr: 'nr-1', type });
+      intel.updateThreads({ fromPane: 1, toPane: 2, corr: 'nr-1', type, body: 'some body text' });
+    }
+    assert.ok(!fs.existsSync(path.join(dir, 'a2a-results.jsonl')),
+      'only type=result may create a2a-results.jsonl');
+  });
+});
+
+test('events.jsonl contract holds: no line ever carries a body key', () => {
+  withTmpIntelDir((dir) => {
+    // Full result flow as mcp-server runs it: metadata event + body persist.
+    intel.recordEvent({ from_pane: 4, to_pane: 7, corr: 'ct-1', type: 'result', v2: 'ok' });
+    intel.recordResultBody({ corr: 'ct-1', fromPane: 4, toPane: 7, v2: 'ok', body: 'criteria:\n- x: pass' });
+    intel.updateThreads({ fromPane: 4, toPane: 7, corr: 'ct-1', type: 'result', body: 'criteria:\n- x: pass' });
+    const lines = fs.readFileSync(path.join(dir, 'events.jsonl'), 'utf8').trim().split('\n');
+    assert.ok(lines.length >= 1);
+    for (const line of lines) {
+      assert.ok(!('body' in JSON.parse(line)), 'events.jsonl is metadata only, never bodies');
+    }
+  });
+});
+
+test('recordResultBody: fail-soft — unwritable intel dir never throws', () => {
+  const prev = process.env.WEZBRIDGE_INTEL_DIR;
+  process.env.WEZBRIDGE_INTEL_DIR = path.join(TMP, 'no\0valid');
+  assert.doesNotThrow(() => intel.recordResultBody({ corr: 'x', fromPane: 1, toPane: 2, v2: 'ok', body: 'b' }));
+  process.env.WEZBRIDGE_INTEL_DIR = prev;
+});
+
+test('call-site gate: mcp-server persists bodies ONLY for type=result', () => {
+  // mcp-server.cjs exports nothing (top-level server script), so the gate is
+  // enforced at source level: the ONE call must sit behind the result guard.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'mcp-server.cjs'), 'utf8');
+  const calls = src.match(/recordResultBody\(/g) || [];
+  assert.strictEqual(calls.length, 1, 'exactly one recordResultBody call site');
+  assert.match(src, /if \(msgType === 'result'\) a2aIntel\.recordResultBody\(/,
+    'the call must be guarded by msgType === \'result\'');
+});
+
 test('an error still closes the thread outright', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-threads-'));
   const prior = process.env.WEZBRIDGE_INTEL_DIR;
