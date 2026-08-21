@@ -153,6 +153,24 @@ def _check_for_registry(_cfg: Any = None) -> bool:
     return bool(_env("PANE_BRIDGE_SECRET") and _env("PANE_BRIDGE_TELEGRAM_CHAT_ID"))
 
 
+def _env_enablement() -> Optional[Dict[str, Any]]:
+    """Seed PlatformConfig.extra from env so the gateway AUTO-ENABLES pane_bridge
+    and thus CONNECTS its adapter (get_connected_platforms iterates config.platforms
+    and skips anything not enabled). Returning None => the platform is not
+    auto-enabled; returning a NON-EMPTY dict => the loader probes with
+    PlatformConfig(enabled=True) + this seed and, if check_fn passes, adds it as
+    an enabled platform. Without this hook a registered factory never becomes a
+    connected adapter, and /api/platforms/pane_bridge/events returns 503."""
+    if not (_env("PANE_BRIDGE_SECRET") and _env("PANE_BRIDGE_TELEGRAM_CHAT_ID")):
+        return None
+    return {
+        "chat_id": _env("PANE_BRIDGE_TELEGRAM_CHAT_ID"),
+        "chat_type": _env("PANE_BRIDGE_TELEGRAM_CHAT_TYPE", "group"),
+        "user_id": _env("PANE_BRIDGE_TELEGRAM_USER_ID"),
+        "_enabled_explicit": True,
+    }
+
+
 def _is_connected(adapter: Any) -> bool:
     return bool(getattr(adapter, "_secret", "") and getattr(adapter, "_tg_chat_id", ""))
 
@@ -171,5 +189,9 @@ def register(ctx) -> None:
             "PANE_BRIDGE_TELEGRAM_CHAT_ID",
         ],
         install_hint="Set PANE_BRIDGE_SECRET + PANE_BRIDGE_TELEGRAM_CHAT_ID and restart the gateway.",
+        # Without this hook the platform is registered as a FACTORY but never
+        # ENABLED in config.platforms, so the gateway never connects an adapter
+        # instance and /api/platforms/pane_bridge/events 503s ("not connected").
+        env_enablement_fn=_env_enablement,
         emoji="🔉",
     )
