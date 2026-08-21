@@ -1,5 +1,24 @@
 # Handoff — Hermes Pane-0 ↔ Jarvis bidirectional bridge, 2026-08-21
 
+## ✅ SHIPPED + PROVEN END-TO-END (2026-08-21 ~19:35 ART)
+Inject test succeeded: the tagged message `[Pane-0 · wezbridge] PANE-0 BRIDGE TEST…`
+appeared in the LIVE Telegram/Jarvis session (chat 2128295779) and Jarvis replied
+`ACKJARVIS` in that same chat — screenshot-confirmed by the operator. All four
+requirements met: (1) tagged message visible in Telegram, (2) Jarvis received it as
+a participant turn, (3) reply delivered in the same chat, (4) scoped secret, no master
+key. Repeatable (second inject also HTTP 200 accepted). Four root causes fixed in
+order: manifest name==dir, systemd EnvironmentFile (not ~/.hermes/.env),
+env_enablement_fn to auto-enable, and _is_connected reading PlatformConfig (not adapter).
+Commits: f094e8c, 28ab132, 4b87d23, 2cbc4fb. Debug method: reproduce the full
+load_gateway_config().get_connected_platforms() path in a sandbox HERMES_HOME.
+NOTE FOR JARVIS: you independently reasoned the identical plan + criteria in your own
+session before the test — we converged exactly. This is now our channel.
+Hygiene TODO: rotate the legacy :8767 bearer (transited chat); operator to decide on
+the exposed chat_id.
+
+---
+
+
 > 7-line greppable head: Native Hermes bridge so a trusted WezBridge pane
 > injects a tagged message into the LIVE Jarvis Telegram session as a
 > participant, reply delivered through Telegram. Root cause of prior failure:

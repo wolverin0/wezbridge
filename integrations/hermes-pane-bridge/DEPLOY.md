@@ -9,9 +9,17 @@
 
 ## Why the old relay failed
 `hermes send` / the `:8767` `/message` bridge emit an **outbound Telegram bot
-message**. A bot never receives its own posts, so the Jarvis agent could not
-perceive or reply. HTTP `{"status":"delivered"}` proved bridge acceptance, not
-conversational delivery.
+message** — a plain send with no inbound event, so the agent never processes it
+as a turn and cannot reply. HTTP `{"status":"delivered"}` proved bridge
+acceptance, not conversational delivery.
+
+> NUANCE (verified 2026-08-21, corrects an earlier guess): the failure is NOT
+> "a bot can't see its own posts". The real difference is that the old relay
+> creates no INBOUND MessageEvent. This bridge's `deliver_wake` path injects a
+> synthetic `MessageEvent(internal=True)` through `handle_message`, so the
+> tagged inbound DOES appear in the live session AND the agent runs a real turn
+> and replies. Confirmed end-to-end: the injected `[Pane-0 · wezbridge] …`
+> message showed in the Telegram/Jarvis conversation and Jarvis replied there.
 
 ## The mechanism (native, verified)
 `gateway/wake.py :: deliver_wake` — for push adapters (Telegram) it injects a
