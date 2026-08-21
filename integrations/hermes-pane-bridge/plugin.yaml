@@ -1,0 +1,33 @@
+name: pane_bridge-platform
+label: Pane Bridge
+kind: platform
+version: 1.0.0
+description: >
+  Lets a trusted WezBridge pane inject a tagged message into the LIVE
+  Telegram/Jarvis session as a real conversational participant (via the native
+  gateway wake path), with the agent reply delivered back through Telegram.
+  Reuses the stock POST /api/platforms/pane_bridge/events ingress, guarded by a
+  scoped bearer secret — never the master API_SERVER_KEY. Zero core changes.
+author: wezbridge pane-0
+requires_env:
+  - name: PANE_BRIDGE_SECRET
+    description: "Scoped bearer secret for /api/platforms/pane_bridge/events. Generate fresh on the VM; never reuse the gateway/API_SERVER key."
+    prompt: "Pane bridge scoped secret"
+    password: true
+  - name: PANE_BRIDGE_TELEGRAM_CHAT_ID
+    description: "Telegram chat_id of the live Jarvis conversation to inject into."
+    prompt: "Jarvis Telegram chat_id"
+    password: false
+optional_env:
+  - name: PANE_BRIDGE_TELEGRAM_USER_ID
+    description: "Operator Telegram user_id to stamp on the synthetic source (session routing / authorization)."
+    prompt: "Operator Telegram user_id"
+    password: false
+  - name: PANE_BRIDGE_TELEGRAM_CHAT_TYPE
+    description: "dm | group | channel | thread (default group)."
+    prompt: "Chat type"
+    password: false
+  - name: PANE_BRIDGE_TELEGRAM_THREAD_ID
+    description: "Forum topic / thread id, if the Jarvis chat is a forum topic."
+    prompt: "Thread id (optional)"
+    password: false
