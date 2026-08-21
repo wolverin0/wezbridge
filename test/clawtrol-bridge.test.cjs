@@ -400,6 +400,11 @@ test('latency fix: syncOnce reports applied count so tick can expedite the follo
       const body = JSON.parse(raw); seen.bodies.push(body);
       if ((body.intent_results || []).some((r) => r.id === 'i-lat1')) pending = [];
       res.setHeader('content-type', 'application/json');
+      // Close per request: applyIntent between the two syncs execs the ledger
+      // CLI, and under machine load that gap exceeds Node's 5s keep-alive
+      // default — the pooled socket dies server-side and the second fetch
+      // throws 'fetch failed'. Seen flaking 2026-08-21 under a loaded box.
+      res.setHeader('connection', 'close');
       res.end(JSON.stringify({ server_time: 't', accepted: {}, intents: pending }));
     });
   });

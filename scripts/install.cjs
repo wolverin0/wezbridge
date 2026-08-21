@@ -229,17 +229,17 @@ function startDaemon() {
 function verify(done) {
   out.head('6. Verify');
   if (DRY) {
-    out.dry(`GET http://localhost:${PORT}/api/panes`);
+    out.dry(`GET http://localhost:${PORT}/api/health`);
     return done();
   }
-  const req = http.get(`http://localhost:${PORT}/api/panes`, { timeout: 4000 }, (res) => {
-    if (res.statusCode === 200) out.ok(`daemon responding on :${PORT}/api/panes`);
+  const req = http.get(`http://localhost:${PORT}/api/health`, { timeout: 4000 }, (res) => {
+    if (res.statusCode === 200) out.ok(`daemon responding on :${PORT}/api/health`);
     else out.warn(`daemon returned HTTP ${res.statusCode} on :${PORT}`);
     res.resume();
     done();
   });
   req.on('error', () => {
-    out.warn(`daemon not reachable on :${PORT} yet — give it a few seconds, then: curl http://localhost:${PORT}/api/panes`);
+    out.warn(`daemon not reachable on :${PORT} yet — give it a few seconds, then: curl http://localhost:${PORT}/api/health`);
     done();
   });
   req.on('timeout', () => {

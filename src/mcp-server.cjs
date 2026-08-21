@@ -1449,43 +1449,9 @@ function probeWezterm() {
  * the daemon is down or too old to expose /api/health — the caller must render
  * "unknown", never a default that looks like an answer.
  */
-function probeDaemonServices() {
-  const dashPort = parseInt(process.env.DASHBOARD_PORT || '4200', 10);
-  return new Promise((resolve) => {
-    const http = require('http');
-    const req = http.request(
-      { host: '127.0.0.1', port: dashPort, method: 'GET', path: '/api/health' },
-      (res) => {
-        let body = '';
-        res.on('data', (c) => { body += c; });
-        res.on('end', () => {
-          if (res.statusCode !== 200) return resolve(null);
-          try { resolve(JSON.parse(body).services || null); } catch { resolve(null); }
-        });
-      }
-    );
-    req.on('error', () => resolve(null));
-    req.setTimeout(2500, () => { req.destroy(); resolve(null); });
-    req.end();
-  });
-}
-
-function probeDaemon() {
-  const dashPort = parseInt(process.env.DASHBOARD_PORT || '4200', 10);
-  return new Promise((resolve) => {
-    const http = require('http');
-    const req = http.request(
-      { host: '127.0.0.1', port: dashPort, method: 'GET', path: '/api/panes' },
-      (res) => {
-        res.on('data', () => {});
-        res.on('end', () => resolve({ up: res.statusCode < 500, port: dashPort, status: res.statusCode }));
-      }
-    );
-    req.on('error', () => resolve({ up: false, port: dashPort, hint: 'daemon down — run `npm run dashboard` in the wezbridge repo' }));
-    req.setTimeout(2500, () => { req.destroy(); resolve({ up: false, port: dashPort, hint: 'daemon did not respond within 2.5s' }); });
-    req.end();
-  });
-}
+// Extracted to src/daemon-probe.cjs (T-0190) so tests can exercise the probes
+// without starting this stdio server. Liveness is decided by /api/health there.
+const { probeDaemon, probeDaemonServices } = require('./daemon-probe.cjs');
 
 async function handleBridgeHealth() {
   let pkgVersion = 'unknown';
