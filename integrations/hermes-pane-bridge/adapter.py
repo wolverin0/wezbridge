@@ -171,8 +171,16 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
     }
 
 
-def _is_connected(adapter: Any) -> bool:
-    return bool(getattr(adapter, "_secret", "") and getattr(adapter, "_tg_chat_id", ""))
+def _is_connected(cfg: Any = None) -> bool:
+    """Called by the config probe with a PlatformConfig (NOT an adapter), and
+    by gateway status. 'Connected' = configured: the chat_id (seeded into
+    PlatformConfig.extra by _env_enablement, or read from env) plus the secret.
+    Reading adapter attributes here was the bug that kept the platform from
+    ever entering config.platforms as enabled (a PlatformConfig has no
+    _secret, so the probe returned False and enablement was skipped)."""
+    extra = getattr(cfg, "extra", None) or {}
+    chat_id = extra.get("chat_id") or _env("PANE_BRIDGE_TELEGRAM_CHAT_ID")
+    return bool(chat_id and _env("PANE_BRIDGE_SECRET"))
 
 
 def register(ctx) -> None:
