@@ -263,3 +263,37 @@ test('an error still closes the thread outright', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ── ABANDON visibility (unlazy adoption, 2026-08-21) ─────────────────────
+// Silent scope-narrowing is the failure the fleet keeps hunting; unlazy's
+// convention makes surrender VISIBLE: "ABANDON: <what> <why>". detectAbandons
+// surfaces those lines so events/results carry the count instead of losing it.
+
+test('detectAbandons: counts ABANDON: lines and extracts what was surrendered', () => {
+  const { detectAbandons } = require('../src/a2a-intel.cjs');
+  const body = [
+    'criteria:',
+    '- G1: pass — 10/10',
+    'ABANDON: G3 el endpoint del proveedor fue retirado',
+    'files_changed: x.js',
+    'ABANDON: G4 sin acceso al entorno objetivo',
+  ].join('\n');
+  const out = detectAbandons(body);
+  assert.equal(out.count, 2);
+  assert.match(out.items[0], /G3/);
+  assert.match(out.items[1], /G4/);
+});
+
+test('detectAbandons: cero en un body sin rendiciones', () => {
+  const { detectAbandons } = require('../src/a2a-intel.cjs');
+  assert.deepEqual(detectAbandons('criteria:\n- G1: pass'), { count: 0, items: [] });
+});
+
+test('recordResultBody persists abandons so surrender survives the scrollback', () => {
+  const { recordResultBody } = require('../src/a2a-intel.cjs');
+  recordResultBody({ corr: 'c-ab', fromPane: 1, toPane: 0, v2: 'ok',
+    body: 'criteria:\n- G1: pass\nABANDON: G2 imposible por retiro del API' });
+  const lines = fs.readFileSync(path.join(TMP, 'a2a-results.jsonl'), 'utf8').trim().split('\n');
+  const rec = JSON.parse(lines[lines.length - 1]);
+  assert.equal(rec.abandons, 1, 'el count de ABANDON debe persistirse en el registro');
+});

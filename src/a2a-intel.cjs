@@ -34,6 +34,20 @@ function detectV2(body) {
   return hasCriteria && hasVerdicts ? 'ok' : 'missing';
 }
 
+/**
+ * Surface ABANDON lines (unlazy convention, adopted 2026-08-21): a criterion
+ * that became impossible is surrendered VISIBLY as "ABANDON: <what> <why>".
+ * Silent scope-narrowing is the failure the fleet keeps hunting — this makes
+ * the surrender countable instead of lost in prose.
+ */
+function detectAbandons(body) {
+  const items = [];
+  for (const m of String(body).matchAll(/^\s*ABANDON:\s*(.+)$/gim)) {
+    items.push(m[1].trim());
+  }
+  return { count: items.length, items };
+}
+
 /** Append one envelope-metadata event. Never throws. */
 function recordEvent(evt) {
   try {
@@ -62,6 +76,7 @@ function recordResultBody({ corr, fromPane, toPane, v2, body }) {
       from_pane: fromPane,
       to_pane: toPane,
       v2,
+      abandons: detectAbandons(text).count,
       body: truncated ? text.slice(0, RESULT_BODY_CAP) : text,
       body_truncated: truncated,
     });
@@ -147,4 +162,4 @@ function updateThreads({ fromPane, toPane, corr, type, body }) {
     .map(([c]) => c);
 }
 
-module.exports = { intelDir, detectV2, recordEvent, recordResultBody, updateThreads };
+module.exports = { intelDir, detectV2, detectAbandons, recordEvent, recordResultBody, updateThreads };
