@@ -37,22 +37,45 @@ verifier, **not** the master API_SERVER_KEY).
    ```
    SECRET=$(openssl rand -hex 32)
    ```
-3. Put the scoped config in the gateway env (`~/.hermes/.env`):
+3. Put the scoped config where the gateway PROCESS's `os.environ` actually
+   sees it. **CRITICAL — verify the real env source first:** on this VM the
+   systemd unit loads `~/.config/hermes/<plugin>.env` via `EnvironmentFile=`
+   and does NOT export `~/.hermes/.env` into `os.environ`. The gateway reads
+   `~/.hermes/.env` internally for its own config, but the plugin reads via
+   `os.getenv`, so keys placed only in `~/.hermes/.env` are invisible to it
+   (measured 2026-08-21: 0 of those keys in the live process environ). The
+   working pattern (memorymaster's live precedent on this box):
    ```
-   PANE_BRIDGE_SECRET=$SECRET
-   PANE_BRIDGE_TELEGRAM_CHAT_ID=<jarvis chat_id>
-   PANE_BRIDGE_TELEGRAM_USER_ID=<operator telegram user_id>   # optional but recommended
-   PANE_BRIDGE_TELEGRAM_CHAT_TYPE=group                       # or dm/channel/thread
-   # PANE_BRIDGE_TELEGRAM_THREAD_ID=<topic id>                # only if a forum topic
+   # a) own env file, mode 600
+   ~/.config/hermes/pane-bridge.env :
+     PANE_BRIDGE_SECRET=$SECRET
+     PANE_BRIDGE_TELEGRAM_CHAT_ID=<jarvis chat_id>
+     PANE_BRIDGE_TELEGRAM_USER_ID=<operator telegram user_id>
+     PANE_BRIDGE_TELEGRAM_CHAT_TYPE=dm        # dm if chat_id == user_id, else group
+     # PANE_BRIDGE_TELEGRAM_THREAD_ID=<topic id>   # only if a forum topic
+   # b) systemd drop-in so the gateway process inherits it
+   ~/.config/systemd/user/hermes-gateway.service.d/pane-bridge.conf :
+     [Service]
+     EnvironmentFile=%h/.config/hermes/pane-bridge.env
+   # c) reload + restart
+   systemctl --user daemon-reload
    ```
-   Find the chat_id/user_id from the gateway's telegram session store or the
-   Jarvis session metadata — do NOT guess.
+   Find the chat_id/user_id from the gateway's telegram env
+   (TELEGRAM_HOME_CHANNEL / TELEGRAM_ALLOWED_USERS) or session store — do NOT
+   guess. If chat_id == user_id it is a DM; set CHAT_TYPE=dm.
+   To confirm the process really sees the vars, read /proc/<gatewayPID>/environ
+   — a "configured" file the process does not read is NOT delivered.
 4. Register the secret in Vaultwarden (infra CLAUDE.md §2) — not just the .env.
 5. Restart ONLY the gateway to load the plugin (does not disable the local
    Desktop agent; does briefly interrupt telegram polling — expected):
    ```
-   hermes gateway restart    # or the platform's supervised restart
+   systemctl --user restart hermes-gateway    # or hermes gateway restart
    ```
+   Confirm registration with the negative-control probe: a BAD token to
+   `/api/platforms/pane_bridge/events` returns 401/403 when the adapter is
+   registered, but 503 "Platform adapter is not connected" (same as an
+   invented platform name) when it is not. Also `hermes plugins list` should
+   show `pane_bridge | enabled | user`.
 6. Transfer the same secret to wolverin0 without display, into an ACL-locked
    file (mirrors the existing .hermes-bridge convention):
    `%USERPROFILE%\.hermes-bridge\pane-bridge.secret` (single line, no newline),
