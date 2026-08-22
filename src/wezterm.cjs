@@ -341,13 +341,35 @@ function ensureGui() {
   }
 }
 
+/**
+ * Lifecycle cap chokepoint (B2, frente 3): every pane-creating path in this
+ * module (spawnPane, splitHorizontal, splitVertical — which covers the MCP
+ * spawn_session/split_pane tools AND the dashboard handlers) refuses past
+ * WEZBRIDGE_MAX_PANES (default 5). Refusal is logged as spawn_refused with
+ * the reason; `capExempt` exists for the pane0-watchdog orchestrator
+ * recovery, which REPLACES a dead pane and must never be blocked by the cap.
+ */
+function assertPaneCap(paneCount, cwd) {
+  const cap = require('./lifecycle.cjs').evaluateSpawnCap({ paneCount });
+  if (cap.allowed) return;
+  try {
+    require('./action-log.cjs').logAction('spawn_refused', {
+      target: cwd || '',
+      why: cap.reason,
+      extra: { pane_count: paneCount, max: cap.max },
+    });
+  } catch { /* observability never breaks the refusal itself */ }
+  throw new Error(`spawn refused — ${cap.reason}`);
+}
+
 /** Spawn a new pane. Returns the pane ID (number). */
-function spawnPane({ cwd, program, args: spawnArgs, splitFrom, splitDirection } = {}) {
+function spawnPane({ cwd, program, args: spawnArgs, splitFrom, splitDirection, why, capExempt } = {}) {
   ensureGui();
   const cmdArgs = splitFrom !== undefined ? ['split-pane'] : ['spawn'];
 
   // Reference an existing pane so the mux knows the context
   const panes = listPanes();
+  if (!capExempt) assertPaneCap(panes.length, cwd);
   if (splitFrom !== undefined) {
     cmdArgs.push('--pane-id', String(splitFrom));
     if (splitDirection === 'horizontal') {
@@ -374,8 +396,11 @@ function spawnPane({ cwd, program, args: spawnArgs, splitFrom, splitDirection } 
   const newId = parseInt(paneId, 10);
   // Fleet attribution (mm-96f8): every spawn leaves a durable who/what/why line.
   try {
+    const project = require('./pane-identity.cjs').projectFromCwd(cwd);
     require('./action-log.cjs').logAction('spawn_pane', {
       target: `pane-${newId}`,
+      why: why || '',
+      ...(project ? { project } : {}),
       extra: { cwd: cwd || '', program: program || 'default-shell' },
     });
   } catch { /* observability never breaks the spawn */ }
@@ -483,8 +508,8 @@ function invalidateGetTextCache(paneId) {
   }
 }
 
-/** Kill a pane. */
-function killPane(paneId) {
+/** Kill a pane. Optional { why } lands in the action log (B2 attribution). */
+function killPane(paneId, { why } = {}) {
   try {
     wezCmd(['kill-pane', '--pane-id', String(paneId)]);
   } catch {
@@ -495,7 +520,7 @@ function killPane(paneId) {
   invalidateGetTextCache(paneId);
   // Fleet attribution (mm-96f8): kills are as important as spawns.
   try {
-    require('./action-log.cjs').logAction('kill_pane', { target: `pane-${paneId}` });
+    require('./action-log.cjs').logAction('kill_pane', { target: `pane-${paneId}`, why: why || '' });
   } catch { /* never breaks the kill */ }
 }
 
@@ -518,7 +543,8 @@ function setTabTitle(paneId, title) {
 }
 
 /** Split an existing pane horizontally (side by side). Returns new pane ID. */
-function splitHorizontal(paneId, { cwd, program, args: spawnArgs } = {}) {
+function splitHorizontal(paneId, { cwd, program, args: spawnArgs, capExempt } = {}) {
+  if (!capExempt) assertPaneCap(listPanes().length, cwd);
   const cmdArgs = ['split-pane', '--pane-id', String(paneId), '--right'];
   if (cwd) cmdArgs.push('--cwd', cwd);
   if (program) {
@@ -532,7 +558,8 @@ function splitHorizontal(paneId, { cwd, program, args: spawnArgs } = {}) {
 }
 
 /** Split an existing pane vertically (top/bottom). Returns new pane ID. */
-function splitVertical(paneId, { cwd, program, args: spawnArgs } = {}) {
+function splitVertical(paneId, { cwd, program, args: spawnArgs, capExempt } = {}) {
+  if (!capExempt) assertPaneCap(listPanes().length, cwd);
   const cmdArgs = ['split-pane', '--pane-id', String(paneId), '--bottom'];
   if (cwd) cmdArgs.push('--cwd', cwd);
   if (program) {

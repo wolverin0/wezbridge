@@ -83,7 +83,9 @@ async function orchestratorPaneExists() {
 
 async function attemptRecovery(deps) {
   const wez = deps.wezterm || require('./wezterm.cjs');
-  const pane = await wez.spawnPane({ cwd: orchCwd() });
+  // capExempt: recovery REPLACES the dead orchestrator pane — the lifecycle
+  // pane cap (B2) must never block re-seating the decision layer.
+  const pane = await wez.spawnPane({ cwd: orchCwd(), capExempt: true, why: 'pane0-watchdog orchestrator recovery' });
   const paneId = typeof pane === 'object' ? pane.paneId ?? pane.pane_id ?? pane : pane;
   await deps.sleep(2500); // let the shell come up (crash-recover skill pacing)
   await wez.sendText(paneId, 'claude --continue --dangerously-skip-permissions\r');

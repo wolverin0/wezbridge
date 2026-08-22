@@ -924,7 +924,43 @@ function handleToolCall(name, args) {
 
       // Which CLI boots in the pane. 'shell' leaves the pane as a plain shell
       // (no command typed) — useful for scratch panes and e2e tests.
-      const agent = args.agent === undefined || args.agent === null ? 'claude' : String(args.agent);
+      // Affinity (B2, frente 3): _intel/affinity.json maps project → {agent,
+      // model} and supplies the DEFAULT when the caller names no agent. An
+      // explicit caller choice always wins but is logged (affinity_override),
+      // so misroutes-by-habit become measurable instead of invisible.
+      const lifecycle = require('./lifecycle.cjs');
+      const spawnProject = require('./pane-identity.cjs').projectFromCwd(cwd);
+      const affinity = lifecycle.resolveAffinity({ project: spawnProject });
+      const claudeOnlyFlags = Boolean(args.persona || args.resume || args.continue === true || permissionMode || skipPerms);
+      let agent;
+      if (args.agent === undefined || args.agent === null) {
+        if (affinity.agent && claudeOnlyFlags && affinity.agent !== 'claude') {
+          // Caller asked for claude-only behavior without naming the agent —
+          // honoring the codex affinity would break persona/resume/permission
+          // flags, so claude wins, but the implicit override is logged.
+          agent = 'claude';
+          try {
+            require('./action-log.cjs').logAction('affinity_override', {
+              target: spawnProject || cwd,
+              why: `claude-only flags present — affinity agent "${affinity.agent}" not applied`,
+              project: spawnProject,
+            });
+          } catch { /* fail-soft */ }
+        } else {
+          agent = affinity.agent || 'claude';
+        }
+      } else {
+        agent = String(args.agent);
+        if (affinity.agent && affinity.agent !== agent) {
+          try {
+            require('./action-log.cjs').logAction('affinity_override', {
+              target: spawnProject || cwd,
+              why: `caller agent="${agent}" overrides affinity "${affinity.agent}"`,
+              project: spawnProject,
+            });
+          } catch { /* fail-soft */ }
+        }
+      }
       if (!['claude', 'codex', 'shell'].includes(agent)) {
         return {
           content: [{ type: 'text', text: `Error: invalid agent "${agent}" (claude | codex | shell)` }],
@@ -943,11 +979,27 @@ function handleToolCall(name, args) {
         // Spawn a plain shell pane, then send the CLI command as text.
         // This works on all platforms (Windows cmd, bash, pwsh) without
         // needing to know the user's shell in advance.
+        // Affinity model applies only as default and only when valid; a caller
+        // model that differs from a declared affinity model is a logged override.
+        const affinityModel = affinity.model && isValidModelName(affinity.model) ? String(affinity.model) : null;
+        const effectiveModel = args.model ? String(args.model) : affinityModel;
+        if (args.model && affinity.model && String(args.model) !== String(affinity.model)) {
+          try {
+            require('./action-log.cjs').logAction('affinity_override', {
+              target: spawnProject || cwd,
+              why: `caller model="${args.model}" overrides affinity model "${affinity.model}"`,
+              project: spawnProject,
+            });
+          } catch { /* fail-soft */ }
+        }
+        const spawnWhy = typeof args.spawned_by_pane_id === 'number'
+          ? `spawned_by=pane-${args.spawned_by_pane_id} agent=${agent}`
+          : `agent=${agent}`;
         let newPaneId;
         if (args.split_from !== undefined) {
           newPaneId = wez.splitHorizontal(args.split_from, { cwd });
         } else {
-          newPaneId = wez.spawnPane({ cwd });
+          newPaneId = wez.spawnPane({ cwd, why: spawnWhy });
         }
 
         // Give the shell a moment to initialize (async — doesn't block other tool calls)
@@ -970,11 +1022,11 @@ function handleToolCall(name, args) {
           }
           if (skipPerms) claudeArgv.push('--dangerously-skip-permissions');
           if (permissionMode) claudeArgv.push('--permission-mode', permissionMode);
-          if (args.model) claudeArgv.push('--model', String(args.model));
+          if (effectiveModel) claudeArgv.push('--model', effectiveModel);
           cliCmd = claudeArgv.map(shellQuoteArg).join(' ');
         } else if (agent === 'codex') {
           const codexArgv = ['codex'];
-          if (args.model) codexArgv.push('--model', String(args.model));
+          if (effectiveModel) codexArgv.push('--model', effectiveModel);
           cliCmd = codexArgv.map(shellQuoteArg).join(' ');
         }
         if (cliCmd) wez.sendText(newPaneId, cliCmd);
@@ -1040,7 +1092,16 @@ function handleToolCall(name, args) {
               agent,
               persona: args.persona || null,
               permission_mode: args.permission_mode || null,
-              model: args.model || null,
+              model: effectiveModel || null,
+              ...(affinity.agent || affinityModel ? {
+                affinity: {
+                  project: spawnProject,
+                  agent: affinity.agent,
+                  model: affinityModel,
+                  applied_agent: (args.agent === undefined || args.agent === null) && agent === affinity.agent,
+                  applied_model: !args.model && Boolean(affinityModel),
+                },
+              } : {}),
               fresh_session: agent === 'claude' && !args.resume && args.continue !== true,
               spawned_by_pane_id: typeof args.spawned_by_pane_id === 'number' ? args.spawned_by_pane_id : null,
               initial_prompt: args.prompt || null,
@@ -1078,7 +1139,9 @@ function handleToolCall(name, args) {
         }));
         // Send Ctrl+C first to gracefully stop, then kill
         try { wez.sendTextNoEnter(paneId, '\x03'); } catch { /* ignore */ }
-        wez.killPane(paneId);
+        wez.killPane(paneId, {
+          why: args.caller_meta ? `kill_session caller_meta=${JSON.stringify(args.caller_meta).slice(0, 200)}` : 'kill_session',
+        });
 
         return {
           content: [{ type: 'text', text: `Pane ${paneId} killed.` }],
@@ -1431,6 +1494,38 @@ function handleToolCall(name, args) {
         // submitted === 'submitted' qualifies: closing an ack obligation on an
         // 'unknown' delivery would silently drop it. The requester's JUDGEMENT
         // on the result (validate evidence, review→done) stays human.
+        // Auto-close SHADOW (B2, frente 3): after a type=result the SENDER pane
+        // is the lifecycle candidate ("bots are temporary per project"). This
+        // branch NEVER kills — it only logs what WEZBRIDGE_AUTOCLOSE=live WOULD
+        // do (that flag is documented in src/lifecycle.cjs and read by nothing;
+        // going live is an operator decision). Exclusions: orchestrator pane,
+        // active ledger lease, unknown project, unverified delivery.
+        if (msgType === 'result') {
+          try {
+            const lifecycle = require('./lifecycle.cjs');
+            const identity = require('./pane-identity.cjs');
+            let senderProject = null;
+            try {
+              const senderPane = discovery.discoverPanes().find((p) => p.paneId === fromPane);
+              senderProject = senderPane ? identity.projectFromCwd(senderPane.project) : null;
+            } catch { /* discovery down → project unknown → fail-safe no-close */ }
+            const lease = lifecycle.findActiveLease({ owner: `pane-${fromPane}` });
+            const shadow = lifecycle.decideAutoClose({
+              paneId: fromPane,
+              project: senderProject,
+              orchRepo: process.env.WEZBRIDGE_ORCH_REPO || 'wezbridge',
+              lease,
+              verified,
+            });
+            require('./action-log.cjs').logAction('auto_close_shadow', {
+              target: `pane-${fromPane}`,
+              why: shadow.close ? shadow.reason : `EXCLUDED: ${shadow.reason}`,
+              corr,
+              ...(senderProject ? { project: senderProject } : {}),
+              extra: { would_close: shadow.close, verified },
+            });
+          } catch { /* shadow observability must never affect delivery */ }
+        }
         let autoAcked = false;
         if (msgType === 'result' && submitted === 'submitted' && !truncated) {
           autoAcked = a2aIntel.autoAckResult({ corr, byPane: fromPane });
