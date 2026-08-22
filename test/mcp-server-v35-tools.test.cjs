@@ -76,6 +76,38 @@ test('a2a_send requires from_pane when WEZTERM_PANE is unset', async () => {
   assert.match(resultText(res), /from_pane|WEZTERM_PANE/i);
 });
 
+// ─── a2a_send to_project (B1: durable project addressing) ──────────────────
+
+test('a2a_send rejects to_project and to_pane together', async () => {
+  const res = await callTool('a2a_send', { to_project: 'wezbridge', to_pane: 1, body: 'hi' });
+  assert.equal(res.result.isError, true);
+  assert.match(resultText(res), /EITHER to_project OR to_pane/i);
+});
+
+test('a2a_send to_project with no live pane QUEUES durably instead of losing the message', async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'b1-queue-'));
+  try {
+    const res = await callTool('a2a_send',
+      { to_project: 'no-such-project-b1', body: 'hola cola', corr: 'b1-q1', type: 'request' },
+      { WEZBRIDGE_INTEL_DIR: tmp, WEZTERM_PANE: '0' });
+    assert.equal(res.result.isError, false, `unexpected error: ${resultText(res)}`);
+    const out = JSON.parse(resultText(res));
+    assert.equal(out.ok, false, 'no live pane -> not delivered now');
+    assert.equal(out.queued, true, 'but durably queued');
+    assert.equal(out.to_project, 'no-such-project-b1');
+    assert.match(out.note, /queue-drain/i, 'the note must point at the retry path');
+    const line = fs.readFileSync(path.join(tmp, 'queues', 'no-such-project-b1.jsonl'), 'utf8').trim();
+    const rec = JSON.parse(line);
+    assert.equal(rec.corr, 'b1-q1');
+    assert.equal(rec.ok, false, 'undelivered entries are the drain script\'s retry list');
+    assert.equal(rec.body, 'hola cola');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 // ─── spawn_session validation ───────────────────────────────────────────────
 
 test('spawn_session rejects invalid agent', async () => {

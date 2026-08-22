@@ -389,6 +389,48 @@ test('call-site gate: mcp-server computes decisions/evidence ONLY for type=resul
   assert.match(src, /msgType === 'result' \? a2aIntel\.detectEvidence\(body\) : undefined/);
 });
 
+// ── Auto-ack bookkeeping (B1, 2026-08-22) ────────────────────────────────
+// A VERIFIED result delivery proves receipt — the "got it" ack stops being an
+// LLM turn. autoAckResult closes ONLY awaiting-ack threads; the requester's
+// judgement on the result is not automated anywhere.
+
+test('autoAckResult: closes an awaiting-ack thread and records the closure', () => {
+  withTmpIntelDir((dir) => {
+    intel.updateThreads({ fromPane: 1, toPane: 2, corr: 'aa-1', type: 'request' });
+    intel.updateThreads({ fromPane: 2, toPane: 1, corr: 'aa-1', type: 'result' });
+    assert.strictEqual(intel.autoAckResult({ corr: 'aa-1', byPane: 2 }), true);
+    const threads = JSON.parse(fs.readFileSync(path.join(dir, 'a2a-threads.json'), 'utf8')).threads;
+    assert.strictEqual(threads['aa-1'], undefined, 'the bookkeeping acuse closes the thread');
+    const events = fs.readFileSync(path.join(dir, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.ok(events.some((e) => e.event === 'a2a.thread-auto-acked' && e.corr === 'aa-1'),
+      'the closure must be auditable');
+  });
+});
+
+test('autoAckResult: an open (non-awaiting-ack) thread and an unknown corr are untouched', () => {
+  withTmpIntelDir((dir) => {
+    intel.updateThreads({ fromPane: 1, toPane: 2, corr: 'aa-2', type: 'request' });
+    assert.strictEqual(intel.autoAckResult({ corr: 'aa-2', byPane: 1 }), false,
+      'a request without a result has nothing to acuse');
+    assert.strictEqual(intel.autoAckResult({ corr: 'aa-never', byPane: 1 }), false);
+    const threads = JSON.parse(fs.readFileSync(path.join(dir, 'a2a-threads.json'), 'utf8')).threads;
+    assert.strictEqual(threads['aa-2'].state, 'open', 'the open request thread survives');
+  });
+});
+
+test('autoAckResult: fail-soft — unwritable intel dir never throws', () => {
+  const prev = process.env.WEZBRIDGE_INTEL_DIR;
+  process.env.WEZBRIDGE_INTEL_DIR = path.join(TMP, 'no\0valid');
+  assert.doesNotThrow(() => intel.autoAckResult({ corr: 'x', byPane: 1 }));
+  process.env.WEZBRIDGE_INTEL_DIR = prev;
+});
+
+test('call-site gate: mcp-server auto-acks ONLY verified type=result deliveries', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'mcp-server.cjs'), 'utf8');
+  assert.match(src, /if \(msgType === 'result' && submitted === 'submitted' && !truncated\) \{\s*\n\s*autoAcked = a2aIntel\.autoAckResult\(/,
+    'auto-ack must sit behind the verified-result guard — closing an ack obligation on an unproven delivery silently drops it');
+});
+
 test('recordResultBody persists abandons so surrender survives the scrollback', () => {
   const { recordResultBody } = require('../src/a2a-intel.cjs');
   recordResultBody({ corr: 'c-ab', fromPane: 1, toPane: 0, v2: 'ok',

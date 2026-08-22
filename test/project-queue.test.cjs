@@ -1,0 +1,289 @@
+'use strict';
+/**
+ * project-queue.test.cjs — B1: durable per-project A2A queue + deterministic
+ * consumer. Covers the generalized waker mechanics (sha1 dedupe, tmp+rename
+ * atomic state, attempt cap flag-and-stop, cooldown, age expiry anti-replay)
+ * and the auto-ack bookkeeping on verified result redelivery. All IO points at
+ * a temp dir via WEZBRIDGE_INTEL_DIR; sends and clocks are injected.
+ */
+const { test } = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'project-queue-'));
+process.env.WEZBRIDGE_INTEL_DIR = TMP;
+const pq = require('../src/project-queue.cjs');
+const intel = require('../src/a2a-intel.cjs');
+
+let tmpCounter = 0;
+function freshBase() {
+  const dir = path.join(TMP, `case-${tmpCounter++}`);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function goodSend(calls = []) {
+  return {
+    sendPromptDeferredEnter: async (paneId, text) => { calls.push({ paneId, text }); return 'ok'; },
+    verifyPromptSubmission: async () => 'submitted',
+  };
+}
+
+function badSend(calls = []) {
+  return {
+    sendPromptDeferredEnter: async (paneId, text) => { calls.push({ paneId, text }); return 'ok'; },
+    verifyPromptSubmission: async () => 'stuck',
+  };
+}
+
+const IDLE_PANE = { paneId: 7, agent: 'claude', status: 'idle', project: 'G:/x/wezbridge', tabTitle: null, title: null };
+
+function makeConsumer(base, over = {}) {
+  return pq.createConsumer({
+    project: 'wezbridge',
+    base,
+    discoverPanes: () => [IDLE_PANE],
+    send: goodSend(),
+    logAction: () => {},
+    ...over,
+  });
+}
+
+// ── entryId / enqueue ────────────────────────────────────────────────────────
+
+test('entryId: stable for the same logical message, distinct for a changed body', () => {
+  const a = { project: 'wezbridge', corr: 'T-1', type: 'request', from_pane: 0, body: 'do it' };
+  assert.strictEqual(pq.entryId(a), pq.entryId({ ...a }));
+  assert.notStrictEqual(pq.entryId(a), pq.entryId({ ...a, body: 'do it differently' }));
+  assert.notStrictEqual(pq.entryId(a), pq.entryId({ ...a, corr: 'T-2' }));
+});
+
+test('enqueue: appends one JSONL line under <intel>/queues/<project>.jsonl', () => {
+  const base = freshBase();
+  const r = pq.enqueue({ project: 'wezbridge', corr: 'T-9', type: 'request', from_pane: 0, resolved_pane: 7, submitted: 'submitted', delivered: 'ok', ok: true, body: 'hola' }, { base });
+  assert.strictEqual(r.ok, true);
+  const lines = fs.readFileSync(path.join(base, 'queues', 'wezbridge.jsonl'), 'utf8').trim().split('\n');
+  assert.strictEqual(lines.length, 1);
+  const rec = JSON.parse(lines[0]);
+  assert.strictEqual(rec.id, r.id);
+  assert.strictEqual(rec.project, 'wezbridge');
+  assert.strictEqual(rec.ok, true);
+  assert.strictEqual(rec.body, 'hola');
+  assert.ok(rec.time);
+});
+
+test('enqueue: fail-soft — an invalid project never throws, reports ok:false', () => {
+  assert.doesNotThrow(() => {
+    const r = pq.enqueue({ project: '', corr: 'x', type: 'request', from_pane: 0, body: 'b' });
+    assert.strictEqual(r.ok, false);
+  });
+});
+
+test('sanitizeProject: filenames stay boring', () => {
+  assert.strictEqual(pq.sanitizeProject('Wez Bridge/../X'), 'wez-bridge-..-x'.replace(/[^a-z0-9._-]+/g, '-'));
+  assert.strictEqual(pq.sanitizeProject('wezbridge'), 'wezbridge');
+  assert.strictEqual(pq.sanitizeProject(''), null);
+});
+
+// ── consumer: ingest ─────────────────────────────────────────────────────────
+
+test('ingest: ok:true lines are never retried; ok:false lines become pending', async () => {
+  const base = freshBase();
+  pq.enqueue({ project: 'wezbridge', corr: 'T-a', type: 'request', from_pane: 0, ok: true, body: 'delivered already' }, { base });
+  pq.enqueue({ project: 'wezbridge', corr: 'T-b', type: 'request', from_pane: 0, ok: false, body: 'failed delivery' }, { base });
+  const c = makeConsumer(base, { discoverPanes: () => [] }); // no panes -> no delivery, pure ingest
+  const out = await c.drain();
+  assert.strictEqual(out.added, 1, 'only the undelivered line is retry work');
+  assert.strictEqual(c.status().pending, 1);
+});
+
+test('ingest: sha1 dedupe — the same logical message enqueued twice is ONE pending entry', async () => {
+  const base = freshBase();
+  const e = { project: 'wezbridge', corr: 'T-dup', type: 'request', from_pane: 0, ok: false, body: 'same' };
+  pq.enqueue(e, { base });
+  pq.enqueue(e, { base });
+  const c = makeConsumer(base, { discoverPanes: () => [] });
+  const out = await c.drain();
+  assert.strictEqual(out.added, 1);
+});
+
+test('ingest: a later verified re-send supersedes the earlier failed copy', async () => {
+  const base = freshBase();
+  const e = { project: 'wezbridge', corr: 'T-sup', type: 'request', from_pane: 0, body: 'same' };
+  pq.enqueue({ ...e, ok: false }, { base });
+  const c = makeConsumer(base, { discoverPanes: () => [] });
+  await c.drain();
+  assert.strictEqual(c.status().pending, 1);
+  pq.enqueue({ ...e, ok: true }, { base }); // caller re-sent and it verified
+  await c.drain();
+  assert.strictEqual(c.status().pending, 0, 'the pending copy must not re-deliver');
+});
+
+test('ingest: entries older than maxAgeMs expire instead of replaying (anti-replay)', async () => {
+  const base = freshBase();
+  pq.enqueue({ project: 'wezbridge', corr: 'T-old', type: 'request', from_pane: 0, ok: false, body: 'ancient' }, { base });
+  const future = Date.now() + 25 * 60 * 60 * 1000; // 25h later
+  const c = makeConsumer(base, { discoverPanes: () => [], now: () => future });
+  const out = await c.drain();
+  assert.strictEqual(out.added, 0);
+  assert.strictEqual(out.expired, 1);
+  assert.strictEqual(c.status().pending, 0);
+});
+
+test('ingest: a corrupt line is skipped, never crashes, later lines still ingest', async () => {
+  const base = freshBase();
+  const file = path.join(base, 'queues', 'wezbridge.jsonl');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.appendFileSync(file, '{corrupt-not-json\n');
+  pq.enqueue({ project: 'wezbridge', corr: 'T-after', type: 'request', from_pane: 0, ok: false, body: 'fine' }, { base });
+  const c = makeConsumer(base, { discoverPanes: () => [] });
+  const out = await c.drain();
+  assert.strictEqual(out.added, 1);
+});
+
+test('atomicity: consumer state is valid JSON with no leftover .tmp files', async () => {
+  const base = freshBase();
+  pq.enqueue({ project: 'wezbridge', corr: 'T-atom', type: 'request', from_pane: 0, ok: false, body: 'x' }, { base });
+  const c = makeConsumer(base, { discoverPanes: () => [] });
+  await c.drain();
+  const stateDir = path.join(base, 'queues', 'state', 'wezbridge');
+  for (const f of ['cursor.json', 'pending.json']) {
+    assert.doesNotThrow(() => JSON.parse(fs.readFileSync(path.join(stateDir, f), 'utf8')), `${f} must be valid JSON`);
+  }
+  const leftovers = fs.readdirSync(stateDir).filter((n) => n.endsWith('.tmp'));
+  assert.deepStrictEqual(leftovers, [], 'tmp+rename must leave no .tmp behind');
+});
+
+test('cursor survives across consumer instances — lines are never re-ingested', async () => {
+  const base = freshBase();
+  pq.enqueue({ project: 'wezbridge', corr: 'T-c1', type: 'request', from_pane: 0, ok: false, body: 'one' }, { base });
+  const c1 = makeConsumer(base, { discoverPanes: () => [] });
+  const out1 = await c1.drain();
+  assert.strictEqual(out1.added, 1);
+  const c2 = makeConsumer(base, { discoverPanes: () => [] }); // fresh instance, same durable state
+  const out2 = await c2.drain();
+  assert.strictEqual(out2.added, 0, 'the durable cursor must prevent re-ingest');
+  assert.strictEqual(c2.status().pending, 1, 'pending persisted across instances');
+});
+
+// ── consumer: delivery ───────────────────────────────────────────────────────
+
+test('delivery: pending entry is delivered to the pane resolved NOW, not the stale one', async () => {
+  const base = freshBase();
+  // Enqueued when the project's pane was 3; by drain time the pane is 7.
+  pq.enqueue({ project: 'wezbridge', corr: 'T-d1', type: 'request', from_pane: 0, resolved_pane: 3, ok: false, body: 'ship it' }, { base });
+  const calls = [];
+  const c = makeConsumer(base, { send: goodSend(calls) });
+  const out = await c.drain();
+  assert.strictEqual(out.delivered, 1);
+  assert.strictEqual(calls[0].paneId, 7, 'must re-resolve via pane-identity at delivery time');
+  assert.match(calls[0].text, /^\[A2A from pane-0 to pane-7 \| corr=T-d1 \| type=request\]\n/,
+    'envelope must be rebuilt with the freshly resolved pane');
+  assert.strictEqual(c.status().pending, 0);
+});
+
+test('delivery: busy pane -> skip with NO attempt consumed', async () => {
+  const base = freshBase();
+  pq.enqueue({ project: 'wezbridge', corr: 'T-busy', type: 'request', from_pane: 0, ok: false, body: 'x' }, { base });
+  const c = makeConsumer(base, { discoverPanes: () => [{ ...IDLE_PANE, status: 'working' }] });
+  const out = await c.drain();
+  assert.strictEqual(out.delivered, 0);
+  assert.strictEqual(c._state.pending[Object.keys(c._state.pending)[0]].attempts, 0,
+    'a busy pane is not a failed attempt');
+});
+
+test('retry + flag-and-stop: attempts increment on failed send; cap flags and drops', async () => {
+  const base = freshBase();
+  pq.enqueue({ project: 'wezbridge', corr: 'T-flag', type: 'request', from_pane: 0, ok: false, body: 'x' }, { base });
+  let t = 0;
+  const c = makeConsumer(base, { send: badSend(), now: () => (t += 10 * 60 * 1000) }); // each call 10min later: cooldown never blocks
+  await c.drain();
+  const id = Object.keys(c._state.pending)[0];
+  assert.strictEqual(c._state.pending[id].attempts, 1);
+  await c.drain();
+  await c.drain(); // third failure hits maxAttempts=3
+  assert.strictEqual(c.status().pending, 0, 'capped entry leaves pending');
+  const flags = JSON.parse(fs.readFileSync(c._files.flags, 'utf8'));
+  assert.ok(flags[id], 'capped entry must be FLAGGED for a human');
+  assert.match(flags[id].reason, /attempt cap/);
+  const out4 = await c.drain();
+  assert.strictEqual(out4.delivered, 0, 'flagged entries are never retried');
+});
+
+test('cooldown: a second attempt within cooldownMs is blocked; first is never blocked', async () => {
+  const base = freshBase();
+  pq.enqueue({ project: 'wezbridge', corr: 'T-cool', type: 'request', from_pane: 0, ok: false, body: 'x' }, { base });
+  let clock = 1_000_000;
+  const c = makeConsumer(base, { send: badSend(), now: () => clock });
+  await c.drain(); // first attempt at t0 — allowed (undefined = never attempted)
+  const id = Object.keys(c._state.pending)[0];
+  assert.strictEqual(c._state.pending[id].attempts, 1);
+  clock += 60 * 1000; // 1 min < 5 min cooldown
+  await c.drain();
+  assert.strictEqual(c._state.pending[id].attempts, 1, 'cooldown must block the retry');
+  clock += 5 * 60 * 1000;
+  await c.drain();
+  assert.strictEqual(c._state.pending[id].attempts, 2, 'after cooldown the retry runs');
+});
+
+test('delivery: verified result redelivery auto-acks the thread (bookkeeping only)', async () => {
+  const base = freshBase();
+  const prior = process.env.WEZBRIDGE_INTEL_DIR;
+  process.env.WEZBRIDGE_INTEL_DIR = base; // a2a-threads.json lives beside the queues
+  try {
+    // The thread is awaiting-ack because a result was SENT but delivery failed.
+    intel.updateThreads({ fromPane: 5, toPane: 3, corr: 'T-ack', type: 'request' });
+    intel.updateThreads({ fromPane: 3, toPane: 5, corr: 'T-ack', type: 'result' });
+    pq.enqueue({ project: 'wezbridge', corr: 'T-ack', type: 'result', from_pane: 3, ok: false, body: 'criteria:\n- g: pass — done' }, { base });
+    const actions = [];
+    const c = makeConsumer(base, { logAction: (a, d) => actions.push({ a, d }) });
+    const out = await c.drain();
+    assert.strictEqual(out.delivered, 1);
+    const threads = JSON.parse(fs.readFileSync(path.join(base, 'a2a-threads.json'), 'utf8')).threads;
+    assert.strictEqual(threads['T-ack'], undefined, 'verified result delivery closes the thread with no LLM turn');
+    assert.ok(actions.some((x) => x.a === 'auto_ack'), 'auto_ack must be logged');
+    assert.ok(actions.some((x) => x.a === 'queue_deliver'), 'delivery itself must be logged');
+  } finally {
+    process.env.WEZBRIDGE_INTEL_DIR = prior;
+  }
+});
+
+test('delivery: unresolvable project (no pane / ambiguous) delivers nothing, keeps pending', async () => {
+  const base = freshBase();
+  pq.enqueue({ project: 'wezbridge', corr: 'T-nores', type: 'request', from_pane: 0, ok: false, body: 'x' }, { base });
+  const twoPanes = [IDLE_PANE, { ...IDLE_PANE, paneId: 9 }];
+  const c = makeConsumer(base, { discoverPanes: () => twoPanes });
+  const out = await c.drain();
+  assert.strictEqual(out.delivered, 0, 'ambiguous resolution must fail closed');
+  assert.strictEqual(c.status().pending, 1);
+});
+
+test('drain --dry-run: reports without sending or consuming state', async () => {
+  const base = freshBase();
+  pq.enqueue({ project: 'wezbridge', corr: 'T-dry', type: 'request', from_pane: 0, ok: false, body: 'x' }, { base });
+  const calls = [];
+  const c = makeConsumer(base, { send: goodSend(calls) });
+  await c.drain(); // ingest + deliver -> pending 0
+  pq.enqueue({ project: 'wezbridge', corr: 'T-dry2', type: 'request', from_pane: 0, ok: false, body: 'y' }, { base });
+  const before = calls.length;
+  const dry = await c.drain({ dryRun: true });
+  assert.strictEqual(calls.length, before, 'dry-run must not send');
+  assert.strictEqual(dry.added, 0, 'dry-run must not consume the cursor');
+});
+
+test('listQueues: enumerates projects that have a queue file', () => {
+  const base = freshBase();
+  pq.enqueue({ project: 'wezbridge', corr: 'a', type: 'request', from_pane: 0, ok: true, body: 'x' }, { base });
+  pq.enqueue({ project: 'mutual', corr: 'b', type: 'request', from_pane: 0, ok: true, body: 'y' }, { base });
+  assert.deepStrictEqual(pq.listQueues({ base }).sort(), ['mutual', 'wezbridge']);
+});
+
+// ── no new coordinator: the module must never grow the always-on shape ──────
+
+test('project-queue is NOT a coordinator: no setInterval anywhere in the module', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'project-queue.cjs'), 'utf8');
+  assert.ok(!src.includes('setInterval'),
+    'a timer loop here would be always-on coordinator iteration #7 — the consumer is cron-driven by design');
+});

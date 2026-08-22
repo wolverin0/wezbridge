@@ -222,4 +222,32 @@ function updateThreads({ fromPane, toPane, corr, type, body }) {
     .map(([c]) => c);
 }
 
-module.exports = { intelDir, detectV2, detectAbandons, detectDecisions, detectEvidence, recordEvent, recordResultBody, updateThreads };
+/**
+ * Bookkeeping auto-ack (B1, 2026-08-22): when a type=result's delivery is
+ * VERIFIED (composer read back `submitted`, tail intact), the receipt-ack is a
+ * proven fact, not a judgement — spending an LLM turn to say "got it" is waste.
+ * This closes the awaiting-ack thread deterministically, exactly as a manual
+ * ack would, and records the closure as a2a.thread-auto-acked.
+ *
+ * What it does NOT automate: the requester's JUDGEMENT on the result (validate
+ * criteria evidence, ledger review→done). That stays human/LLM. Unverified
+ * deliveries (stuck/truncated/unknown) are untouched — they keep today's
+ * awaiting-ack nag, because closing an obligation on an unproven delivery
+ * would silently drop it.
+ *
+ * Returns true when a thread was closed. Never throws.
+ */
+function autoAckResult({ corr, byPane }) {
+  try {
+    const file = path.join(intelDir(), 'a2a-threads.json');
+    const data = readThreads(file);
+    const thread = data.threads[corr];
+    if (!thread || thread.state !== 'awaiting-ack') return false;
+    const { [corr]: _closed, ...rest } = data.threads;
+    writeThreads(file, { ...data, threads: rest });
+    recordEvent({ event: 'a2a.thread-auto-acked', corr, by: byPane });
+    return true;
+  } catch { return false; /* fail-soft */ }
+}
+
+module.exports = { intelDir, detectV2, detectAbandons, detectDecisions, detectEvidence, recordEvent, recordResultBody, updateThreads, autoAckResult };

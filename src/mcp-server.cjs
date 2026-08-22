@@ -499,18 +499,19 @@ const TOOLS = [
   },
   {
     name: 'a2a_send',
-    description: 'Send an A2A protocol envelope to a peer pane in ONE call: builds "[A2A from pane-N to pane-M | corr=<id> | type=<t>]\\n<body>", sends it with VERIFIED submission (no follow-up send_key needed), and returns {submitted, corr}. from_pane defaults to this session\'s own pane (WEZTERM_PANE env). Use this instead of hand-formatting envelopes with send_prompt.',
+    description: 'Send an A2A protocol envelope to a peer pane in ONE call: builds "[A2A from pane-N to pane-M | corr=<id> | type=<t>]\\n<body>", sends it with VERIFIED submission (no follow-up send_key needed), and returns {submitted, corr}. from_pane defaults to this session\'s own pane (WEZTERM_PANE env). Use this instead of hand-formatting envelopes with send_prompt. PREFER to_project over to_pane: pane ids reset on WezTerm restart (the misroute class); a project name is resolved to its live pane at send time AND the message is durably queued in _intel/queues/<project>.jsonl for deterministic retry if delivery fails.',
     inputSchema: {
       type: 'object',
       properties: {
-        to_pane: { type: 'number', description: 'Target pane ID.' },
+        to_pane: { type: 'number', description: 'Target pane ID. Prefer to_project — pane ids are volatile across WezTerm restarts.' },
+        to_project: { type: 'string', description: 'Target PROJECT name (canonical folder or tab label). Resolved to a live pane via pane-identity at send time; the envelope is always recorded to the durable per-project queue (_intel/queues/<project>.jsonl) so a failed delivery is retried by scripts/queue-drain.cjs instead of lost. Mutually exclusive with to_pane.' },
         body: { type: 'string', description: 'Envelope body (the actual message).' },
         type: { type: 'string', enum: ['request', 'ack', 'progress', 'result', 'error'], description: 'A2A message type. Default: request.' },
         corr: { type: 'string', description: 'Correlation id — keep it stable across a thread. Default: generated (returned in the response; reuse it for follow-ups).' },
         from_pane: { type: 'number', description: 'Sender pane ID. Default: WEZTERM_PANE env (your own pane).' },
         allow_long: { type: 'boolean', description: `Send a body over ${A2A_BODY_SOFT_LIMIT} chars anyway. Long envelopes are TRUNCATED in transit by the recipient's composer; the fix is almost always to write the content to a repo file and send a short pointer. Only set this when you have a specific reason the payload must go inline.` },
       },
-      required: ['to_pane', 'body'],
+      required: ['body'],
     },
   },
 ].filter(tool => tool.name !== 'switch_workspace' || SWITCH_WORKSPACE_SUPPORT.supported);
@@ -1306,10 +1307,15 @@ function handleToolCall(name, args) {
     }
 
     case 'a2a_send': return (async () => {
-      const toPane = args.to_pane;
+      const toProject = args.to_project === undefined || args.to_project === null
+        ? null : String(args.to_project).trim();
+      let toPane = args.to_pane;
       const body = args.body;
-      if (typeof toPane !== 'number' || !Number.isInteger(toPane)) {
-        return { content: [{ type: 'text', text: 'Error: to_pane must be an integer pane id' }], isError: true };
+      if (toProject && toPane !== undefined && toPane !== null) {
+        return { content: [{ type: 'text', text: 'Error: pass EITHER to_project OR to_pane, not both — to_project resolves the pane itself at send time' }], isError: true };
+      }
+      if (!toProject && (typeof toPane !== 'number' || !Number.isInteger(toPane))) {
+        return { content: [{ type: 'text', text: 'Error: to_pane must be an integer pane id (or pass to_project to resolve by project name)' }], isError: true };
       }
       if (!body || !String(body).trim()) {
         return { content: [{ type: 'text', text: 'Error: empty body' }], isError: true };
@@ -1342,6 +1348,49 @@ function handleToolCall(name, args) {
         return { content: [{ type: 'text', text: 'Error: corr must be 1-64 chars of [a-zA-Z0-9._-]' }], isError: true };
       }
 
+      // to_project (B1, 2026-08-22): resolve the PROJECT to a live pane AT SEND
+      // TIME via pane-identity — pane ids reset on WezTerm restart and stored
+      // ids are the whole "pane-8/pane-24" misroute class. Whatever happens
+      // next, the envelope is ALWAYS recorded to the durable per-project queue
+      // so a failed delivery is retried by scripts/queue-drain.cjs, never lost.
+      const projectQueue = toProject ? require('./project-queue.cjs') : null;
+      let resolutionWarning = null;
+      if (toProject) {
+        const paneIdentity = require('./pane-identity.cjs');
+        let mapped = [];
+        try {
+          mapped = discovery.discoverPanes()
+            .filter((p) => p.agent) // agent panes only — the daemon shell shares cwds
+            .map((p) => ({ pane_id: p.paneId, cwd: p.project, tab_title: p.tabTitle || p.title || null }));
+        } catch { /* discovery down -> unresolved, queue-only below */ }
+        const hit = paneIdentity.resolve(toProject, mapped);
+        resolutionWarning = hit.warning;
+        if (hit.paneId === null || hit.ambiguous.length) {
+          const q = projectQueue.enqueue({
+            project: toProject, corr, type: msgType, from_pane: fromPane,
+            resolved_pane: null, submitted: null, delivered: null, ok: false, body,
+          });
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                ok: false,
+                queued: q.ok,
+                to_project: toProject,
+                resolved_pane: null,
+                corr,
+                type: msgType,
+                note: `${hit.warning || `no live pane for "${toProject}"`} — NOT delivered now. ${q.ok
+                  ? `Durably queued in _intel/queues/: run \`node scripts/queue-drain.cjs\` (cron-able) to retry, or re-send once the pane exists.`
+                  : 'Queue append ALSO failed — this message is not persisted anywhere; re-send it.'}`,
+              }, null, 2),
+            }],
+            isError: false,
+          };
+        }
+        toPane = hit.paneId;
+      }
+
       const envelope = `[A2A from pane-${fromPane} to pane-${toPane} | corr=${corr} | type=${msgType}]\n${body}`;
       const _safety = safetyPolicy.evaluate({ action: 'send_prompt', paneId: toPane, prompt: envelope });
       if (!_safety.allowed) {
@@ -1368,6 +1417,35 @@ function handleToolCall(name, args) {
         // a2a-results.jsonl — events.jsonl stays metadata-only. Fail-soft.
         if (msgType === 'result') a2aIntel.recordResultBody({ corr, fromPane, toPane, v2, body });
         const unackedInbound = a2aIntel.updateThreads({ fromPane, toPane, corr, type: msgType, body });
+        const verified = submitted !== 'stuck' && !truncated;
+        // Durable queue record for to_project sends — ALWAYS, whatever the
+        // delivery outcome: ok:false lines are the drain script's retry list.
+        const queued = toProject
+          ? projectQueue.enqueue({
+            project: toProject, corr, type: msgType, from_pane: fromPane,
+            resolved_pane: toPane, submitted, delivered, ok: verified, body,
+          })
+          : null;
+        // Auto-ack (B1): a VERIFIED result delivery proves receipt, so the
+        // bookkeeping acuse is automated — no LLM turn to say "got it". Only
+        // submitted === 'submitted' qualifies: closing an ack obligation on an
+        // 'unknown' delivery would silently drop it. The requester's JUDGEMENT
+        // on the result (validate evidence, review→done) stays human.
+        let autoAcked = false;
+        if (msgType === 'result' && submitted === 'submitted' && !truncated) {
+          autoAcked = a2aIntel.autoAckResult({ corr, byPane: fromPane });
+          if (autoAcked) {
+            require('./action-log.cjs').logAction('auto_ack', {
+              target: `corr=${corr}`,
+              why: 'verified type=result delivery — bookkeeping acuse automated (B1); judgement ack stays with the requester',
+            });
+            // unackedInbound was computed BEFORE the auto-ack; on a self-send
+            // the just-closed corr would otherwise be nagged about right after
+            // being declared auto-acked in the same note.
+            const idx = unackedInbound.indexOf(corr);
+            if (idx !== -1) unackedInbound.splice(idx, 1);
+          }
+        }
         let note = truncated
           ? 'DELIVERY INTEGRITY FAILURE: the recipient composer did not hold the tail of your envelope before submit — it was likely truncated. Do NOT assume it arrived. Re-send shorter, or write the value to a repo file and send only a pointer.'
           : submitted === 'stuck'
@@ -1381,6 +1459,17 @@ function handleToolCall(name, args) {
         if (decisions && decisions.count > 0) {
           note += ` Decision ledger: ${decisions.count} decision(s) recorded to a2a-results.jsonl.`;
         }
+        if (autoAcked) {
+          note += ' Auto-ack: delivery verified, so the receipt bookkeeping is done (thread closed in a2a-threads.json) — the requester needs NO ack turn, only its own validation of the result.';
+        }
+        if (queued && !verified) {
+          note += queued.ok
+            ? ' Delivery NOT verified — the envelope is durably queued in _intel/queues/ and will be retried by scripts/queue-drain.cjs.'
+            : ' Delivery NOT verified AND the durable queue append failed — re-send this message.';
+        }
+        if (toProject && resolutionWarning) {
+          note += ` Resolution note: ${resolutionWarning}.`;
+        }
         if (unackedInbound.length > 0) {
           note += ` OUTSTANDING: results sent TO YOU still await your ack — corr(s): ${unackedInbound.join(', ')}. Ack them now (type=ack) or the sender may re-send in a loop.`;
         }
@@ -1388,12 +1477,14 @@ function handleToolCall(name, args) {
           content: [{
             type: 'text',
             text: JSON.stringify({
-              ok: submitted !== 'stuck' && !truncated,
+              ok: verified,
               submitted,
               delivered, // 'ok' | 'truncated' | 'unknown' — real integrity, not just box-cleared
               corr,
               from_pane: fromPane,
               to_pane: toPane,
+              ...(toProject ? { to_project: toProject, queued: queued ? queued.ok : false } : {}),
+              ...(autoAcked ? { auto_acked: true } : {}),
               type: msgType,
               ...(v2 ? { v2 } : {}),
               ...(decisions ? { decisions: decisions.count } : {}),

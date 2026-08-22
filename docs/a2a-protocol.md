@@ -1,12 +1,12 @@
-<!-- doc-head: updated 2026-08-22 (decision ledger on results + v2 tri-state ok|partial|missing). Edit body => update this. -->
+<!-- doc-head: updated 2026-08-22 (B1: to_project durable queue + auto-ack; decision ledger; v2 tri-state). Edit body => update this. -->
 Defines the A2A envelope protocol for peer-to-peer pane communication via wezbridge.
 Envelope syntax: [A2A from pane-N to pane-M | corr=<id> | type=request|ack|progress|result|error].
-v2 (2026-07-23): result bodies carry a machine-checkable criteria block; ENFORCED IN CODE, not prose —
-server (a2a-intel.cjs) detects v2 ok|partial|missing (WARN-only) + audits envelopes to _intel/events.jsonl.
-Decision ledger (2026-08-22): optional result block "decisions:" — items "- <decisión> [conf: alta|media|baja]
-— <qué habría preguntado>"; parsed + persisted (count+items) to _intel/a2a-results.jsonl with criteria evidence.
+Addressing (B1, 2026-08-22): PREFER a2a_send {to_project} — pane resolved via pane-identity at send time,
+envelope ALWAYS queued durably in _intel/queues/<project>.jsonl; failed deliveries retried by scripts/queue-drain.cjs.
+Auto-ack (B1): a VERIFIED type=result delivery closes its awaiting-ack thread automatically (bookkeeping acuse,
+never the judgement). v2 (2026-07-23): criteria block on results, detected ok|partial|missing (WARN-only).
+Decision ledger (2026-08-22): optional "decisions:" block persisted to _intel/a2a-results.jsonl with evidence.
 Gate-state (2026-07-27): progress body first-line GATE:<kind>:<state> parsed into a2a-threads.json.
-Claude hooks a2a-protocol-inject (contract injected per envelope) + a2a-thread-gate (Stop blocked on open threads).
 Read when: Implementing agents that coordinate across panes, or auditing where each rule is enforced.
 <!-- /doc-head -->
 
@@ -74,6 +74,8 @@ hope; a rule exists only if something deterministic fails when it's violated):
 | Decision ledger on results | `src/a2a-intel.cjs` (`detectDecisions`/`detectEvidence`) inside `a2a_send` | `decisions` (count+items with confidence) + `evidence` (count+items from criteria lines) persisted per result to `_intel/a2a-results.jsonl`; response exposes both counts |
 | Every envelope audited | same, server-side | Metadata (never bodies) appended to `Py Apps/_intel/events.jsonl` |
 | Open-thread tracking | same, server-side | `_intel/a2a-threads.json`: request opens corr → result awaits ack → ack closes; every send response lists `unacked_inbound` corrs the CALLER still owes acks for |
+| Durable project addressing | `a2a_send {to_project}` + `src/project-queue.cjs` | Pane resolved via `pane-identity` AT SEND TIME (never a stored pane id — ids reset on WezTerm restart, the misroute class); the envelope is ALWAYS appended to `_intel/queues/<project>.jsonl`, and undelivered entries are retried by `scripts/queue-drain.cjs` (cron-able one-pass drain: sha1 dedupe, attempt cap 3 → flag-and-stop, 5-min cooldown, 24h age expiry) |
+| Bookkeeping auto-ack on results | `a2a-intel.cjs autoAckResult`, called by `a2a_send` and the queue drain | A VERIFIED `type=result` delivery (`submitted` read back, tail intact) closes its awaiting-ack thread automatically (`a2a.thread-auto-acked` event + `auto_ack` line in `_intel/actions.jsonl`). The receipt acuse stops being an LLM turn; the requester's JUDGEMENT on the result (validate evidence, review→done) is never automated. Unverified deliveries keep the awaiting-ack nag |
 | Contract recall on receive | `~/.claude/hooks/a2a-protocol-inject.cjs` (UserPromptSubmit) | Protocol contract injected next to every inbound envelope — immune to context rot |
 | No finishing with open threads | `~/.claude/hooks/a2a-thread-gate.cjs` (Stop) | Session cannot end with an unanswered request or unacked result (max 2 blocks per corr, then warn-only) |
 
@@ -110,7 +112,20 @@ contract next to every inbound request.
 
 ## Sending
 
-Preferred (v3.5+) — one call that builds the envelope, sends it, and VERIFIES submission:
+Preferred (B1, 2026-08-22) — address the PROJECT, not the pane. Pane ids reset on
+WezTerm restart and stored ids are the whole "pane-8/pane-24" misroute class;
+`to_project` resolves the live pane via `pane-identity` at send time AND records
+the envelope durably in `_intel/queues/<project>.jsonl`:
+
+```js
+await mcp__wezbridge__a2a_send({ to_project: "wezbridge", corr: "T-019", type: "request", body: "Hello" });
+// -> { ok, submitted, to_project, to_pane: <resolved>, queued: true, corr, ... }
+// no live pane / ambiguous -> { ok: false, queued: true } — the message is NOT lost:
+// scripts/queue-drain.cjs (cron-able) retries it once the project's pane exists.
+```
+
+Also fine (v3.5+) — direct pane addressing, one call that builds the envelope,
+sends it, and VERIFIES submission:
 
 ```js
 await mcp__wezbridge__a2a_send({ to_pane: 1, corr: "T-019", type: "request", body: "Hello" });
@@ -138,6 +153,11 @@ When you (a Claude or Codex session) see an envelope in your input:
 2. If `type=request`: optionally send an `ack` on the same `corr`.
 3. Do the work. For work > 3 min, send `progress` envelopes on the same `corr`.
 4. Send `result` (or `error`) on the same `corr` when done.
+5. If `type=result` arrived addressed to you: since B1 the receipt-ack is
+   AUTOMATED when the sender's delivery verified — you own the JUDGEMENT
+   (validate the criteria evidence), not the acuse. Only send a manual
+   `type=ack` for corrs that still show up in your `unacked_inbound` (i.e.
+   deliveries the server could not verify).
 
 ## Push-vs-watch asymmetry (MANDATORY)
 
