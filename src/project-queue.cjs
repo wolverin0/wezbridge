@@ -74,6 +74,14 @@ function entryId(entry) {
  */
 function enqueue(entry, { base } = {}) {
   try {
+    // Fail-closed on empty body (T-0221): a message with no body is a caller
+    // bug — the first two real dispatches passed `envelope:` instead of
+    // `body:`, the lenient String(entry.body || '') swallowed it, and both
+    // deliveries arrived as a bare header. Silent-empty is the dropper class
+    // this control plane exists to kill, so refuse the write and say why.
+    if (!entry.body || !String(entry.body).trim()) {
+      return { ok: false, id: null, file: null, error: 'body required — got empty (did you pass `envelope:` instead of `body:`?)' };
+    }
     const file = queueFile(entry.project, base);
     if (!file) return { ok: false, id: null, file: null };
     fs.mkdirSync(path.dirname(file), { recursive: true });

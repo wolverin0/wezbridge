@@ -287,3 +287,41 @@ test('project-queue is NOT a coordinator: no setInterval anywhere in the module'
   assert.ok(!src.includes('setInterval'),
     'a timer loop here would be always-on coordinator iteration #7 — the consumer is cron-driven by design');
 });
+
+// ── T-0221 regression: silent-empty body was a dropper ──────────────────────
+// Root cause 2026-08-22: two real dispatches passed `envelope:` instead of
+// `body:`; the lenient String(entry.body || '') swallowed it and both
+// deliveries arrived as a bare A2A header. These tests FAIL without the
+// fail-closed guard in enqueue() (rule: regression test must fail sans fix).
+
+test('T-0221: enqueue refuses an empty body with a caller-facing error', () => {
+  const base = freshBase();
+  const r = pq.enqueue({ project: 'wezbridge', corr: 't0221', type: 'request', from_pane: 0 }, { base });
+  assert.strictEqual(r.ok, false);
+  assert.match(String(r.error || ''), /body required/);
+});
+
+test('T-0221: enqueue refuses the exact caller bug — `envelope:` instead of `body:`', () => {
+  const base = freshBase();
+  const r = pq.enqueue({
+    project: 'wezbridge', corr: 't0221b', type: 'request', from_pane: 0,
+    envelope: '[A2A from pane-0 to pane-1 | corr=t0221b | type=request]\ncuerpo que se perderia',
+  }, { base });
+  assert.strictEqual(r.ok, false, 'envelope-without-body must be refused, not silently emptied');
+});
+
+test('T-0221: whitespace-only body is refused too', () => {
+  const base = freshBase();
+  const r = pq.enqueue({ project: 'wezbridge', corr: 't0221c', type: 'request', from_pane: 0, body: '   \n  ' }, { base });
+  assert.strictEqual(r.ok, false);
+});
+
+test('T-0221: multiline body survives enqueue verbatim (the delivery rebuild depends on it)', () => {
+  const base = freshBase();
+  const body = 'linea 1\nlinea 2 con criteria:\n- item: pass — evidencia';
+  const r = pq.enqueue({ project: 'wezbridge', corr: 't0221d', type: 'result', from_pane: 0, body }, { base });
+  assert.strictEqual(r.ok, true);
+  const file = path.join(base, 'queues', 'wezbridge.jsonl');
+  const rec = JSON.parse(fs.readFileSync(file, 'utf8').trim().split('\n').pop());
+  assert.strictEqual(rec.body, body);
+});
