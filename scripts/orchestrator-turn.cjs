@@ -323,11 +323,21 @@ function main() {
   // than merely unlikely.
   takeLease('headless');
   const prompt = fs.readFileSync(PROMPT, 'utf8');
+  // Fleet attribution (mm-7d0e): frame this turn in actions.jsonl so any
+  // spawn/kill/dispatch lines between start and end are attributable to it,
+  // and mark the child env so in-turn spawns carry the actor explicitly.
+  let alog = null;
+  try { alog = require(path.join(REPO, 'src', 'action-log.cjs')); } catch {}
+  if (alog) alog.logAction('orchestrator_turn_start', { why: 'scheduled headless turn' });
   const r = spawnSync('claude', ['-p', '--dangerously-skip-permissions'], {
     input: prompt, encoding: 'utf8', cwd: path.join(REPO, '..'), timeout: 900000, shell: true,
+    env: { ...process.env, WEZBRIDGE_ACTOR: 'orchestrator-turn-headless' },
   });
   const ok = !r.error && r.status === 0;
   writeTurn({ ...base, woke: true, action: 'headless', headless_exit: r.error ? null : r.status });
+  if (alog) alog.logAction('orchestrator_turn_end', {
+    extra: { ok, exit: r.error ? String(r.error.message) : r.status },
+  });
   log(`headless turn ${ok ? 'completed' : `FAILED (${r.error ? r.error.message : r.status})`}`);
   return ok ? 0 : 4;
 }

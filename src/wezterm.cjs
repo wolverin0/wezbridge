@@ -371,7 +371,15 @@ function spawnPane({ cwd, program, args: spawnArgs, splitFrom, splitDirection } 
   const paneId = wezCmd(cmdArgs);
   // New pane exists — next listPanes() must fetch fresh data
   invalidateListPanesCache();
-  return parseInt(paneId, 10);
+  const newId = parseInt(paneId, 10);
+  // Fleet attribution (mm-96f8): every spawn leaves a durable who/what/why line.
+  try {
+    require('./action-log.cjs').logAction('spawn_pane', {
+      target: `pane-${newId}`,
+      extra: { cwd: cwd || '', program: program || 'default-shell' },
+    });
+  } catch { /* observability never breaks the spawn */ }
+  return newId;
 }
 
 /** Send text to a pane (simulates typing + Enter). */
@@ -485,6 +493,10 @@ function killPane(paneId) {
   // Mutation — invalidate both caches so the next read reflects reality
   invalidateListPanesCache();
   invalidateGetTextCache(paneId);
+  // Fleet attribution (mm-96f8): kills are as important as spawns.
+  try {
+    require('./action-log.cjs').logAction('kill_pane', { target: `pane-${paneId}` });
+  } catch { /* never breaks the kill */ }
 }
 
 /** Activate (focus) a pane. */
