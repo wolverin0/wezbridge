@@ -36,6 +36,28 @@ test('GREEN: cancelled is permanent', () => {
   assert.strictEqual(r.verdict, 'GREEN', 'a cancelled task must never be raised again');
 });
 
+test('GREEN: cancelled covers across categories — dead work has no category', () => {
+  // T-0191, live case 2026-08-20/22: cancelled by operator decision with
+  // category "observability" (its ledger KIND — no steward finding existed yet
+  // to copy a category from), while the still-queued card later surfaced as
+  // "idle". The permanent verdict must cover it anyway: a dead card cannot
+  // honestly re-enter any category, and re-firing RED daily against a recorded
+  // cancellation trains everyone to ignore the gate.
+  const r = gate.evaluate({
+    findings: [finding({ id: 'T-0191', category: 'idle', age_hours: 73 })],
+    rulings: [{ task: 'T-0191', category: 'observability', ruling: 'cancelled', why: 'buried by operator decision', at: iso(-48 * H) }],
+    now: NOW,
+  });
+  assert.strictEqual(r.verdict, 'GREEN', 'a cancelled task must never be raised again, whatever category its open card drifts into');
+  // `resolved` keeps the category match (pinned below) — this exemption is for
+  // `cancelled` alone, and a deferral must still re-judge on category change.
+  assert.strictEqual(
+    gate.rulingCovers(
+      { task: 'T-1', category: 'idle', ruling: 'deferred', until: iso(100 * H), at: iso(0) },
+      { id: 'T-1', category: 'abandoned-lease', age_hours: 10 }, NOW),
+    false, 'a deferral issued while idle must not silence an abandoned-lease');
+});
+
 test('GREEN: operator-gated is permanent', () => {
   const r = gate.evaluate({
     findings: [finding()],

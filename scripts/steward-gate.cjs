@@ -82,6 +82,16 @@ const DISPATCH_GRACE_HOURS = 24;
  */
 function rulingCovers(ruling, finding, now) {
   if (!ruling || ruling.task !== finding.id) return false;
+  // `cancelled` is exempt from the category match: dead work is a property of
+  // the TASK, not of whichever category the steward files its still-open card
+  // under later. Proven live by T-0191 — cancelled by operator decision on
+  // 2026-08-20 with category "observability" (its ledger KIND; no steward
+  // finding existed yet to copy a category from), then re-fired RED daily as
+  // "idle" because this check gated even the permanent verdict. `resolved`
+  // deliberately KEEPS the match (see the 2026-08-14 test: finished work that
+  // later shows up stale-failed was reopened or regressed, so the judgement
+  // must be made again) — a dead card has no worker left to fail.
+  if (ruling.ruling === 'cancelled') return true;
   if (ruling.category && ruling.category !== finding.category) return false;
 
   switch (ruling.ruling) {
