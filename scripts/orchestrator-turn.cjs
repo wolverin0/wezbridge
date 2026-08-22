@@ -69,19 +69,64 @@ const log = (m) => console.log(`${new Date().toISOString()} orchestrator-turn: $
 // ---------------------------------------------------------------------------
 
 /**
- * Should this turn wake anything at all?
+ * Classify one beacon-shaped event into a wake class. Encodes mm-d216: a
+ * `permission-wait` from a pane running bypass-permissions is a TURN BOUNDARY,
+ * not a gate — Claude notifies "waiting for your input" at every idle prompt
+ * even when no permission can possibly be pending. Waking on it is the exact
+ * "clock asking if anything needs doing" shape this script exists to kill.
+ * A permission-wait from a pane that CAN block is a real gate: `exception`.
+ * A results file names a completed node: `results-directed`. A bare turn-end
+ * is mid-work noise (the waker's own comments say so).
+ */
+function classifyEvent(evt) {
+  if (!evt || typeof evt !== 'object') return 'noise';
+  if (evt.event === 'result-file') return 'results-directed';
+  if (evt.event === 'permission-wait') return evt.bypass ? 'noise' : 'exception';
+  return 'noise'; // turn-end and anything unrecognised: a boundary, not a reason
+}
+
+/**
+ * Should this turn wake anything at all — and WHY, by class?
  *
  * `gateExit` is steward-gate's verdict: 0 GREEN, 1 RED, 3 UNKNOWN.
  * UNKNOWN counts as a reason. A gate that could not see is not a clean gate, and
  * a loop that treats it as one recreates the defect the gate exists to prevent.
+ *
+ * Every waking reason carries a class (aligned index-for-index in `classes`):
+ *   results-directed — finished work is sitting there directing the turn
+ *   real-stall       — work past its deadline with no ruling (gate RED)
+ *   exception        — the machinery itself broke or a pane hit a REAL gate
+ *   noise            — classified and deliberately NOT woken on (mm-d216);
+ *                      reported in `noise` so a skip can say what it skipped
+ *
+ * `events` is optional: beacon-shaped `{event, repo?, bypass?}` items to
+ * classify alongside the gate/review triggers. This runs BEFORE any model is
+ * invoked and costs $0 — the classes land in the turn record and actions.jsonl,
+ * which is what makes "% of turns with no action" a derivable number instead
+ * of an anecdote.
  */
-function shouldWake({ gateExit, reviewCount }) {
+function classifyWake({ gateExit, reviewCount, events = [] }) {
   const reasons = [];
-  if (gateExit === 1) reasons.push('gate RED: work past deadline with no ruling');
-  if (gateExit === 3) reasons.push('gate UNKNOWN: it could not read its own findings');
-  if (gateExit !== 0 && gateExit !== 1 && gateExit !== 3) reasons.push(`gate exited ${gateExit}, which is not a verdict this loop knows`);
-  if (reviewCount > 0) reasons.push(`${reviewCount} task(s) in review with finished work nobody has judged`);
-  return { wake: reasons.length > 0, reasons };
+  const classes = [];
+  const noise = [];
+  if (gateExit === 1) { reasons.push('gate RED: work past deadline with no ruling'); classes.push('real-stall'); }
+  if (gateExit === 3) { reasons.push('gate UNKNOWN: it could not read its own findings'); classes.push('exception'); }
+  if (gateExit !== 0 && gateExit !== 1 && gateExit !== 3) { reasons.push(`gate exited ${gateExit}, which is not a verdict this loop knows`); classes.push('exception'); }
+  if (reviewCount > 0) { reasons.push(`${reviewCount} task(s) in review with finished work nobody has judged`); classes.push('results-directed'); }
+  for (const evt of events) {
+    const cls = classifyEvent(evt);
+    const desc = `${(evt && evt.event) || 'unrecognised event'}${evt && evt.repo ? ` from ${evt.repo}` : ''}`;
+    if (cls === 'noise') { noise.push(desc); continue; }
+    reasons.push(cls === 'results-directed' ? `${desc}: completed work to harvest` : `${desc}: pane blocked at a real gate`);
+    classes.push(cls);
+  }
+  return { wake: reasons.length > 0, reasons, classes, noise };
+}
+
+/** Back-compat shim: the pre-classifier shape some callers/tests still use. */
+function shouldWake(input) {
+  const { wake, reasons } = classifyWake(input);
+  return { wake, reasons };
 }
 
 /**
@@ -233,7 +278,7 @@ function main() {
 
   const gateExit = runGate();
   const reviews = reviewCount();
-  const { wake, reasons } = shouldWake({ gateExit, reviewCount: reviews });
+  const { wake, reasons, classes, noise } = classifyWake({ gateExit, reviewCount: reviews });
   const now = snapshot();
   const prev = lastTurn();
 
@@ -242,14 +287,15 @@ function main() {
   let stalls = 0;
   if (prev && prev.woke && !turnWasProductive(prev.snapshot, now)) stalls = (prev.stalls || 0) + 1;
 
-  const base = { at: new Date().toISOString(), gate_exit: gateExit, reviews, reasons, snapshot: now, stalls };
+  const base = { at: new Date().toISOString(), gate_exit: gateExit, reviews, reasons, classes, ...(noise.length ? { noise } : {}), snapshot: now, stalls };
 
   // --dry-run: evaluate and report, touch nothing. Exists so the trigger can be
   // inspected against live state without waking anyone — including from the
   // very pane it would otherwise poke.
   if (process.argv.includes('--dry-run')) {
-    log(`DRY RUN | gate=${gateExit} reviews=${reviews} stalls=${stalls} wake=${wake}`);
-    for (const r of reasons) log(`  reason: ${r}`);
+    log(`DRY RUN | gate=${gateExit} reviews=${reviews} stalls=${stalls} wake=${wake} classes=[${classes.join(', ')}]`);
+    reasons.forEach((r, i) => log(`  reason [${classes[i]}]: ${r}`));
+    for (const n of noise) log(`  noise (not waking): ${n}`);
     log(`  would: ${!wake ? 'nothing, no model invoked' : stalls >= STALL_LIMIT ? 'raise T-LOOP-STALL to the operator' : 'poke the wezbridge pane, or run headless if none'}`);
     return 0;
   }
@@ -267,6 +313,16 @@ function main() {
   }
 
   if (!wake) {
+    // A skipped turn used to leave NOTHING in actions.jsonl, which made
+    // "% of turns without action" underivable. One $0 line fixes that: the
+    // classifier ran, found only green/noise, and no model was invoked.
+    try {
+      const { logAction } = require(path.join(REPO, 'src', 'action-log.cjs'));
+      logAction('waker_skip', {
+        why: 'gate green and nothing awaiting judgement - no model invoked',
+        extra: { classes, ...(noise.length ? { noise } : {}) },
+      });
+    } catch { /* observability must not break the turn */ }
     writeTurn({ ...base, woke: false, action: 'none', note: 'gate green and nothing awaiting judgement - no model invoked' });
     log(`nothing to do (gate ${gateExit}, ${reviews} in review). No model invoked.`);
     return 0;
@@ -343,4 +399,4 @@ function main() {
 }
 
 if (require.main === module) process.exit(main());
-module.exports = { shouldWake, turnWasProductive, STALL_LIMIT };
+module.exports = { classifyWake, classifyEvent, shouldWake, turnWasProductive, STALL_LIMIT };

@@ -12,7 +12,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createWaker, intentId } = require('../src/orchestrator-waker.cjs');
+const { createWaker, intentId, isNoiseEvent, paneRunsBypass } = require('../src/orchestrator-waker.cjs');
 
 function makeEnv() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'waker-'));
@@ -224,6 +224,99 @@ test('non-Claude panes sharing the target cwd do not make resolution ambiguous',
   await w.tick();
   assert.equal(send.calls.length, 1, 'daemon shell pane filtered out; Claude pane poked');
   assert.equal(send.calls[0].paneId, 0);
+});
+
+// --- mm-d216: permission-wait from a bypass-permissions pane is NOISE -------
+
+const BYPASS_WALKSIM_PANE = {
+  paneId: 7, project: 'G:/Py Apps/walksim', title: 'walksim dev', status: 'working',
+  lastLines: 'some output\n⏵⏵ bypass permissions on (shift+tab to cycle)',
+};
+
+test('isNoiseEvent: only permission-wait AND bypass together are noise', () => {
+  assert.equal(isNoiseEvent({ event: 'permission-wait' }, true), true);
+  assert.equal(isNoiseEvent({ event: 'permission-wait' }, false), false);
+  assert.equal(isNoiseEvent({ event: 'turn-end' }, true), false);
+  assert.equal(isNoiseEvent(null, true), false);
+});
+
+test('paneRunsBypass matches the repo pane by path suffix and reads the status bar', () => {
+  const panes = [IDLE_PANE, BYPASS_WALKSIM_PANE];
+  assert.equal(paneRunsBypass(panes, 'walksim'), true);
+  assert.equal(paneRunsBypass(panes, 'wezbridge'), false, 'orch pane shows no bypass marker');
+  assert.equal(paneRunsBypass(panes, 'other-repo'), false, 'invisible pane fails open');
+  assert.equal(paneRunsBypass([], 'walksim'), false);
+  // nested repo paths match too (e.g. "whatsappbot-prod - Copy - Copy/whatsappbot-final")
+  const nested = [{ paneId: 3, project: 'G:/Py Apps/a/b', lastLines: '⏵⏵ bypass permissions on' }];
+  assert.equal(paneRunsBypass(nested, 'a/b'), true);
+  assert.equal(paneRunsBypass(nested, 'b'), true);
+});
+
+test('ingest side: permission-wait from a visible bypass pane never becomes an intent', async () => {
+  const env = makeEnv();
+  const send = fakeSend();
+  const w = makeWaker(env, {
+    send, settleTicks: 1,
+    discoverPanes: () => [IDLE_PANE, BYPASS_WALKSIM_PANE],
+  });
+  beacon(env, { repo: 'walksim', session: 's', time: 't1', event: 'permission-wait' });
+  await w.tick();
+  assert.equal(Object.keys(w._state.pending).length, 0, 'noise never entered pending');
+  assert.equal(send.calls.length, 0, 'and nothing was poked');
+  // turn-end from the same bypass pane is NOT filtered — mm-d216 is only about permission-wait
+  beacon(env, { repo: 'walksim', session: 's', time: 't2', event: 'turn-end' });
+  await w.tick();
+  assert.equal(send.calls.length, 1, 'turn-end still pokes');
+  assert.match(send.calls[0].text, /1 turn-end event\(s\)/);
+});
+
+test('ingest side: cfg.isBypassPane overrides pane sniffing (injectable for wiring)', async () => {
+  const env = makeEnv();
+  const send = fakeSend();
+  // no bypass pane visible, but the injected predicate says bypass
+  const w3 = createWaker({
+    eventsPath: env.eventsPath, stateDir: env.stateDir,
+    discoverPanes: () => [IDLE_PANE], send, settleTicks: 1, cooldownMs: 0,
+    now: () => 1_000_000, log: () => {}, watchRepos: ['walksim'],
+    isBypassPane: (evt) => evt.repo === 'walksim',
+  });
+  beacon(env, { repo: 'walksim', session: 's', time: 't1', event: 'permission-wait' });
+  await w3.tick();
+  assert.equal(Object.keys(w3._state.pending).length, 0, 'predicate verdict respected');
+  assert.equal(send.calls.length, 0);
+});
+
+test('poke side: intents ingested before the pane was visible are dropped at delivery, not poked', async () => {
+  const env = makeEnv();
+  const send = fakeSend();
+  let panes = [IDLE_PANE]; // source pane NOT visible at ingest -> intent is kept (fail open)
+  const w = makeWaker(env, { send, settleTicks: 2, discoverPanes: () => panes });
+  beacon(env, { repo: 'walksim', session: 's', time: 't1', event: 'permission-wait' });
+  await w.tick(); // ingest + idle streak 1 — settle not met, nothing delivered yet
+  assert.equal(Object.keys(w._state.pending).length, 1, 'kept while mode unknowable');
+  // pane becomes visible, running bypass -> twin filter drops it at poke time
+  panes = [IDLE_PANE, BYPASS_WALKSIM_PANE];
+  await w.tick();
+  assert.equal(send.calls.length, 0, 'noise never woke the orchestrator');
+  assert.equal(Object.keys(w._state.pending).length, 0, 'dropped, not left to rot');
+  await w.tick();
+  assert.equal(send.calls.length, 0, 'and it never comes back');
+});
+
+test('poke side: mixed group keeps real events — only the permission-wait noise is dropped', async () => {
+  const env = makeEnv();
+  const send = fakeSend();
+  let panes = [IDLE_PANE]; // ingest both while source pane is invisible
+  const w = makeWaker(env, { send, settleTicks: 2, discoverPanes: () => panes });
+  beacon(env, { repo: 'walksim', session: 's', time: 't1', event: 'permission-wait' });
+  beacon(env, { repo: 'walksim', session: 's', time: 't2', event: 'turn-end' });
+  await w.tick(); // ingest + idle streak 1 — settle not met, nothing delivered yet
+  assert.equal(Object.keys(w._state.pending).length, 2);
+  panes = [IDLE_PANE, BYPASS_WALKSIM_PANE];
+  await w.tick();
+  assert.equal(send.calls.length, 1, 'the real turn-end still pokes');
+  assert.match(send.calls[0].text, /1 turn-end event\(s\)/, 'noise excluded from the count');
+  assert.equal(Object.keys(w._state.pending).length, 0);
 });
 
 test('fresh state starts at END of an existing events file — history is not replayed', async () => {

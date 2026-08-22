@@ -44,6 +44,43 @@ function intentId(evt) {
     .digest('hex').slice(0, 16);
 }
 
+// ── mm-d216: permission-wait from a bypass-permissions pane is NOISE ────────
+//
+// A pane running with bypass-permissions cannot be blocked on a permission
+// prompt — its "Claude is waiting for your input" Notification fires at every
+// idle prompt, i.e. it marks a TURN BOUNDARY, not a gate. Poking the
+// orchestrator for it is the poke-storm class this waker was built to avoid.
+// The rule is applied TWICE (twin filter): at ingest when the wiring can
+// already answer (cfg.isBypassPane), and again at poke time against the live
+// pane list — because a pane's mode is only knowable when a pane is visible.
+
+/** Pure mm-d216 predicate: is this event noise given the pane's bypass mode? */
+function isNoiseEvent(evt, bypass) {
+  return !!evt && evt.event === 'permission-wait' && !!bypass;
+}
+
+const BYPASS_RE = /bypass permissions/i;
+
+/**
+ * Does the pane working in `repo` currently show bypass-permissions mode?
+ * Matches the pane whose project/cwd path ends with the repo path (repos can
+ * be nested, e.g. "whatsappbot-prod - Copy - Copy/whatsappbot-final") and
+ * reads the mode straight off its status bar ("⏵⏵ bypass permissions on") in
+ * lastLines. No pane visible, or no marker: NOT bypass — fail open, because a
+ * filter confident enough to swallow a real gate would tell nobody.
+ */
+function paneRunsBypass(panes, repo) {
+  const want = `/${String(repo || '').replace(/\\/g, '/').replace(/\/$/, '').toLowerCase()}`;
+  if (want === '/') return false;
+  for (const p of panes || []) {
+    const proj = String(p.project || p.cwd || '').replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
+    if (!proj) continue;
+    if (proj !== want.slice(1) && !proj.endsWith(want)) continue;
+    if (BYPASS_RE.test(String(p.lastLines || p.text || ''))) return true;
+  }
+  return false;
+}
+
 function atomicWriteJson(file, value) {
   const tmp = `${file}.tmp`;
   fs.writeFileSync(tmp, `${JSON.stringify(value, null, 1)}\n`);
@@ -126,7 +163,7 @@ function createWaker(opts) {
     return crypto.createHash('sha1').update(buf).digest('hex') === hash;
   }
 
-  function ingestEvents() {
+  function ingestEvents(panes = []) {
     let stat;
     try { stat = fs.statSync(eventsPath); } catch { return; } // no beacon file yet
     if (stat.size < state.cursorBytes) { state.cursorBytes = 0; state.cursorTail = null; }
@@ -151,12 +188,24 @@ function createWaker(opts) {
     if (lastNewline === -1) return;
     const consumed = lastNewline + 1;
     let added = 0;
+    let noiseDropped = 0;
     for (const line of chunk.slice(0, consumed).split('\n')) {
       if (!line.trim()) continue;
       let evt;
       try { evt = JSON.parse(line); } catch { continue; } // corrupt line: skip, never crash
       if (!cfg.watchRepos.includes(evt.repo)) continue;
       if (!['turn-end', 'permission-wait'].includes(evt.event)) continue;
+      // mm-d216 twin filter, ingest side: when the SOURCE pane is visible and
+      // runs bypass-permissions, its permission-wait never becomes an intent.
+      // cfg.isBypassPane overrides for tests/wiring; a throwing predicate or an
+      // invisible pane keeps the event (fail open).
+      if (evt.event === 'permission-wait') {
+        let bypass = false;
+        try {
+          bypass = cfg.isBypassPane ? !!cfg.isBypassPane(evt) : paneRunsBypass(panes, evt.repo);
+        } catch { bypass = false; }
+        if (isNoiseEvent(evt, bypass)) { noiseDropped += 1; continue; }
+      }
       const id = intentId(evt);
       if (deliveredSet.has(id) || state.pending[id]) continue;
       state.pending[id] = { repo: evt.repo, event: evt.event, time: evt.time, attempts: 0 };
@@ -174,6 +223,7 @@ function createWaker(opts) {
     };
     persistCursor();
     if (added) log(`orch-waker: ${added} new intent(s), ${Object.keys(state.pending).length} pending`);
+    if (noiseDropped) log(`orch-waker: ${noiseDropped} permission-wait event(s) dropped as noise at ingest (mm-d216: pane runs bypass-permissions)`);
   }
 
   // ── 1b. results-file trigger: a completion signal that needs NO hook ──────
@@ -322,7 +372,27 @@ function createWaker(opts) {
     const byRepo = {};
     for (const id of ids) (byRepo[state.pending[id].repo] ||= []).push(id);
 
-    for (const [repo, group] of Object.entries(byRepo)) {
+    for (const [repo, groupAll] of Object.entries(byRepo)) {
+      // mm-d216 twin filter, poke side: permission-wait intents whose SOURCE
+      // pane is visibly running bypass-permissions are noise — drop them here,
+      // with the live pane list in hand, instead of waking the orchestrator on
+      // a turn boundary. Dropped intents join the delivered ring so a restart
+      // never resurrects them. A wholly-noise group consumes no cooldown.
+      let group = groupAll;
+      if (paneRunsBypass(panes, repo)) {
+        const noiseIds = groupAll.filter((id) => isNoiseEvent(state.pending[id], true));
+        if (noiseIds.length) {
+          for (const id of noiseIds) {
+            delete state.pending[id];
+            deliveredSet.add(id);
+            state.delivered.push(id);
+          }
+          persistPending(); persistDelivered();
+          log(`orch-waker: ${noiseIds.length} permission-wait intent(s) from ${repo} dropped as noise (mm-d216: pane runs bypass-permissions)`);
+          group = groupAll.filter((id) => state.pending[id]);
+          if (!group.length) continue;
+        }
+      }
       // undefined = never attempted — a first attempt is never cooldown-blocked
       const last = state.lastAttemptAt[repo];
       if (last !== undefined && now() - last < cfg.cooldownMs) continue;
@@ -383,13 +453,18 @@ function createWaker(opts) {
 
   async function tick() {
     state.lastTickAt = new Date(now()).toISOString();
-    ingestEvents();
-    try { scanResults(); } catch (err) { log(`orch-waker: results scan failed: ${err.message}`); }
+    // Discovery moved AHEAD of ingest so the mm-d216 ingest filter can see the
+    // live pane list. A discovery failure must not stop ingest (it never did):
+    // panes stays [] -> the filter fails open and events are kept as before.
     let panes = [];
+    let discoveryFailed = false;
     try { panes = discoverPanes() || []; } catch (err) {
       log(`orch-waker: discovery failed: ${err.message}`);
-      return;
+      discoveryFailed = true;
     }
+    ingestEvents(panes);
+    try { scanResults(); } catch (err) { log(`orch-waker: results scan failed: ${err.message}`); }
+    if (discoveryFailed) return;
     await deliverPending(panes);
   }
 
@@ -520,4 +595,4 @@ function resolveWakerConfig({ env = process.env, intelDir, readFile } = {}) {
   };
 }
 
-module.exports = { createWaker, intentId, DEFAULTS, resolveWakerConfig };
+module.exports = { createWaker, intentId, DEFAULTS, resolveWakerConfig, isNoiseEvent, paneRunsBypass };

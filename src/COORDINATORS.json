@@ -14,7 +14,7 @@
     {
       "module": "src/orchestrator-waker.cjs",
       "what": "daemon-side waker that pokes pane-0 on watched-repo turn-end (iteration #5)",
-      "ruling": "pre-existing but DISARMED 2026-08-13 by operator decision (_intel/orch-waker.json enabled=false). Code retained deliberately, same reversible-demolition discipline as the omniclaude-pre-rollback tag. Re-arm only when something downstream of the poke can FAIL."
+      "ruling": "DISARMED 2026-08-13 by operator decision, then RE-ARMED 2026-08-19 (_intel/orch-waker.json enabled=true): the disarm's re-arm condition — something downstream of the poke can FAIL — was met by scripts/waker-gate.cjs (exit 1 on stale/flagged intents) plus bridge_health alerts on pendingOldestMinutes/flagged. Both decision records live in _intel/orch-waker.json (_disarmed_2026_08_13 / _rearmed_2026_08_19)."
     },
     {
       "module": "src/pane0-watchdog.cjs",
