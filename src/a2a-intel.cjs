@@ -25,13 +25,18 @@ function intelDir() {
  * Convention (docs/a2a-protocol.md): a v2 result contains a `criteria:` block
  * with per-criterion pass/fail. Detection is deliberately lenient — WARN-only
  * rollout; hard-reject is a later operator call.
- * Returns 'ok' | 'missing'.
+ * Returns 'ok' | 'partial' | 'missing':
+ *   ok      — criteria block WITH pass/fail verdicts (unchanged from v1 detection)
+ *   partial — criteria heading present but no verdicts (was 'missing' before A1)
+ *   missing — no criteria block at all
  */
 function detectV2(body) {
   const text = String(body);
   const hasCriteria = /^\s*(criteria|acceptance_criteria)\s*:/im.test(text);
   const hasVerdicts = /\b(pass(ed)?|fail(ed)?)\b/i.test(text);
-  return hasCriteria && hasVerdicts ? 'ok' : 'missing';
+  if (hasCriteria && hasVerdicts) return 'ok';
+  if (hasCriteria) return 'partial';
+  return 'missing';
 }
 
 /**
@@ -43,6 +48,59 @@ function detectV2(body) {
 function detectAbandons(body) {
   const items = [];
   for (const m of String(body).matchAll(/^\s*ABANDON:\s*(.+)$/gim)) {
+    items.push(m[1].trim());
+  }
+  return { count: items.length, items };
+}
+
+/**
+ * Decision ledger (dzhng pattern, adopted 2026-08-22): a result body MAY carry
+ * an optional block
+ *
+ *   decisions:
+ *   - <decisión> [conf: alta|media|baja] — <qué habría preguntado>
+ *
+ * — every choice the agent made where the plan was silent, ranked by (self-
+ * assessed) confidence. Mirrors detectAbandons: silent unilateral choices are
+ * the same failure family as silent scope-narrowing — this makes them countable.
+ * Lenient by design (WARN-only rollout): an item without a [conf:] tag still
+ * counts, with confidence null.
+ * Returns { count, items: [{ decision, confidence, would_have_asked }] }.
+ */
+function detectDecisions(body) {
+  const lines = String(body).split('\n');
+  const items = [];
+  let inBlock = false;
+  for (const line of lines) {
+    if (/^\s*decisions\s*:\s*$/i.test(line)) { inBlock = true; continue; }
+    if (!inBlock) continue;
+    const m = /^\s*-\s+(.+)$/.exec(line);
+    if (!m) { inBlock = false; continue; } // first non-item line ends the block
+    const raw = m[1].trim();
+    const parsed = /^(.*?)\s*\[conf:\s*(alta|media|baja)\]\s*(?:[—–-]{1,2}\s*(.*))?$/i.exec(raw);
+    if (parsed) {
+      items.push({
+        decision: parsed[1].trim(),
+        confidence: parsed[2].toLowerCase(),
+        would_have_asked: (parsed[3] || '').trim() || null,
+      });
+    } else {
+      items.push({ decision: raw, confidence: null, would_have_asked: null });
+    }
+  }
+  return { count: items.length, items };
+}
+
+/**
+ * Evidence extraction from v2 criteria lines: the text after the pass/fail
+ * verdict's dash (`- <criterion>: pass — <evidence>`). A verdict with no
+ * evidence tail contributes nothing — which is exactly what makes the count
+ * useful: criteria=5, evidence=0 is a result asking to be trusted, not checked.
+ * Returns { count, items }.
+ */
+function detectEvidence(body) {
+  const items = [];
+  for (const m of String(body).matchAll(/^\s*-\s+.+?:\s*(?:pass(?:ed)?|fail(?:ed)?)\b\s*[—–-]{1,2}\s*(\S.*)$/gim)) {
     items.push(m[1].trim());
   }
   return { count: items.length, items };
@@ -77,6 +135,8 @@ function recordResultBody({ corr, fromPane, toPane, v2, body }) {
       to_pane: toPane,
       v2,
       abandons: detectAbandons(text).count,
+      decisions: detectDecisions(text),
+      evidence: detectEvidence(text),
       body: truncated ? text.slice(0, RESULT_BODY_CAP) : text,
       body_truncated: truncated,
     });
@@ -162,4 +222,4 @@ function updateThreads({ fromPane, toPane, corr, type, body }) {
     .map(([c]) => c);
 }
 
-module.exports = { intelDir, detectV2, detectAbandons, recordEvent, recordResultBody, updateThreads };
+module.exports = { intelDir, detectV2, detectAbandons, detectDecisions, detectEvidence, recordEvent, recordResultBody, updateThreads };

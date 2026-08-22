@@ -1357,6 +1357,12 @@ function handleToolCall(name, args) {
         // Control-plane enforcement (fail-soft, never blocks delivery):
         // v2 shape check on results, audit every envelope, track open threads.
         const v2 = msgType === 'result' ? a2aIntel.detectV2(body) : undefined;
+        // Decision ledger (A1, 2026-08-22): surface the optional decisions:
+        // block + criteria evidence so the requester sees judgment calls
+        // without re-reading the body. Counts only in the response; full items
+        // persist in _intel/a2a-results.jsonl via recordResultBody.
+        const decisions = msgType === 'result' ? a2aIntel.detectDecisions(body) : undefined;
+        const evidence = msgType === 'result' ? a2aIntel.detectEvidence(body) : undefined;
         a2aIntel.recordEvent({ from_pane: fromPane, to_pane: toPane, corr, type: msgType, submitted, delivered, ...(v2 ? { v2 } : {}) });
         // Result bodies (the criteria: blocks) persist to the sibling
         // a2a-results.jsonl — events.jsonl stays metadata-only. Fail-soft.
@@ -1369,6 +1375,11 @@ function handleToolCall(name, args) {
             : `Envelope delivered. Reuse corr=${corr} for the rest of this thread; the responder should reply with type=ack/progress/result.`;
         if (v2 === 'missing') {
           note += ' PROTOCOL WARNING: this type=result body has no v2 criteria block (criteria: <criterion>: pass|fail — evidence). Machine-checkable results are the fleet contract; include one next time.';
+        } else if (v2 === 'partial') {
+          note += ' PROTOCOL WARNING: this type=result body has a criteria block but no per-criterion pass|fail verdicts (criteria: <criterion>: pass|fail — evidence). A criteria list without verdicts cannot be validated; add them next time.';
+        }
+        if (decisions && decisions.count > 0) {
+          note += ` Decision ledger: ${decisions.count} decision(s) recorded to a2a-results.jsonl.`;
         }
         if (unackedInbound.length > 0) {
           note += ` OUTSTANDING: results sent TO YOU still await your ack — corr(s): ${unackedInbound.join(', ')}. Ack them now (type=ack) or the sender may re-send in a loop.`;
@@ -1385,6 +1396,8 @@ function handleToolCall(name, args) {
               to_pane: toPane,
               type: msgType,
               ...(v2 ? { v2 } : {}),
+              ...(decisions ? { decisions: decisions.count } : {}),
+              ...(evidence ? { evidence: evidence.count } : {}),
               ...(unackedInbound.length > 0 ? { unacked_inbound: unackedInbound } : {}),
               note,
             }, null, 2),

@@ -289,6 +289,106 @@ test('detectAbandons: cero en un body sin rendiciones', () => {
   assert.deepEqual(detectAbandons('criteria:\n- G1: pass'), { count: 0, items: [] });
 });
 
+// ── Decision ledger (A1, 2026-08-22) ─────────────────────────────────────
+// dzhng pattern: a result body MAY carry a "decisions:" block — every choice
+// made where the plan was silent, with self-assessed confidence and what the
+// agent would have asked. detectDecisions parses it; detectEvidence extracts
+// the evidence tails of criteria verdict lines; detectV2 gains 'partial'.
+
+test('detectV2: partial when a criteria heading has no pass/fail verdicts', () => {
+  assert.strictEqual(intel.detectV2('criteria:\n- build green\n- deploy done'), 'partial');
+});
+
+test('detectV2: legacy results keep their verdict — ok stays ok, missing stays missing', () => {
+  // Exit criterion A1: legacy result sigue ok/missing como hoy (WARN-only intacto).
+  assert.strictEqual(intel.detectV2('criteria:\n- tokens expire: pass — tests/auth.test.ts'), 'ok');
+  assert.strictEqual(intel.detectV2('All done, everything works, deployed fine.'), 'missing');
+});
+
+test('detectDecisions: parses items with confidence and what would have been asked', () => {
+  const body = [
+    'criteria:',
+    '- G1: pass — 10/10',
+    'decisions:',
+    '- usé el puerto 4201 [conf: baja] — habría preguntado si 4200 estaba reservado',
+    '- mantuve WARN-only [conf: alta] — nada',
+    'next_action: none',
+  ].join('\n');
+  const out = intel.detectDecisions(body);
+  assert.strictEqual(out.count, 2);
+  assert.strictEqual(out.items[0].confidence, 'baja');
+  assert.match(out.items[0].decision, /4201/);
+  assert.match(out.items[0].would_have_asked, /4200 estaba reservado/);
+  assert.strictEqual(out.items[1].confidence, 'alta');
+});
+
+test('detectDecisions: an item without a [conf:] tag still counts, confidence null', () => {
+  const out = intel.detectDecisions('decisions:\n- renombré la variable sin avisar');
+  assert.strictEqual(out.count, 1);
+  assert.strictEqual(out.items[0].confidence, null);
+  assert.strictEqual(out.items[0].would_have_asked, null);
+});
+
+test('detectDecisions: block ends at the first non-item line', () => {
+  const body = 'decisions:\n- a [conf: media] — b\nfiles_changed:\n- src/x.cjs';
+  const out = intel.detectDecisions(body);
+  assert.strictEqual(out.count, 1, 'files_changed items must not leak into decisions');
+});
+
+test('detectDecisions: cero sin bloque, y prosa "decisions:" en medio de línea no cuenta', () => {
+  assert.deepStrictEqual(intel.detectDecisions('criteria:\n- G1: pass'), { count: 0, items: [] });
+  assert.strictEqual(intel.detectDecisions('we discussed decisions: several were made\n- not an item').count, 0);
+});
+
+test('detectEvidence: counts only verdict lines that carry an evidence tail', () => {
+  const body = [
+    'criteria:',
+    '- tokens expire: pass — tests/auth.test.ts',
+    '- single-use: fail — replay accepted, see notes',
+    '- deploy: pass', // verdict WITHOUT evidence — must not count
+  ].join('\n');
+  const out = intel.detectEvidence(body);
+  assert.strictEqual(out.count, 2);
+  assert.match(out.items[0], /auth\.test\.ts/);
+  assert.match(out.items[1], /replay accepted/);
+});
+
+test('detectEvidence: cero en prosa libre sin líneas de veredicto', () => {
+  assert.deepStrictEqual(intel.detectEvidence('All done, works fine.'), { count: 0, items: [] });
+});
+
+test('recordResultBody persists decisions (count+items) and evidence in the record', () => {
+  const body = [
+    'criteria:',
+    '- G1: pass — suite 10/10',
+    'decisions:',
+    '- elegí sha1 para dedupe [conf: media] — habría preguntado el algoritmo',
+  ].join('\n');
+  intel.recordResultBody({ corr: 'dl-1', fromPane: 3, toPane: 0, v2: 'ok', body });
+  const lines = fs.readFileSync(path.join(TMP, 'a2a-results.jsonl'), 'utf8').trim().split('\n');
+  const rec = JSON.parse(lines[lines.length - 1]);
+  assert.strictEqual(rec.decisions.count, 1);
+  assert.strictEqual(rec.decisions.items[0].confidence, 'media');
+  assert.match(rec.decisions.items[0].would_have_asked, /algoritmo/);
+  assert.strictEqual(rec.evidence.count, 1);
+  assert.match(rec.evidence.items[0], /suite 10\/10/);
+});
+
+test('recordResultBody: a legacy result (sin decisions) persiste count 0 y sigue ok', () => {
+  const body = 'Done.\ncriteria:\n- x: pass — evidence here';
+  intel.recordResultBody({ corr: 'dl-legacy', fromPane: 3, toPane: 0, v2: intel.detectV2(body), body });
+  const lines = fs.readFileSync(path.join(TMP, 'a2a-results.jsonl'), 'utf8').trim().split('\n');
+  const rec = JSON.parse(lines[lines.length - 1]);
+  assert.strictEqual(rec.v2, 'ok', 'legacy result sigue ok');
+  assert.deepStrictEqual(rec.decisions, { count: 0, items: [] });
+});
+
+test('call-site gate: mcp-server computes decisions/evidence ONLY for type=result', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'mcp-server.cjs'), 'utf8');
+  assert.match(src, /msgType === 'result' \? a2aIntel\.detectDecisions\(body\) : undefined/);
+  assert.match(src, /msgType === 'result' \? a2aIntel\.detectEvidence\(body\) : undefined/);
+});
+
 test('recordResultBody persists abandons so surrender survives the scrollback', () => {
   const { recordResultBody } = require('../src/a2a-intel.cjs');
   recordResultBody({ corr: 'c-ab', fromPane: 1, toPane: 0, v2: 'ok',

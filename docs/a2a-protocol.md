@@ -1,12 +1,12 @@
-<!-- doc-head: updated 2026-07-27 (envelope v2 + programmatic enforcement + GATE lines). Edit body => update this. -->
+<!-- doc-head: updated 2026-08-22 (decision ledger on results + v2 tri-state ok|partial|missing). Edit body => update this. -->
 Defines the A2A envelope protocol for peer-to-peer pane communication via wezbridge.
 Envelope syntax: [A2A from pane-N to pane-M | corr=<id> | type=request|ack|progress|result|error].
-Gate-state (2026-07-27): operator gates declared via progress body first-line GATE:<kind>:<state> — parsed
-by a2a-intel into a2a-threads.json, beaconed verbatim to pane-events.jsonl (no prose parsing).
 v2 (2026-07-23): result bodies carry a machine-checkable criteria block; ENFORCED IN CODE, not prose —
-server (a2a-intel.cjs) validates v2 + audits every envelope to _intel/events.jsonl + tracks acks;
+server (a2a-intel.cjs) detects v2 ok|partial|missing (WARN-only) + audits envelopes to _intel/events.jsonl.
+Decision ledger (2026-08-22): optional result block "decisions:" — items "- <decisión> [conf: alta|media|baja]
+— <qué habría preguntado>"; parsed + persisted (count+items) to _intel/a2a-results.jsonl with criteria evidence.
+Gate-state (2026-07-27): progress body first-line GATE:<kind>:<state> parsed into a2a-threads.json.
 Claude hooks a2a-protocol-inject (contract injected per envelope) + a2a-thread-gate (Stop blocked on open threads).
-Shared-repo safety uses git worktrees or explicit 'owns=' header; push asymmetry required.
 Read when: Implementing agents that coordinate across panes, or auditing where each rule is enforced.
 <!-- /doc-head -->
 
@@ -48,14 +48,30 @@ files_changed:
 - <path>
 validated_by: <command(s) run>
 next_action: <what the requester should do next, or "none">
+decisions:
+- <decisión> [conf: alta|media|baja] — <qué habría preguntado>
 ```
+
+The `decisions:` block (2026-08-22, optional) is the **decision ledger**: every
+choice the responder made where the request/plan was silent, self-ranked by
+confidence (`alta|media|baja`), each with what it would have asked the requester
+had it stopped to ask. Silent unilateral choices are the same failure family as
+silent scope-narrowing (`ABANDON:` lines) — the ledger makes them countable and
+reviewable after the fact instead of buried in prose. Order items least-confident
+first. An item without a `[conf:]` tag still counts (confidence recorded as null).
+
+The server classifies every result body as `v2: ok | partial | missing`:
+`ok` = criteria block with per-criterion pass/fail verdicts; `partial` = a
+criteria heading with no verdicts; `missing` = no criteria block at all.
+Still WARN-only — hard-reject is a future operator call.
 
 **This is enforced programmatically, not by convention** (principle: prose is
 hope; a rule exists only if something deterministic fails when it's violated):
 
 | Rule | Enforced by | Behavior |
 |---|---|---|
-| v2 shape on results | `src/a2a-intel.cjs` inside `a2a_send` | Response gains `v2: ok\|missing` + warning note (WARN-only rollout; hard-reject is a future operator call) |
+| v2 shape on results | `src/a2a-intel.cjs` inside `a2a_send` | Response gains `v2: ok\|partial\|missing` + warning note (WARN-only rollout; hard-reject is a future operator call) |
+| Decision ledger on results | `src/a2a-intel.cjs` (`detectDecisions`/`detectEvidence`) inside `a2a_send` | `decisions` (count+items with confidence) + `evidence` (count+items from criteria lines) persisted per result to `_intel/a2a-results.jsonl`; response exposes both counts |
 | Every envelope audited | same, server-side | Metadata (never bodies) appended to `Py Apps/_intel/events.jsonl` |
 | Open-thread tracking | same, server-side | `_intel/a2a-threads.json`: request opens corr → result awaits ack → ack closes; every send response lists `unacked_inbound` corrs the CALLER still owes acks for |
 | Contract recall on receive | `~/.claude/hooks/a2a-protocol-inject.cjs` (UserPromptSubmit) | Protocol contract injected next to every inbound envelope — immune to context rot |
