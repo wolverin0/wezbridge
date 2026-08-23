@@ -183,6 +183,26 @@ async function forceStates(page, mutate) {
   check('brief ausente se lee como buena noticia, no como falla',
     /Nada que reportar/i.test(forcedBots) && /buena noticia/.test(forcedBots), 'empty state OK');
 
+  // The census `pending` state only exists on a COLD server (first poll before
+  // the off-thread schtasks read lands), so a walk against a warm board would
+  // never see it. Forced, because "loading" is one of the four states each
+  // panel owes and an unrendered branch is an unverified one.
+  const cold = await browser.newContext({ viewport: { width: 1880, height: 1080 } });
+  const cp = await cold.newPage();
+  watch(cp);
+  await forceStates(cp, (b) => {
+    b.observability.census = { status: 'pending', generated_at: null, items: [], silent: [] };
+  });
+  await auth(cp);
+  await sub(cp, 'Motor');
+  await cp.$eval('section[aria-label=Flota]', (el) => { el.scrollTop = el.scrollHeight; });
+  await cp.waitForTimeout(300);
+  await shot(cp, '10-census-leyendo-1880');
+  const coldMotor = await textOf(cp, 'section[aria-label=Flota]');
+  check('census en frío dice que está leyendo, no "no hay tareas"',
+    /Leyendo el Programador de tareas/i.test(coldMotor) && !/No se leyó ninguna tarea/i.test(coldMotor),
+    (coldMotor.match(/Leyendo el Programador[^\n]*/i) || ['no encontrado'])[0]);
+
   // ───────────────────────────────────────────────────────────────── phone
   phase = 'phone';
   const phone = await browser.newContext({
