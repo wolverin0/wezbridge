@@ -17,45 +17,11 @@ An **MCP server** that exposes `mcp__wezbridge__*` tools so any Claude Code or C
 - Not a hosted multi-agent platform
 - Not a replacement for Claude Code / Codex / wezterm
 
-## Repo layout (v3.4.x)
+## Repo layout
 
-> The MCP server (`mcp-server.cjs`) and dashboard (`dashboard-server.cjs`, a thin shim over `dashboard-server-routes.cjs` + `handlers/`) were split into modules in the v3.4 refactor. Other post-v3.3 additions: `session-snapshot.cjs` (crash-restore, default ON since v3.4.1), `project-status-registry.cjs`, `telegram-router.cjs`, and the `handlers/` directory. Below is the original v3.3 map — mostly still accurate for the leaf modules.
-
-```
-src/
-  mcp-server.cjs           — MCP server, tool surface for wezbridge
-  wezterm.cjs              — wezterm cli wrapper, TTL-cached
-  pane-discovery.cjs       — pane state / persona / Ctx% detection
-  dashboard-server.cjs     — headless REST/SSE backend on :4200
-  telegram-streamer.cjs    — outbound: pane output → Telegram topic
-  tasks-watcher.cjs        — active_tasks.md monitoring
-  task-parser.cjs          — markdown task extraction
-  status-parser.cjs        — pane-state classification
-  safety-policy.cjs        — 5-rule action gate (v3.2)
-  sidecar-spawn.cjs        — paired audit-pane spawner (v3.2)
-  a2a-heartbeat.cjs        — 5-min silence SLA watcher (v3.2)
-  grades-registry.cjs      — outcome-grade LRU + SSE (v3.2)
-  team-manifest.cjs        — JSONL replay of teams + worktrees (v3.2)
-  memory-inbox.cjs         — gated MemoryMaster Dreams inbox (v3.2)
-  cost-meter.cjs           — per-pane runtime tracker (v3.2, lib only)
-  guard-bootstrap.cjs      — PATH-shim activation (v3.2)
-  permission-alerts.cjs, voice-handler.cjs, media-handler.cjs,
-  ntfy-notifier.cjs, github-webhook.cjs, plugin-host.cjs,
-  project-scanner.cjs, routines-config.cjs, diff-reporter.cjs
-test/                       — unit-test files (270 cases, all green)
-bin/guard-shims/            — git, gh argv-token guards (v3.2)
-scripts/                    — install-hooks, command-guard, outcome-grader,
-                             replay-merge, commit-guard, omniclaude-forever.sh,
-                             start-telegram-streamer.cmd
-docs/
-  SETUP-omniclaude-telegram.md — the daily-driver walkthrough
-  USAGE-guard.md               — v3.2 guard reference
-  a2a-protocol.md              — A2A envelope spec
-  plugins.md                   — plugin-host extension API
-  _drafts/                     — parked plans/research (sentinel-orchestrator era)
-plugins/example/            — plugin-host demo
-package.json                — name "wezbridge", zero deps
-```
+Mapa de módulos de `src/` + agregados post-v3.3 + endpoints del daemon: **[`docs/repo-layout.md`](docs/repo-layout.md)**.
+Lo esencial: `mcp-server.cjs` (tools MCP) · `wezterm.cjs` (CLI wrapper) · `dashboard-server.cjs` (daemon :4200) ·
+motor 2026-08-23: `project-queue.cjs`, `lifecycle.cjs`, `action-log.cjs`, `orchestrator-waker.cjs`.
 
 ## Running it
 
@@ -70,40 +36,13 @@ npm run dev                # node --watch — auto-restart on file change
 
 For the OmniClaude-via-Telegram pattern (one Claude Code pane controls the swarm via DMs), see [`docs/SETUP-omniclaude-telegram.md`](docs/SETUP-omniclaude-telegram.md).
 
-## Useful environment variables
+## Operations (env vars, restarts, crash, mux-wedge)
 
-- `WEZTERM_LOG=wezterm_mux_server_impl::local=off` — silences WezTerm's 10054 mux-disconnect error category on Windows
-- `DASHBOARD_PORT` — override `:4200`
-- `WEZBRIDGE_GUARD_SHIMS=1` — activate PATH-based command guard (requires `bin/guard-shims/` on PATH)
-- `WEZBRIDGE_GUARD_OVERRIDE`, `WEZBRIDGE_SAFETY_OVERRIDE`, `WEZBRIDGE_PREPUSH_OVERRIDE` — bypass-once for the v3.2 guards
-- `WEZBRIDGE_MM_INBOX=1` — turn on memory-inbox writes
-- `WEZBRIDGE_GRADER_BACKEND=stub|claude|codex` — pick outcome-grader backend
-
-Restart-on-port-conflict gotcha: if the daemon won't rebind to `:4200`, find every stale instance with:
-
-```bash
-for pid in $(wmic process where "Name='node.exe' and CommandLine like '%dashboard-server%'" get ProcessId /format:value 2>/dev/null | grep -oE "[0-9]+"); do taskkill //PID $pid //F; done
-```
-
-**WSL latitude:** the user does not use WSL personally — agents have full latitude to spawn WezTerm panes running `wsl` for Linux-only testing (codex install variants, POSIX-only paths) without asking. `spawn_session` + send `wsl` as first command, or `agent: "shell"`.
-
-**On any wezterm crash:** don't hand-diagnose — run `npm run restore-session` (or tell the user: `LEADER+R` / CTRL+B,R picker). Snapshots capture every 60s with 24h retention while the daemon runs.
-
-**Mux-wedge gotcha (observed 2026-07-02, wezterm 20240203):** rapid pane spawn/kill churn (e.g. e2e loops) can wedge the GUI's mux listener — every `wezterm cli` call then ETIMEDOUTs while the GUI window itself keeps working fine. Symptoms: `bridge_health` reports `wezterm.reachable: false`, wezterm's own log shows `failed to connect to Socket("gui-sock-<pid>")`, no zombie wezterm.exe processes, and quiet periods do NOT recover it. Only fix: restart WezTerm (Claude sessions are resumable per-project with `claude --continue`; pane layout is lost unless `vault/_wezbridge/session-snapshot.jsonl` has a fresh capture for `npm run restore-session`). Avoid tight spawn/kill loops against a live swarm; consider upgrading the wezterm build.
-
-## API endpoints (consumed by the MCP server)
-
-- `GET /api/panes` (alias `/api/sessions`) — list discovered panes
-- `GET /api/sessions/:id/output?lines=N` — scrollback
-- `POST /api/sessions/:id/prompt` — send text
-- `POST /api/sessions/:id/key` — send single key
-- `POST /api/sessions/:id/kill` — kill pane
-- `POST /api/sessions/:id/auto-handoff` — trigger v2.6 readiness-check + handoff
-- `POST /api/spawn` — new Claude/Codex session
-- `POST /api/worktrees/:paneId/cleanup` and `/merge` — worktree teardown
-- `GET /api/grades`, `POST /api/grade` — v3.2 outcome-grader registry
-- `GET /api/events` — Server-Sent Events stream
-- `GET /api/tasks` — active_tasks.md state
+Todo el detalle operativo vive en **[`docs/operations.md`](docs/operations.md)**: variables
+`WEZBRIDGE_*` (guards, grader, tope de panes, afinidad), el gotcha de rebind del `:4200`,
+latitud WSL, y el triage completo **mux-lento-vs-wedgeado** (firmas idénticas, remedios
+opuestos — LEELO ANTES de reiniciar WezTerm). Crash de wezterm → `npm run restore-session`
+vía la skill `wezterm-crash-recover`, nunca a mano.
 
 ## A2A protocol (when peer panes coordinate)
 
@@ -133,7 +72,9 @@ If you want to bring back the dashboard UI, the orchestrator-worker pane, the or
 node --test --test-reporter=spec test/*.test.cjs
 ```
 
-270 cases, all green at v3.4.3.
+**868 tests, 867 pass, 0 fail, 1 skipped — medido 2026-08-23** (primera suite completamente
+verde; el fail histórico de vocabulario cerró con el alta del kind `bug` en `_intel/kinds.json`).
+Re-medí antes de citar este número; un conteo sin fecha de medición envejece a mentira.
 
 ## Docs map
 
@@ -142,7 +83,7 @@ Doc triage map at `DOCS-MAP.md` (project root): every doc's verdict (CURRENT / S
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **wezbridge** (36245 symbols, 88686 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **wezbridge** (36492 symbols, 89005 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
