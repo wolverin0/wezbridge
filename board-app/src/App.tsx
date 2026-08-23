@@ -6,9 +6,35 @@ import TopBar from './components/TopBar';
 import Decisions from './components/Decisions';
 import Fleet from './components/Fleet';
 import Activity from './components/Activity';
+import Motor from './components/Motor';
+import Bots from './components/Bots';
+import Actions from './components/Actions';
 import { ErrorBox, Skeletons } from './components/bits';
 
 type Tab = 'decisiones' | 'flota' | 'actividad';
+
+/**
+ * The centre zone's sub-view (2026-08-23).
+ *
+ * The spec fixes THREE zones and the desktop grid renders all three at once, so
+ * the six new observability panels could not become a fourth column without
+ * squeezing DECISIONES — the one zone the app exists for. They went into the
+ * centre zone instead, behind a segmented control, because the split there is
+ * real: FLOTA answers "what is the WORK doing", MOTOR answers "what is the
+ * MACHINERY doing", BOTS answers "what did the watchers see". Same zone, same
+ * question shape, three subjects.
+ *
+ * The one panel that did NOT go here is "quién hizo qué": it belongs to
+ * ACTIVIDAD, which is always on screen on the desktop, because the operator
+ * asked for it front and centre rather than one tap away.
+ */
+type Sub = 'trabajo' | 'motor' | 'bots';
+
+const SUBS: Array<{ key: Sub; label: string }> = [
+  { key: 'trabajo', label: 'Trabajo' },
+  { key: 'motor', label: 'Motor' },
+  { key: 'bots', label: 'Bots' },
+];
 type Toast = { id: number; kind: 'ok' | 'warn' | 'bad'; text: string; line?: string };
 
 let toastSeq = 0;
@@ -74,6 +100,7 @@ export default function App() {
   const [status, setStatus] = useState<'loading' | 'error' | 'ok'>('loading');
   const [error, setError] = useState('');
   const [tab, setTab] = useState<Tab>('decisiones');
+  const [sub, setSub] = useState<Sub>('trabajo');
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [resolving, setResolving] = useState<Set<string>>(new Set());
 
@@ -197,14 +224,41 @@ export default function App() {
         </section>
 
         <section className={`zone${tab === 'flota' ? ' active' : ''}`} aria-label="Flota">
-          <h2>Flota <span className="n">{state ? `${state.open_count} abiertas` : '…'}</span></h2>
+          <h2>
+            Flota
+            <span className="n">{state ? `${state.open_count} abiertas` : '…'}</span>
+          </h2>
+          <div className="segmented" role="tablist" aria-label="Vista de la flota">
+            {SUBS.map((s) => (
+              <button
+                key={s.key}
+                type="button"
+                role="tab"
+                aria-selected={sub === s.key}
+                onClick={() => setSub(s.key)}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
           {status === 'loading' && <Skeletons n={4} short />}
           {status === 'error' && <ErrorBox message={error} onRetry={() => { setStatus('loading'); refresh(); }} />}
-          {status === 'ok' && state && <Fleet state={state} />}
+          {status === 'ok' && state && sub === 'trabajo' && <Fleet state={state} />}
+          {status === 'ok' && state && sub !== 'trabajo' && (
+            state.observability
+              ? (sub === 'motor' ? <Motor o={state.observability} /> : <Bots o={state.observability} />)
+              : (
+                // An OLD server that predates this block. Saying so is the only
+                // honest option: an empty panel would read as "nothing is
+                // happening" when the truth is "nobody asked".
+                <ErrorBox message="este servidor todavía no envía los datos del motor (reiniciá el tablero)" />
+              )
+          )}
         </section>
 
         <section className={`zone${tab === 'actividad' ? ' active' : ''}`} aria-label="Actividad">
           <h2>Actividad</h2>
+          {status === 'ok' && state?.observability && <Actions o={state.observability} />}
           <Activity />
         </section>
       </main>

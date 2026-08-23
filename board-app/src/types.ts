@@ -111,6 +111,130 @@ export interface RulingLine {
   until?: string;
 }
 
+// ── Observabilidad del motor (2026-08-23) ──────────────────────────────────
+// Six independent sources. EVERY one carries its own generated_at and may
+// carry its own `error`: the whole reason this is six objects and not one is
+// that a single timestamp over six panels lets five fresh ones vouch for a
+// dead one.
+
+interface SourceMeta {
+  generated_at: string;
+  error?: string;
+}
+
+export interface BriefItem {
+  key: string;
+  label: string;
+  file: string;
+  /** File mtime: the "última corrida" the operator reads. */
+  last_run_at: string | null;
+  text: string | null;
+  truncated?: boolean;
+  /** Absent is not a failure for alert files that only exist when something broke. */
+  missing?: boolean;
+}
+
+export interface HermesJob {
+  id: string;
+  name: string;
+  schedule: string;
+  enabled: boolean;
+  state: string;
+  last_run_at: string | null;
+  next_run_at: string | null;
+  last_status: string | null;
+  last_error: string | null;
+  failure_streak: number;
+  completed: number;
+}
+
+export interface HermesRun {
+  job_id: string;
+  status: string;
+  started_at: string | null;
+  finished_at: string | null;
+  error: string | null;
+}
+
+export interface QueueProject {
+  project: string;
+  total?: number;
+  delivered?: number;
+  undelivered?: number;
+  oldest_undelivered_at?: string | null;
+  oldest_undelivered_minutes?: number | null;
+  error?: string;
+}
+
+export interface ActionRow {
+  at: string | null;
+  actor: string;
+  action: string;
+  target: string;
+  why: string;
+  extra: string;
+}
+
+export type WakeClass = 'results-directed' | 'real-stall' | 'exception' | 'noise';
+
+export interface CensusItem {
+  name: string;
+  class: 'ok' | 'silent-failure' | 'contract-signal' | 'never-ran' | 'running' | 'disabled';
+  note: string | null;
+  lastRun: string;
+  lastResult: string;
+  nextRun: string;
+}
+
+export interface Observability {
+  generated_at: string;
+  briefs: SourceMeta & { items?: BriefItem[] };
+  hermes_cron: SourceMeta & {
+    jobs?: HermesJob[];
+    jobs_updated_at?: string | null;
+    runs?: HermesRun[] | null;
+    runs_error?: string;
+    runs_hint?: string;
+  };
+  queues: SourceMeta & {
+    projects?: QueueProject[];
+    flags?: number | null;
+    pending?: number | null;
+    total_undelivered?: number;
+  };
+  actions: SourceMeta & { items?: ActionRow[]; count?: number };
+  rollup: SourceMeta & {
+    newest?: string | null;
+    newest_date?: string | null;
+    expected?: string;
+    ran?: boolean;
+    today_local?: string;
+    next_run_local?: string;
+    text?: string | null;
+    truncated?: boolean;
+    file_at?: string | null;
+  };
+  waker: SourceMeta & {
+    window?: number;
+    total?: number;
+    woke?: number;
+    skipped?: number;
+    classes?: Record<WakeClass, number>;
+    actions?: Record<string, number>;
+    last_turn_at?: string | null;
+    last_turn_age_minutes?: number | null;
+    last_reasons?: string[];
+  };
+  /** `pending` on the very first poll: the census is read off-thread. */
+  census: {
+    status: 'pending' | 'ok' | 'error' | 'disabled';
+    generated_at?: string | null;
+    items: CensusItem[];
+    silent: CensusItem[];
+    error?: string;
+  };
+}
+
 export interface BoardState {
   generated_at: string;
   gate: {
@@ -144,6 +268,7 @@ export interface BoardState {
   sparkline: number[];
   open_count: number;
   kitchen?: { status: 'unconfigured' | 'up' | 'down'; detail?: string };
+  observability?: Observability;
 }
 
 export interface ActivityItem {

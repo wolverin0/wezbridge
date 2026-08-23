@@ -206,3 +206,72 @@ with label-color and ink-weight emphasis.
   a sibling project's `node_modules` (override with `WALK_PLAYWRIGHT`).
 - The legacy static `scripts/fleet-board.cjs` board KEEPS regenerating (criterion 7); it retires
   only after the operator uses this app for a real decision.
+
+---
+
+# Slice: observabilidad del motor (2026-08-23)
+
+Operator asked for more visibility over the new orchestration engine. Six sources added to
+`GET /api/state` under `observability`, four panels in a new MOTOR sub-view, one in a new BOTS
+sub-view, one in ACTIVIDAD. Server parsers live in `board-app/lib/observability.cjs`
+(server.cjs was at 704 lines against the 800 ceiling); tests in `test/board-observability.test.cjs`.
+
+## Deviations from the spec, with reasons (the spec allows these only if written down)
+
+1. **Six panels did NOT become a fourth zone.** The IA fixes three zones and the desktop grid
+   renders all three at once, so a fourth column could only come out of DECISIONES — the zone the
+   app exists for. MOTOR and BOTS are a segmented control inside the CENTRE zone instead, which is
+   a real split, not a dodge: FLOTA is "what the WORK is doing", MOTOR is "what the MACHINERY is
+   doing", BOTS is "what the watchers saw". Same zone, same question shape, three subjects.
+2. **"Quién hizo qué" went to ACTIVIDAD, not MOTOR.** The operator asked for it front and centre.
+   The right zone is always on screen on the desktop, so it costs zero clicks there and one tap on
+   the phone. Burying it two levels down under MOTOR would have missed the actual request.
+3. **`hermes/cron/executions.db` IS read**, though the brief allowed skipping it. Measured
+   read-only at 7 ms with no lock contention (56 rows, 2026-08-23). It is opened `readOnly`,
+   tail-capped at 20 rows, lazily required, and wrapped: any failure degrades to the `jobs.json`
+   half plus the promised `hermes cron runs` pointer, and nothing above it breaks.
+4. **The census is the ONE async, cached source.** `/api/state` is polled every 15 s and
+   `schtasks /query` is a subprocess daily-rollup gives a 60 s timeout; `spawnSync` would freeze
+   the server four times a minute. It refreshes off-thread on a 5 min TTL and reports `pending`
+   honestly on the very first poll.
+5. **UTC timestamps inside the rollup are rewritten to local time for display**, and the panel
+   says so. The filename is a LOCAL date while the body is UTC, which has repeatedly led to a
+   `2026-08-22.md` opening with `2026-08-23T03:23Z` and being read as tomorrow's report.
+6. **Design skills**: `taste-skill`, `impeccable` and `dataviz` were invoked before UI code;
+   `frontendgame`, `emil-design-eng` and `ui-ux-pro-max` were not. Those three shape a NEW visual
+   language (build-from-scratch, motion, palette selection). This slice adds panels inside a
+   locked, already-gated system whose language is documented in the `styles.css` header, and
+   inventing a second one would be the defect, not the diligence.
+7. **`playwright-core` added as a devDependency.** `walk.cjs` already requires playwright but it
+   was not installed. `playwright-core` drives the system Chrome, so the walk harness works again
+   without a 150 MB bundled-browser download in a repo that prides itself on zero deps.
+
+## Design rules this slice is bound by
+
+- No coloured side-stripes. Rows needing attention get a tinted background AND a word
+  ("FALLA SILENCIOSA", "ATASCADA") — never colour alone.
+- Colour rides the mark, not the text: bars and chips carry the status hue, counts stay in ink.
+- The four waker classes use the reserved STATUS ramp rather than a new categorical palette,
+  because they genuinely are states; each is direct-labelled so no legend is needed.
+- Markdown is rendered to REACT ELEMENTS, never `dangerouslySetInnerHTML`. Briefs are files other
+  processes append to; there is no HTML string in the path to get the escaping wrong.
+
+## Walk evidence (2026-08-23)
+
+`node board-app/walk-observability.cjs` — **25 checks passed, 0 failed, 0 console errors**,
+9 screenshots in `.orchestrator/T-0192-obs-shots/` (desktop 1880 + phone 390 + forced
+error/empty states, injected by route interception; `_intel` is never a test fixture).
+
+Found and fixed during the walk: the acciones-firmadas table clipped its `target` column off the
+viewport in the narrow right zone, because Windows paths are unbreakable tokens and auto table
+layout grew the table past the zone. Fixed with `table-layout: fixed` + `overflow-wrap: anywhere`;
+a walk assertion now compares table `scrollWidth` against the zone at both widths so it cannot
+come back silently.
+
+## Ops delta
+
+- Tests: `node --require ./test/setup.cjs --test test/board-observability.test.cjs` (23 cases).
+  `board-server.test.cjs` now passes `censusCache: null` so the suite never shells out to the real
+  Task Scheduler.
+- Kill-proof re-observed 2026-08-23: server killed, auto-revived by `wezbridge-fleet-board` in
+  ~12 s serving the new bundle.

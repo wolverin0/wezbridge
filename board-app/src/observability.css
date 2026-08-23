@@ -1,0 +1,244 @@
+/* Observabilidad del motor (2026-08-23) — the six panels that answer "what is
+ * the machinery doing", as opposed to styles.css, which dresses "what is the
+ * WORK doing". Same tokens, same density, own file: styles.css was already at
+ * 620 lines and this is a distinct surface.
+ *
+ * Two rules govern everything here, both from the design gate:
+ *
+ *   1. NO COLOURED SIDE-STRIPES. A red `border-left` on a failing row is the
+ *      house-banned accent. Rows that need attention get a tinted background
+ *      AND a word ("FALLA SILENCIOSA", "ATASCADA"), so the meaning survives
+ *      colour-blindness, greyscale and forced-colors mode. Never colour alone.
+ *
+ *   2. COLOUR RIDES THE MARK, NOT THE TEXT. Bars and chips carry the status
+ *      hue; counts and labels stay in ink. A number painted red reads as "this
+ *      number is wrong", not "this category is serious".
+ *
+ * The status ramp (ok / warn / bad / faint) is reused here rather than a new
+ * categorical palette because the four waker classes genuinely ARE states.
+ */
+
+/* Sub-view switch inside the FLOTA zone. */
+.segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  margin: 0 0 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--panel-2);
+}
+.segmented button {
+  min-height: 32px;
+  padding: 0 14px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--dim);
+  border-radius: 4px;
+}
+.segmented button:hover { color: var(--ink); }
+.segmented button[aria-selected="true"] {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* Per-source header stamp: every panel declares its own age. */
+.section > h3 .count {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  color: var(--faint);
+  text-transform: none;
+  letter-spacing: 0;
+  margin-left: 8px;
+}
+.src-age {
+  float: right;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--faint);
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+}
+
+.hint {
+  margin: 0 0 10px;
+  color: var(--dim);
+  font-size: 0.82rem;
+  max-width: 70ch;
+}
+
+/* Panel-level statements the operator must not scroll past. Full border. */
+.notice {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+  margin: 0 0 12px;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+.notice.warn {
+  border-color: color-mix(in oklab, var(--warn) 45%, transparent);
+  background: color-mix(in oklab, var(--warn) 9%, transparent);
+}
+.notice.bad {
+  border-color: color-mix(in oklab, var(--bad) 50%, transparent);
+  background: color-mix(in oklab, var(--bad) 10%, transparent);
+}
+
+/* Three numbers framing the waker panel. Not a hero-metric block: same type
+ * scale as the tables under it, grouped by a rule instead of boxed in cards. */
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 4px 20px;
+  padding: 0 0 14px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 14px;
+}
+.kpis > div { display: flex; flex-direction: column; gap: 2px; }
+.kpis b {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 1.15rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.kpis b.bad { color: var(--bad); }
+.kpis span { color: var(--dim); font-size: 0.76rem; line-height: 1.35; }
+
+/* Class histogram. One measure across four named states, so no legend box:
+ * every row is direct-labelled in words. */
+.bars { display: flex; flex-direction: column; gap: 10px; }
+.bar-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 90px 34px;
+  align-items: center;
+  gap: 10px;
+}
+.bar-label { display: flex; flex-direction: column; min-width: 0; }
+.bar-label b { font-weight: 500; font-size: 0.83rem; }
+.bar-label span { font-family: var(--mono); font-size: 0.68rem; color: var(--faint); }
+.bar-track {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+.bar-fill {
+  height: 100%;
+  /* Rounded on the data end only; the baseline end stays square and anchored. */
+  border-radius: 0 4px 4px 0;
+  transition: width 260ms var(--ease-out);
+}
+.bar-fill.ok { background: var(--ok); }
+.bar-fill.warn { background: var(--warn); }
+.bar-fill.bad { background: var(--bad); }
+.bar-fill.mute { background: var(--faint); }
+.bar-value { text-align: right; color: var(--ink); }
+
+.reasons { margin: 0; padding-left: 18px; color: var(--dim); font-size: 0.82rem; }
+.reasons li { margin-bottom: 3px; }
+
+/* Row emphasis: tint plus a word. Never a side-stripe. */
+tr.row-warn > td { background: color-mix(in oklab, var(--warn) 7%, transparent); }
+tr.row-bad > td { background: color-mix(in oklab, var(--bad) 8%, transparent); }
+
+.tag {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  color: var(--dim);
+  white-space: nowrap;
+  margin-right: 6px;
+}
+.tag.ok { color: var(--ok); border-color: color-mix(in oklab, var(--ok) 40%, transparent); }
+.tag.warn { color: var(--warn); border-color: color-mix(in oklab, var(--warn) 45%, transparent); }
+.tag.neutral { color: var(--accent); border-color: color-mix(in oklab, var(--accent) 38%, transparent); }
+.tag.census-ok { color: var(--ok); border-color: color-mix(in oklab, var(--ok) 35%, transparent); }
+.tag.census-silent-failure {
+  color: var(--bad);
+  border-color: var(--bad);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.tag.census-contract-signal {
+  color: var(--warn);
+  border-color: color-mix(in oklab, var(--warn) 40%, transparent);
+}
+.tag.census-never-ran, .tag.census-disabled { color: var(--faint); }
+.tag.census-running { color: var(--accent); border-color: color-mix(in oklab, var(--accent) 38%, transparent); }
+
+.note {
+  display: block;
+  color: var(--faint);
+  font-size: 0.74rem;
+  margin-top: 3px;
+  line-height: 1.4;
+}
+
+/* Acciones firmadas: a row expands in place when its `why` is long.
+ *
+ * `table-layout: fixed` plus `overflow-wrap: anywhere` is load-bearing, not
+ * tidying. This table lives in the NARROW right zone (320-400px on the desktop,
+ * 390px on the phone) and its `target` column holds Windows paths like
+ * `G:\_OneDrive\...\rollups\2026-08-22.md`. With auto layout the browser gives
+ * that unbreakable token its natural width, the table grows past the zone, and
+ * the last column is silently clipped at the viewport edge — measured in the
+ * 2026-08-23 walk at both 1880px and 390px. Fixed columns force the wrap. */
+.actions-tbl { table-layout: fixed; }
+.actions-tbl th:nth-child(1), .actions-tbl td:nth-child(1) { width: 19%; }
+.actions-tbl th:nth-child(2), .actions-tbl td:nth-child(2) { width: 20%; }
+.actions-tbl th:nth-child(4), .actions-tbl td:nth-child(4) { width: 25%; }
+.actions-tbl td, .actions-tbl th { overflow-wrap: anywhere; }
+.actions-tbl .why { color: var(--dim); font-size: 0.82rem; }
+tr.act-row { cursor: pointer; }
+tr.act-row:hover > td { background: var(--panel-2); }
+tr.act-row.open .why { color: var(--ink); }
+tr.act-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* Markdown from the briefs and the rollup: machine-written text, readable
+ * measure, no decoration. */
+.md { font-size: 0.85rem; line-height: 1.6; color: var(--dim); max-width: 72ch; }
+.md p { margin: 0 0 8px; }
+.md .md-h { color: var(--ink); font-weight: 600; margin: 14px 0 6px; }
+.md .md-h:first-child { margin-top: 0; }
+.md .md-h1 { font-size: 0.98rem; }
+.md .md-h2 { font-size: 0.9rem; }
+.md .md-h3 { font-size: 0.85rem; color: var(--dim); }
+.md .md-quote { color: var(--faint); font-style: italic; }
+.md ul { margin: 0 0 10px; padding-left: 18px; }
+.md li { margin-bottom: 4px; }
+.md code { color: var(--accent); font-size: 0.9em; }
+.md strong { color: var(--ink); font-weight: 600; }
+
+/* The rollup is long: collapsed by default, the fade making the cut visible
+ * instead of pretending the text simply ends there. */
+.md-wrap { position: relative; max-height: 260px; overflow: hidden; }
+.md-wrap:not(.open)::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 64px;
+  background: linear-gradient(to bottom, transparent, var(--panel));
+  pointer-events: none;
+}
+.md-wrap.open { max-height: none; }
+
+.brief { padding-bottom: 14px; margin-bottom: 14px; border-bottom: 1px solid var(--line); }
+.brief:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+.brief > h4 { font-size: 0.8rem; font-weight: 600; color: var(--ink); margin: 0 0 8px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .bar-fill { transition: none; }
+}
+
+@media (max-width: 640px) {
+  .src-age { float: none; display: block; margin-top: 2px; }
+  .bar-row { grid-template-columns: minmax(0, 1fr) 64px 30px; }
+  .segmented { display: flex; width: 100%; }
+  .segmented button { flex: 1; }
+}

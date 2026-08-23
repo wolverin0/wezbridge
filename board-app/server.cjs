@@ -41,6 +41,7 @@ const { loadRuns, boardVerdict } = require(path.join(HERE, '..', 'scripts', 'rou
 const { evaluate, rulingCovers } = require(path.join(HERE, '..', 'scripts', 'steward-gate.cjs'));
 const { gateOf } = require(path.join(HERE, '..', 'scripts', 'fleet-board.cjs'));
 const { evaluateIntel: freshEvaluate } = require(path.join(HERE, '..', 'scripts', 'board-fresh-gate.cjs'));
+const { buildObservability, makeCensusCache } = require(path.join(HERE, 'lib', 'observability.cjs'));
 
 const VERBS = ['approved', 'deferred', 'cancelled'];
 const INBOX_KINDS = ['note', 'new-task', 'call-me'];
@@ -597,7 +598,13 @@ function log(line) {
   console.log(`${stamp} ${line}`);
 }
 
-function createServer(token, { rateLimiter = makeRateLimiter() } = {}) {
+/**
+ * The census cache is per-SERVER, not per-module, so importing this file never
+ * shells out to schtasks — the test suite imports it and must stay hermetic.
+ * `censusCache: null` turns the panel off entirely (it then reports `disabled`,
+ * which is honest, rather than an empty table that reads as "no tasks").
+ */
+function createServer(token, { rateLimiter = makeRateLimiter(), censusCache = makeCensusCache() } = {}) {
   return http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x');
     try {
@@ -612,6 +619,10 @@ function createServer(token, { rateLimiter = makeRateLimiter() } = {}) {
       if (req.method === 'GET' && url.pathname === '/api/state') {
         const state = buildState();
         state.kitchen = await kitchenHealth();
+        // Six observability sources, each fail-soft and each carrying its own
+        // generated_at. Never awaited: the only expensive one (schtasks) is
+        // served from an async cache, so this stays a file-reading endpoint.
+        state.observability = buildObservability(INTEL, { censusCache });
         return sendJson(res, 200, state);
       }
 

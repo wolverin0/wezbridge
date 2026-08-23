@@ -83,7 +83,10 @@ before(async () => {
   // Generous limiter here: these tests exercise validation, not the limiter.
   // The limiter has its own server below — it counts REJECTED posts too, on
   // purpose, so a flood of invalid requests is capped like a valid one.
-  server = srv.createServer(TOKEN, { rateLimiter: srv.makeRateLimiter(1000, 60000) });
+  // censusCache: null keeps this suite hermetic — the census is the one source
+  // that shells out (schtasks), and a test that queried the real Task Scheduler
+  // would be reading the operator's machine instead of its own fixtures.
+  server = srv.createServer(TOKEN, { rateLimiter: srv.makeRateLimiter(1000, 60000), censusCache: null });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${server.address().port}`;
 });
@@ -569,7 +572,7 @@ test('inbox rejects unknown kind, accepts note', async () => {
 // --- rate limit -------------------------------------------------------------
 
 test('append endpoints are rate limited', async () => {
-  const tight = srv.createServer(TOKEN, { rateLimiter: srv.makeRateLimiter(3, 60000) });
+  const tight = srv.createServer(TOKEN, { rateLimiter: srv.makeRateLimiter(3, 60000), censusCache: null });
   await new Promise((r) => tight.listen(0, '127.0.0.1', r));
   const tightBase = `http://127.0.0.1:${tight.address().port}`;
   try {
