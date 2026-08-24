@@ -1398,11 +1398,31 @@ function handleToolCall(name, args) {
       if (!['request', 'ack', 'progress', 'result', 'error'].includes(msgType)) {
         return { content: [{ type: 'text', text: `Error: invalid type "${msgType}" (request|ack|progress|result|error)` }], isError: true };
       }
-      const fromPane = typeof args.from_pane === 'number'
-        ? args.from_pane
-        : parseInt(process.env.WEZTERM_PANE || '', 10);
+      // T-0235: WEZTERM_PANE is stamped at MCP-server spawn and never updates —
+      // after a WezTerm restart it signs envelopes as a dead or foreign pane
+      // (pane-0 signed as 6, 1 and 2 within one hour on 2026-08-23). The env id
+      // is transport, not identity: verify it against the live census and
+      // correct it when the census disagrees. Explicit from_pane stays trusted
+      // verbatim (the documented path for external/headless senders).
+      const selfIdentity = require('./pane-identity.cjs');
+      let selfCensus = [];
+      try {
+        selfCensus = discovery.discoverPanes()
+          .filter((p) => p.agent)
+          .map((p) => ({ pane_id: p.paneId, cwd: p.project, tab_title: p.tabTitle || p.title || null }));
+      } catch { /* census down → resolveSelfPane falls back to env with a warning */ }
+      const selfRes = selfIdentity.resolveSelfPane({
+        explicitPane: typeof args.from_pane === 'number' ? args.from_pane : undefined,
+        envPane: parseInt(process.env.WEZTERM_PANE || '', 10),
+        cwd: process.cwd(),
+        panes: selfCensus,
+      });
+      const fromPane = selfRes.paneId;
       if (!Number.isInteger(fromPane)) {
-        return { content: [{ type: 'text', text: 'Error: from_pane not given and WEZTERM_PANE env not set — pass from_pane explicitly' }], isError: true };
+        return { content: [{ type: 'text', text: `Error: from_pane not given, WEZTERM_PANE env not set, and the census could not resolve this session (${selfRes.warning || 'no match'}) — pass from_pane explicitly` }], isError: true };
+      }
+      if (selfRes.source === 'env-corrected') {
+        log(`a2a_send self-identity corrected: ${selfRes.warning}`);
       }
       const corr = args.corr === undefined || args.corr === null
         ? `a2a-${Date.now().toString(36)}`
@@ -1475,7 +1495,9 @@ function handleToolCall(name, args) {
         // persist in _intel/a2a-results.jsonl via recordResultBody.
         const decisions = msgType === 'result' ? a2aIntel.detectDecisions(body) : undefined;
         const evidence = msgType === 'result' ? a2aIntel.detectEvidence(body) : undefined;
-        a2aIntel.recordEvent({ from_pane: fromPane, to_pane: toPane, corr, type: msgType, submitted, delivered, ...(v2 ? { v2 } : {}) });
+        // T-0235: from_project is the STABLE identity in the event record —
+        // pane ids die with every WezTerm restart, project names do not.
+        a2aIntel.recordEvent({ from_pane: fromPane, ...(selfRes.project ? { from_project: selfRes.project } : {}), ...(selfRes.source !== 'explicit' ? { from_source: selfRes.source } : {}), to_pane: toPane, ...(toProject ? { to_project: toProject } : {}), corr, type: msgType, submitted, delivered, ...(v2 ? { v2 } : {}) });
         // Result bodies (the criteria: blocks) persist to the sibling
         // a2a-results.jsonl — events.jsonl stays metadata-only. Fail-soft.
         if (msgType === 'result') a2aIntel.recordResultBody({ corr, fromPane, toPane, v2, body });
@@ -1577,6 +1599,12 @@ function handleToolCall(name, args) {
               delivered, // 'ok' | 'truncated' | 'unknown' — real integrity, not just box-cleared
               corr,
               from_pane: fromPane,
+              // T-0235: stable identity travels in the ACCOUNTING, not the
+              // header — pane ids are transport addresses that die with every
+              // WezTerm restart; the project name is who you are.
+              ...(selfRes.project ? { from_project: selfRes.project } : {}),
+              ...(selfRes.source !== 'explicit' ? { from_source: selfRes.source } : {}),
+              ...(selfRes.source === 'env-corrected' ? { from_identity_note: selfRes.warning } : {}),
               to_pane: toPane,
               ...(toProject ? { to_project: toProject, queued: queued ? queued.ok : false } : {}),
               ...(autoAcked ? { auto_acked: true } : {}),

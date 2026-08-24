@@ -93,3 +93,59 @@ test('resolution never depends on pane_id ordering or value', () => {
   const permuted = PANES.map((p, i) => ({ ...p, pane_id: [900, 901, 902, 903][i] }));
   assert.strictEqual(id.resolve('futuraCRM', permuted, ALIASES).paneId, 902);
 });
+
+// ── T-0235: the sender's own identity, resolved at send time ───────────────
+// WEZTERM_PANE is stamped at MCP-server spawn and never updates. After the
+// 2026-08-23 WezTerm crash, pane-0 signed envelopes as 6, 1 and 2 within one
+// hour — replies chased dead ids and receivers could not validate the sender.
+test('T-0235: env pane confirmed by census (same project) is trusted', () => {
+  const panes = [{ pane_id: 2, cwd: 'file:///G:/Py%20Apps/wezbridge/', tab_title: null }];
+  const r = id.resolveSelfPane({ envPane: 2, cwd: 'G:/Py Apps/wezbridge', panes });
+  assert.strictEqual(r.paneId, 2);
+  assert.strictEqual(r.source, 'env-verified');
+  assert.strictEqual(r.project, 'wezbridge');
+});
+
+test('T-0235: stale env pane is CORRECTED when the census has exactly one pane for our project', () => {
+  // The real 2026-08-23 shape: env says 0 (pre-crash), census says we are 2.
+  const panes = [
+    { pane_id: 2, cwd: 'file:///G:/Py%20Apps/wezbridge/', tab_title: null },
+    { pane_id: 15, cwd: 'file:///G:/Py%20Apps/whatsappbot-final/', tab_title: null },
+  ];
+  const r = id.resolveSelfPane({ envPane: 0, cwd: 'G:/Py Apps/wezbridge', panes });
+  assert.strictEqual(r.paneId, 2, 'the header must stop lying');
+  assert.strictEqual(r.source, 'env-corrected');
+  assert.match(r.warning, /stale/);
+});
+
+test('T-0235: env pane pointing at a FOREIGN project is corrected, not trusted', () => {
+  // Renumbering can hand our old id to another project's pane — signing with it
+  // makes replies land in a foreign session.
+  const panes = [
+    { pane_id: 0, cwd: 'file:///G:/Py%20Apps/mutual/', tab_title: null },
+    { pane_id: 7, cwd: 'file:///G:/Py%20Apps/wezbridge/', tab_title: null },
+  ];
+  const r = id.resolveSelfPane({ envPane: 0, cwd: 'G:/Py Apps/wezbridge', panes });
+  assert.strictEqual(r.paneId, 7);
+  assert.strictEqual(r.source, 'env-corrected');
+});
+
+test('T-0235: explicit from_pane is trusted verbatim — the external/headless sender path', () => {
+  const r = id.resolveSelfPane({ explicitPane: 42, envPane: 0, cwd: 'G:/Py Apps/wezbridge', panes: [] });
+  assert.strictEqual(r.paneId, 42);
+  assert.strictEqual(r.source, 'explicit');
+});
+
+test('T-0235: unprovable identity falls back to env WITH a warning, or null without env', () => {
+  const twoOfUs = [
+    { pane_id: 3, cwd: 'file:///G:/Py%20Apps/wezbridge/', tab_title: null },
+    { pane_id: 9, cwd: 'file:///G:/Py%20Apps/wezbridge/', tab_title: null },
+  ];
+  const ambiguous = id.resolveSelfPane({ envPane: 5, cwd: 'G:/Py Apps/wezbridge', panes: twoOfUs });
+  assert.strictEqual(ambiguous.source, 'unresolved');
+  assert.strictEqual(ambiguous.paneId, 5, 'env is the last resort, never silently dropped');
+  assert.match(ambiguous.warning, /pass from_pane explicitly/);
+  const nothing = id.resolveSelfPane({ envPane: NaN, cwd: 'G:/Py Apps/wezbridge', panes: [] });
+  assert.strictEqual(nothing.paneId, null);
+  assert.strictEqual(nothing.source, 'unresolved');
+});

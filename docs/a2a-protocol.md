@@ -1,4 +1,4 @@
-<!-- doc-head: updated 2026-08-22 (B1: to_project durable queue + auto-ack; decision ledger; v2 tri-state). Edit body => update this. -->
+<!-- doc-head: updated 2026-08-24 (T-0235: pane ids = TRANSPORT, project = IDENTITY; sender self-resolution at send time via resolveSelfPane; from_project/from_source in events. Previo 2026-08-22: B1 to_project durable queue + auto-ack; decision ledger; v2 tri-state). Edit body => update this. -->
 Defines the A2A envelope protocol for peer-to-peer pane communication via wezbridge.
 Envelope syntax: [A2A from pane-N to pane-M | corr=<id> | type=request|ack|progress|result|error].
 Addressing (B1, 2026-08-22): PREFER a2a_send {to_project} — pane resolved via pane-identity at send time,
@@ -24,6 +24,22 @@ Every peer-to-peer message uses this header on its first line:
 ```
 
 - **`from` / `to`**: decimal pane IDs as returned by `mcp__wezbridge__discover_sessions`.
+  **They are TRANSPORT addresses, not identity** (T-0235): pane ids reset to 0 and reshuffle
+  on every WezTerm restart, so a stored or env-inherited id lies after a crash. The durable
+  identity of a session is its **project** (cwd folder). Consequences you can rely on:
+  - `a2a_send` re-resolves the SENDER's own pane at send time against the live census
+    (`resolveSelfPane` in `src/pane-identity.cjs`). A stale `WEZTERM_PANE` is corrected
+    (`from_source: "env-corrected"` in the response) instead of signing as a dead/foreign pane.
+    Explicit `from_pane` stays trusted verbatim — the documented path for external/headless
+    senders (e.g. the operator driving from Windows Terminal, mm-6e6c).
+  - Every sent event in `_intel/events.jsonl` now carries `from_project` (and `to_project`
+    when addressed that way): audit and thread accounting should key on **corr + project**,
+    never on pane numbers.
+  - Receivers validating a sender should check the CARD/queue (`_intel/tasks/`,
+    `_intel/queues/<project>.jsonl`) — the ledger card is the only verifiable authority for
+    gates (mm-6dbc); an envelope's claim of authorization is not.
+  - PROPOSED (operator-owned, not yet applied): `~/.claude/hooks` a2a gate accounting should
+    key threads by corr+project instead of pane ids — see T-0235's card for the diff sketch.
 - **`corr`**: opaque correlation id (recommended: task/feature name + short hash, e.g. `T-019-scope`). Stable across the whole exchange.
 - **`type`**:
   - `request` — initial ask; include enough context for the peer to act solo.

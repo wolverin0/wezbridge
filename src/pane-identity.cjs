@@ -108,4 +108,56 @@ function resolve(wanted, panes, aliasMap = new Map()) {
   };
 }
 
-module.exports = { projectFromCwd, identify, buildAliasMap, resolve };
+/**
+ * T-0235: resolve the SENDER's own pane at send time. WEZTERM_PANE is stamped
+ * into the MCP server's env at spawn and never updates — after a WezTerm
+ * restart it points at a dead or foreign pane (pane-0 signed as 6, 1 and 2
+ * within one hour on 2026-08-23, and infra signed as an id the census had
+ * reassigned). The durable self-identity is the process cwd's PROJECT; the env
+ * id is transport, trusted only when the census confirms it still means us.
+ *
+ * Returns { paneId, source, project, warning }:
+ *   'explicit'      — caller passed from_pane; trusted verbatim (documented
+ *                     workaround for external/headless senders).
+ *   'env-verified'  — env id is live AND its cwd project matches ours.
+ *   'env-corrected' — env id dead/foreign; census has exactly one live pane
+ *                     for our project — that one is us.
+ *   'unresolved'    — nothing provable: keeps env as last resort (with the
+ *                     warning) or null when there is no env at all.
+ */
+function resolveSelfPane({ explicitPane, envPane, cwd, panes, aliasMap = new Map() }) {
+  const project = projectFromCwd(cwd);
+  if (Number.isInteger(explicitPane)) {
+    return { paneId: explicitPane, source: 'explicit', project, warning: null };
+  }
+  const ids = (panes || []).map((p) => identify(p, aliasMap));
+  const env = Number.isInteger(envPane) ? ids.find((i) => i.paneId === envPane) : null;
+  if (env && project && env.cwdProject && norm(env.cwdProject) === norm(project)) {
+    return { paneId: envPane, source: 'env-verified', project, warning: null };
+  }
+  // Correction requires an env id to correct: a sender with NO WEZTERM_PANE at
+  // all is a headless/external process, and resolving it to the project's live
+  // pane would let it SIGN AS that session — the phantom-driver problem
+  // (mm-376c/mm-6e6c) in reverse. Headless senders must pass from_pane
+  // explicitly; only a stale-but-present env gets census-corrected.
+  const mine = (Number.isInteger(envPane) && project)
+    ? ids.filter((i) => i.cwdProject && norm(i.cwdProject) === norm(project)) : [];
+  if (mine.length === 1) {
+    return {
+      paneId: mine[0].paneId,
+      source: 'env-corrected',
+      project,
+      warning: `WEZTERM_PANE=${envPane} is stale (dead or foreign pane) — census resolves this session to pane ${mine[0].paneId}`,
+    };
+  }
+  return {
+    paneId: Number.isInteger(envPane) ? envPane : null,
+    source: 'unresolved',
+    project,
+    warning: mine.length > 1
+      ? `${mine.length} live panes share project "${project}" (${mine.map((i) => i.paneId).join(', ')}) — pass from_pane explicitly`
+      : `cannot prove own pane (no census match for project "${project}")`,
+  };
+}
+
+module.exports = { projectFromCwd, identify, buildAliasMap, resolve, resolveSelfPane };
