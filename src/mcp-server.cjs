@@ -1619,7 +1619,23 @@ function handleToolCall(name, args) {
           isError: false,
         };
       } catch (err) {
-        return { content: [{ type: 'text', text: `Error sending A2A envelope to pane ${toPane}: ${err.message}` }], isError: true };
+        // T-0233: a transport exception must not vanish the envelope. Before
+        // this, only the to_project happy path enqueued — a to_pane ETIMEDOUT
+        // left ZERO durable record (mm-455f: results survived that night only
+        // because senders retried by hand). Rescue to the destination's queue
+        // (resolved from census) or the visible _dead-letter queue.
+        let rescueNote = '';
+        try {
+          const rescue = require('./project-queue.cjs').rescueFailedSend({
+            toProject, toPane, census: selfCensus, corr, type: msgType, fromPane, body,
+          });
+          rescueNote = rescue.queued
+            ? ` Envelope RESCUED to _intel/queues/${rescue.project}.jsonl (id ${rescue.id}) — scripts/queue-drain.cjs will retry; do not hand-retry unless urgent (the queue dedupes by corr+type+body).`
+            : ` RESCUE ALSO FAILED (${rescue.error}) — this envelope is not persisted anywhere; re-send it.`;
+        } catch (rescueErr) {
+          rescueNote = ` RESCUE ALSO FAILED (${String(rescueErr && rescueErr.message).slice(0, 120)}) — this envelope is not persisted anywhere; re-send it.`;
+        }
+        return { content: [{ type: 'text', text: `Error sending A2A envelope to pane ${toPane}: ${err.message}.${rescueNote}` }], isError: true };
       }
     })();
 

@@ -106,6 +106,38 @@ function enqueue(entry, { base } = {}) {
   }
 }
 
+/**
+ * T-0233: rescue an envelope whose TRANSPORT threw. Before this, only
+ * to_project sends were durable — a to_pane send that hit ETIMEDOUT vanished
+ * with no queue line anywhere (verified 2026-08-23 by yolo26, mm-455f: two
+ * consecutive failures, zero entries in any queue; the result survived only
+ * because the sender retried by hand — 5 more manual retries that same night).
+ *
+ * Pure-ish (enqueueFn injectable): resolves the destination PROJECT from the
+ * census when the caller addressed a bare pane; unresolvable destinations go
+ * to the visible `_dead-letter` queue, where the fleet-sensor's >30min flag is
+ * the "needs a human look" — visible-but-stuck beats silent-and-gone.
+ * Returns { queued, project, id | error }.
+ */
+function rescueFailedSend({ toProject, toPane, census, corr, type, fromPane, body }, enqueueFn = enqueue) {
+  let project = toProject || null;
+  if (!project && Array.isArray(census)) {
+    const hit = census.find((p) => p.pane_id === toPane);
+    if (hit && hit.cwd) {
+      const parts = String(hit.cwd).replace(/^file:\/\/\/?/, '').replace(/%20/g, ' ').replace(/[/\\]+$/, '').split(/[/\\]/).filter(Boolean);
+      project = parts.length ? parts[parts.length - 1] : null;
+    }
+  }
+  const q = enqueueFn({
+    project: project || '_dead-letter',
+    corr, type, from_pane: fromPane,
+    resolved_pane: toPane ?? null, submitted: null, delivered: null, ok: false, body,
+  });
+  return q.ok
+    ? { queued: true, project: project || '_dead-letter', id: q.id }
+    : { queued: false, project: project || '_dead-letter', error: q.error || 'queue append failed' };
+}
+
 // ── atomic state helpers (verbatim idiom from orchestrator-waker.cjs) ────────
 
 function atomicWriteJson(file, value) {
@@ -379,4 +411,4 @@ function listQueues({ base } = {}) {
   } catch { return []; }
 }
 
-module.exports = { DEFAULTS, entryId, enqueue, queueFile, queuesDir, sanitizeProject, createConsumer, listQueues };
+module.exports = { DEFAULTS, entryId, enqueue, queueFile, queuesDir, sanitizeProject, createConsumer, listQueues, rescueFailedSend };

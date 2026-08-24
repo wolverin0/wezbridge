@@ -325,3 +325,50 @@ test('T-0221: multiline body survives enqueue verbatim (the delivery rebuild dep
   const rec = JSON.parse(fs.readFileSync(file, 'utf8').trim().split('\n').pop());
   assert.strictEqual(rec.body, body);
 });
+
+// ── T-0233: rescue de sends con transporte caido ─────────────────────────────
+// Antes solo el camino to_project era durable: un to_pane con ETIMEDOUT no
+// dejaba NINGUNA linea en ninguna cola (mm-455f — yolo26 lo verifico mirando
+// el directorio tras 2 fallos; el result sobrevivio solo por reintento manual).
+test('T-0233: a failed to_pane send is rescued to the DESTINATION project queue and delivered on drain', async () => {
+  const base = freshBase();
+  const census = [{ pane_id: 7, cwd: 'file:///G:/Py%20Apps/wezbridge/', tab_title: null }];
+  const rescue = pq.rescueFailedSend(
+    { toProject: null, toPane: 7, census, corr: 'T-r1', type: 'result', fromPane: 0, body: 'trabajo terminado' },
+    (entry) => pq.enqueue(entry, { base })
+  );
+  assert.strictEqual(rescue.queued, true);
+  assert.strictEqual(rescue.project, 'wezbridge', 'destination project resolved from census, not guessed');
+  const raw = fs.readFileSync(path.join(base, 'queues', 'wezbridge.jsonl'), 'utf8');
+  assert.match(raw, /trabajo terminado/, 'the envelope SURVIVES the transport failure');
+  const calls = [];
+  const c = makeConsumer(base, { send: goodSend(calls) });
+  const out = await c.drain();
+  assert.strictEqual(out.delivered, 1, 'the rescued envelope is delivered on retry');
+  assert.match(calls[0].text, /corr=T-r1/);
+});
+
+test('T-0233: an unresolvable destination goes to the VISIBLE _dead-letter queue, never nowhere', () => {
+  const base = freshBase();
+  const rescue = pq.rescueFailedSend(
+    { toProject: null, toPane: 99, census: [], corr: 'T-r2', type: 'request', fromPane: 0, body: 'huerfano' },
+    (entry) => pq.enqueue(entry, { base })
+  );
+  assert.strictEqual(rescue.queued, true);
+  assert.strictEqual(rescue.project, '_dead-letter');
+  const raw = fs.readFileSync(path.join(base, 'queues', '_dead-letter.jsonl'), 'utf8');
+  assert.match(raw, /huerfano/, 'visible-but-stuck beats silent-and-gone');
+});
+
+test('T-0233: rescuing the same envelope twice dedupes at ingest — one delivery, not two', async () => {
+  const base = freshBase();
+  const census = [{ pane_id: 7, cwd: 'file:///G:/Py%20Apps/wezbridge/', tab_title: null }];
+  const args = { toProject: null, toPane: 7, census, corr: 'T-r3', type: 'request', fromPane: 0, body: 'mismo cuerpo' };
+  pq.rescueFailedSend(args, (entry) => pq.enqueue(entry, { base }));
+  pq.rescueFailedSend(args, (entry) => pq.enqueue(entry, { base })); // a hand-retry after the rescue
+  const calls = [];
+  const c = makeConsumer(base, { send: goodSend(calls) });
+  const out = await c.drain();
+  assert.strictEqual(out.delivered, 1, 'sha1 id (corr+type+from+body) dedupes the duplicate line');
+  assert.strictEqual(calls.length, 1);
+});
