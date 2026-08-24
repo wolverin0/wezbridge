@@ -70,6 +70,19 @@ test('HOLE 3: no heartbeat file at all is still a clear verdict, not a crash', (
   assert.match(v.alerts[0], /DAEMON DOWN/);
 });
 
+// ── T-0220: 6 false DOWNs on 2026-08-23, every one citing a 3-41s-old beat ──
+test('T-0220: failed probe + FRESH beat is NOT down — a dead daemon writes no heartbeats', () => {
+  const v = ds.assessLiveness({ heartbeat: beatAt(20 * 1000), daemonReachable: false, now: T0 });
+  assert.deepEqual(v.alerts, [], 'contention must not produce a DOWN alert with a restart remedy');
+  assert.equal(v.probeFailedFreshBeat, true, 'the signal must surface for the sentinel to streak-count');
+});
+
+test('T-0220: failed probe + beat just past stale threshold IS down — both witnesses agree', () => {
+  const v = ds.assessLiveness({ heartbeat: beatAt(96 * 1000), daemonReachable: false, now: T0 });
+  assert.match(v.alerts[0], /DAEMON DOWN/);
+  assert.equal(v.probeFailedFreshBeat, false);
+});
+
 test('a healthy daemon with a fresh beat produces ZERO alerts', () => {
   const v = ds.assessLiveness({ heartbeat: beatAt(5000, healthyWaker), daemonReachable: true, now: T0 });
   assert.deepEqual(v.alerts, [], 'alerts must be silent when nothing is wrong');
@@ -247,9 +260,12 @@ test('COMPOSITION ROOT: startBackgroundServices writes a heartbeat file', () => 
     const beat = JSON.parse(fs.readFileSync(beatFile, 'utf8'));
     assert.ok(beat.ts, 'beat carries a timestamp');
     assert.equal(beat.pid, process.pid);
-    // And the beat must be usable as the liveness witness end-to-end.
-    const v = ds.assessLiveness({ heartbeat: beat, daemonReachable: false, now: Date.parse(beat.ts) });
-    assert.match(v.alerts[0], /DAEMON DOWN/, 'a written beat + unreachable daemon = a usable death verdict');
+    // And the beat must be usable as the liveness witness end-to-end: once it
+    // has gone stale, beat file + unreachable daemon = death verdict. (T-0220:
+    // with a FRESH beat the same probe failure is contention, not death — so
+    // the death witness is asserted at 40 min of staleness, the real scenario.)
+    const v = ds.assessLiveness({ heartbeat: beat, daemonReachable: false, now: Date.parse(beat.ts) + 40 * 60_000 });
+    assert.match(v.alerts[0], /DAEMON DOWN/, 'a STALE written beat + unreachable daemon = a usable death verdict');
   } finally { process.env = prev; }
 });
 

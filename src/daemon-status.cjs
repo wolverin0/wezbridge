@@ -136,8 +136,20 @@ function assessLiveness({ heartbeat, daemonReachable, now = Date.now(), staleMs 
   const alerts = [];
   const ageMs = heartbeat && heartbeat.ts ? now - Date.parse(heartbeat.ts) : null;
   const stale = ageMs === null || ageMs > staleMs;
+  let probeFailedFreshBeat = false;
 
-  if (!daemonReachable) {
+  if (!daemonReachable && !stale) {
+    // T-0220: a daemon writing heartbeats is ALIVE — a dead process writes
+    // nothing. A failed HTTP probe against a fresh beat is machine contention
+    // (2026-08-23: 6 false DOWNs, every one citing a 3-41s-old beat, while a
+    // paging storm stretched /api/health past the probe timeout) or, rarely, a
+    // dead HTTP listener with live timers. Neither is "down", and the printed
+    // restart remedy would be the wrong move for both. The sentinel escalates
+    // this signal only if it PERSISTS across consecutive runs.
+    probeFailedFreshBeat = true;
+  } else if (!daemonReachable) {
+    // Probe failed AND the beat is stale (3+ missed intervals): both witnesses
+    // agree, and staleness is itself the sustained gap — this is death.
     alerts.push(heartbeat && heartbeat.ts
       ? `DAEMON DOWN — last heartbeat ${describeAge(ageMs)} ago (${heartbeat.ts}). The wake loop is not running; nothing will poke the orchestrator. Restart with \`npm run dashboard\`.`
       : 'DAEMON DOWN — and no heartbeat file was ever written. The wake loop is not running. Restart with `npm run dashboard`.');
@@ -174,7 +186,7 @@ function assessLiveness({ heartbeat, daemonReachable, now = Date.now(), staleMs 
       alerts.push(`WAKER POKES UNATTENDED — oldest pending intent is ${waker.pendingOldestMinutes} min old (${waker.pending} pending). Pokes are being sent but not consumed; this is the exact failure that disarmed the waker on 2026-08-13.`);
     }
   }
-  return { ok: alerts.length === 0, alerts, heartbeatAgeMs: ageMs };
+  return { ok: alerts.length === 0, alerts, heartbeatAgeMs: ageMs, probeFailedFreshBeat };
 }
 
 function describeAge(ms) {

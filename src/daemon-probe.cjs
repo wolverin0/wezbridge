@@ -39,7 +39,7 @@ function probeDaemonServices() {
   });
 }
 
-function probeDaemon() {
+function probeDaemon({ timeoutMs = 2500 } = {}) {
   const dashPort = parseInt(process.env.DASHBOARD_PORT || '4200', 10);
   return new Promise((resolve) => {
     const http = require('http');
@@ -48,6 +48,9 @@ function probeDaemon() {
     // with a slow mux must report "daemon up", never "daemon down". The
     // restart remedy below is therefore only ever printed when the health
     // endpoint itself is unreachable, which is the one case it is correct.
+    // timeoutMs: 2500 suits interactive bridge_health; a WATCHDOG must pass
+    // something >= its dependency's p99 under load — 2026-08-23 measured
+    // /api/health at 6-15s during a paging storm on a HEALTHY daemon (T-0220).
     const req = http.request(
       { host: '127.0.0.1', port: dashPort, method: 'GET', path: '/api/health' },
       (res) => {
@@ -56,7 +59,7 @@ function probeDaemon() {
       }
     );
     req.on('error', () => resolve({ up: false, port: dashPort, hint: 'daemon down — run `npm run dashboard` in the wezbridge repo' }));
-    req.setTimeout(2500, () => { req.destroy(); resolve({ up: false, port: dashPort, hint: 'daemon /api/health did not respond within 2.5s (wedged or down)' }); });
+    req.setTimeout(timeoutMs, () => { req.destroy(); resolve({ up: false, port: dashPort, hint: `daemon /api/health did not respond within ${(timeoutMs / 1000).toFixed(1)}s (wedged or down)` }); });
     req.end();
   });
 }

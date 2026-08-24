@@ -32,21 +32,57 @@ const LOG_FILE = path.join(EVIDENCE_DIR, 'daemon-sentinel.jsonl');
 // orchestrator to ignore it (same lesson as T-0176/T-0190).
 const REPOKE_MS = 30 * 60_000;
 
+// T-0220: a failed probe against a FRESH heartbeat is contention, not death
+// (assessLiveness no longer calls it DOWN). But a dead HTTP listener with live
+// timers would look identical forever — so the sentinel escalates only if the
+// signal PERSISTS this many consecutive runs (runs are 5 min apart: 3 = ~15 min
+// of sustained unreachability, which no contention spike of 2026-08-23 survived).
+const HTTP_FAIL_STREAK_ALERT = 3;
+// A watchdog's probe timeout must exceed its dependency's p99 under load —
+// measured 6-15s for /api/health during the 2026-08-23 paging storm.
+const SENTINEL_PROBE_TIMEOUT_MS = 10_000;
+
 /**
  * Pure decision: what to do this run. No I/O — fully testable.
  * The test that MUST keep failing if this breaks: a dead daemon (no HTTP,
  * stale beat) with a virgin state returns { alert: true } — acceptance
  * criterion 3 of T-0186.
  */
-function evaluate({ liveness, state, now = Date.now(), repokeMs = REPOKE_MS }) {
+function evaluate({ liveness, state, now = Date.now(), repokeMs = REPOKE_MS, httpFailStreakAlert = HTTP_FAIL_STREAK_ALERT }) {
   const downAlert = (liveness.alerts || []).find((a) => /^DAEMON (DOWN|WEDGED)/.test(a));
+  if (!downAlert && liveness.probeFailedFreshBeat) {
+    // Probe failed but the daemon is writing heartbeats. Count, don't cry —
+    // yet. Sustained streaks mean the HTTP listener is genuinely gone.
+    const streak = ((state && state.httpFailStreak) || 0) + 1;
+    if (streak < httpFailStreakAlert) {
+      return {
+        verdict: 'suspect',
+        alert: false,
+        recovered: false,
+        newState: { ...(state || {}), httpFailStreak: streak },
+      };
+    }
+    const episodeStartedAt = (state && state.episodeStartedAt) || new Date(now).toISOString();
+    const lastAlertAt = state && state.lastAlertAt ? Date.parse(state.lastAlertAt) : 0;
+    const shouldPoke = now - lastAlertAt >= repokeMs;
+    return {
+      verdict: 'http-unresponsive',
+      alert: shouldPoke,
+      message: `DAEMON HTTP UNRESPONSIVE — /api/health has failed ${streak} consecutive sentinel runs while the heartbeat stays fresh. Timers live, HTTP dead (or sustained machine contention). Do NOT blind-restart: check RAM/paging first (mm-72c9), then the daemon's HTTP listener.`,
+      newState: {
+        episodeStartedAt,
+        httpFailStreak: streak,
+        lastAlertAt: shouldPoke ? new Date(now).toISOString() : (state && state.lastAlertAt) || null,
+      },
+    };
+  }
   if (!downAlert) {
     const wasDown = Boolean(state && state.episodeStartedAt);
     return {
       verdict: 'healthy',
       alert: false,
       recovered: wasDown,
-      newState: {}, // episode closed
+      newState: {}, // episode closed, streaks reset
     };
   }
   const episodeStartedAt = (state && state.episodeStartedAt) || new Date(now).toISOString();
@@ -115,7 +151,7 @@ async function main() {
   const { probeDaemon } = require(path.join(REPO, 'src', 'daemon-probe.cjs'));
 
   const heartbeat = ds.readHeartbeat(HEARTBEAT_FILE);
-  const daemon = await probeDaemon();
+  const daemon = await probeDaemon({ timeoutMs: SENTINEL_PROBE_TIMEOUT_MS });
   const liveness = ds.assessLiveness({ heartbeat, daemonReachable: daemon.up });
   const state = readJson(STATE_FILE) || {};
   const decision = evaluate({ liveness, state });
@@ -162,4 +198,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { evaluate, REPOKE_MS };
+module.exports = { evaluate, REPOKE_MS, HTTP_FAIL_STREAK_ALERT, SENTINEL_PROBE_TIMEOUT_MS };

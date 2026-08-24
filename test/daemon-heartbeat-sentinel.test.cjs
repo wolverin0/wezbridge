@@ -69,6 +69,39 @@ test('re-poke: after REPOKE_MS still down, it reminds', () => {
   assert.strictEqual(later.newState.episodeStartedAt, first.newState.episodeStartedAt, 'same episode');
 });
 
+// ── T-0220: contention (probe fail + fresh beat) streaks before it alerts ──
+test('T-0220: one failed probe with a fresh beat is SUSPECT, not an alert', () => {
+  const liveness = assessLiveness({ heartbeat: freshBeat, daemonReachable: false, now: NOW });
+  const d = evaluate({ liveness, state: {}, now: NOW });
+  assert.strictEqual(d.verdict, 'suspect');
+  assert.strictEqual(d.alert, false, 'the 2026-08-23 false-DOWN class: contention must not poke');
+  assert.strictEqual(d.newState.httpFailStreak, 1);
+});
+
+test('T-0220: the streak escalates to an alert only after 3 consecutive runs', () => {
+  const mkLiveness = (ts) => assessLiveness({ heartbeat: { ts }, daemonReachable: false, now: NOW });
+  const beatNear = (offsetMs) => new Date(NOW + offsetMs - 10_000).toISOString(); // always ~10s fresh
+  const r1 = evaluate({ liveness: mkLiveness(beatNear(0)), state: {}, now: NOW });
+  const r2 = evaluate({ liveness: mkLiveness(beatNear(0)), state: r1.newState, now: NOW });
+  assert.strictEqual(r2.verdict, 'suspect');
+  assert.strictEqual(r2.alert, false);
+  const r3 = evaluate({ liveness: mkLiveness(beatNear(0)), state: r2.newState, now: NOW });
+  assert.strictEqual(r3.verdict, 'http-unresponsive');
+  assert.strictEqual(r3.alert, true, 'a listener dead for 3 runs (~15 min) is a real fault');
+  assert.match(r3.message, /HTTP UNRESPONSIVE/);
+  assert.doesNotMatch(r3.message, /npm run dashboard/, 'must NOT prescribe a blind restart — check contention first');
+  assert.ok(r3.newState.episodeStartedAt, 'escalation opens an episode');
+});
+
+test('T-0220: a healthy run resets the streak', () => {
+  const failing = assessLiveness({ heartbeat: freshBeat, daemonReachable: false, now: NOW });
+  const r1 = evaluate({ liveness: failing, state: {}, now: NOW });
+  const healthy = assessLiveness({ heartbeat: freshBeat, daemonReachable: true, now: NOW });
+  const r2 = evaluate({ liveness: healthy, state: r1.newState, now: NOW });
+  assert.strictEqual(r2.verdict, 'healthy');
+  assert.deepStrictEqual(r2.newState, {}, 'streak must not survive a healthy probe');
+});
+
 test('recovery closes the episode and reports it', () => {
   const downLiveness = assessLiveness({ heartbeat: staleBeat, daemonReachable: false, now: NOW });
   const during = evaluate({ liveness: downLiveness, state: {}, now: NOW });
