@@ -1,10 +1,10 @@
-# Propuesta: curación de MCP servers por proyecto (menos procesos node)
-> Qué cubre: por qué hay ~96 procesos node, censo medido 2026-08-22, y la propuesta de
-> allowlist por proyecto. Los cambios tocan `~/.claude.json` (operator-owned) → ESTA ES UNA
-> PROPUESTA, el operador la aplica o la aprueba. Ahorro estimado: ~25-30 procesos / ~500MB+
-> por sesión de flota típica. Leer cuando: se retome la tarea de curación MCP o se agregue
-> un MCP server nuevo. Respuesta corta a "¿por qué no comparten node?": el protocolo MCP
-> con transporte stdio ES un proceso por server POR SESIÓN — no es bug de wezbridge.
+# Curación de MCP servers por proyecto — APLICADA 2026-08-24 (gitnexus; el resto ya estaba)
+> Qué cubre: por qué hay ~96-300 procesos node, censo 2026-08-22, allowlist por proyecto y el
+> DELTA APLICADO 2026-08-24 con autorización del operador: gitnexus salió del global (era vía
+> npx) y quedó por-proyecto con path directo al binario en los 20 repos indexados; backup en
+> `~/.claude.json.bak-20260824-mcp-curation`. stitch/magic/notebooklm ya no estaban en el
+> global al aplicar. Leer cuando: se agregue un MCP server nuevo o se re-mida el censo.
+> "¿Por qué no comparten node?": MCP stdio ES un proceso por server POR SESIÓN — no es bug.
 
 ## Por qué pasa (no es un bug)
 - MCP con transporte **stdio** = cada sesión de Claude Code lanza SU copia de cada server
@@ -50,3 +50,13 @@ sesión más rápidos. El tsserver-leak (1,4GB en 6 procesos) es aparte y ya tie
 2. gitnexus: reemplazar `npx gitnexus` por el path resuelto del binario.
 3. Un pane por vez, verificando con `/mcp` que el proyecto ve lo que necesita.
 4. Medir de nuevo el censo (comando en este doc §Censo) y anotar el delta acá.
+
+## Delta aplicado 2026-08-24 (autorizado por el operador vía AskUserQuestion)
+- Estado del global al aplicar: solo quedaban `wezbridge`, `memorymaster`, `gitnexus` (npx)
+  y `meta-ads` (http) — stitch/magic/notebolm ya habían salido antes.
+- `gitnexus` REMOVIDO del global; agregado por-proyecto con
+  `node …\npm\node_modules\gitnexus\dist\cli\index.js mcp` (sin npx) en los 19 repos con
+  `.gitnexus/` bajo Py Apps + whatsappbot-final (anidado). 17 bloques de proyecto nuevos.
+- Backup completo: `~/.claude.json.bak-20260824-mcp-curation`. Rollback = restaurar ese archivo.
+- Efecto recién al REINICIAR cada sesión (las vivas mantienen sus procesos actuales).
+- PENDIENTE de medir: censo nuevo tras un ciclo de reinicios de flota (paso 4).
