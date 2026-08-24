@@ -72,8 +72,9 @@ If you want to bring back the dashboard UI, the orchestrator-worker pane, the or
 node --test --test-reporter=spec test/*.test.cjs
 ```
 
-**868 tests, 867 pass, 0 fail, 1 skipped — medido 2026-08-23** (primera suite completamente
-verde; el fail histórico de vocabulario cerró con el alta del kind `bug` en `_intel/kinds.json`).
+**~917 pass, 1 fail ambiental, 1 skipped — medido 2026-08-24** (el fail es
+`lifecycle.test` que exige un pane-id real vivo, tarjeteado T-0239; crecieron 5 suites
+nuevas el 24-ago: sentinel/identidad/restore/rescue/dispatch-gate).
 Re-medí antes de citar este número; un conteo sin fecha de medición envejece a mentira.
 
 ## Docs map
@@ -83,7 +84,7 @@ Doc triage map at `DOCS-MAP.md` (project root): every doc's verdict (CURRENT / S
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **wezbridge** (36492 symbols, 89005 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **wezbridge** (36534 symbols, 91091 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
