@@ -1,4 +1,4 @@
-<!-- doc-head: updated 2026-08-24 (T-0235: pane ids = TRANSPORT, project = IDENTITY; sender self-resolution at send time via resolveSelfPane; from_project/from_source in events. Previo 2026-08-22: B1 to_project durable queue + auto-ack; decision ledger; v2 tri-state). Edit body => update this. -->
+<!-- doc-head: updated 2026-08-24b (R2: criteria block on type=result now ENFORCED at sender, WEZBRIDGE_RESULT_SHAPE_ENFORCE=0 reverts; M1: dispatch on corr=T-NNNN takes the card lease for the executor; D3: spawn-vs-fork delegation semantics. Same-day earlier: T-0235 pane=transport/project=identity. Previo 2026-08-22: B1 to_project queue + auto-ack; decision ledger). Edit body => update this. -->
 Defines the A2A envelope protocol for peer-to-peer pane communication via wezbridge.
 Envelope syntax: [A2A from pane-N to pane-M | corr=<id> | type=request|ack|progress|result|error].
 Addressing (B1, 2026-08-22): PREFER a2a_send {to_project} — pane resolved via pane-identity at send time,
@@ -226,6 +226,39 @@ Never edit the other side's files silently.
 - **Heartbeat enforcement by the watcher** — silent peers are not yet auto-flagged (rule exists in the globals, enforcement is Phase 3).
 - **Envelope validation** — malformed envelopes are parsed as best-effort and otherwise ignored, not rejected to the sender.
 - **Cryptographic signing** — the protocol assumes all panes are locally-trusted. Don't use A2A across trust boundaries.
+
+## Delegation semantics: spawn vs fork (D3, 2026-08-24)
+
+Stolen with pride from DeepSeek Harness (dsh, MIT) and Uncle Bob's swarm-forge, both of
+which converged on this fleet's design independently. When a coordinator hands work to a
+peer, DECLARE which of the two shapes the delegation is — they are not interchangeable:
+
+- **spawn** — the peer is born with a CLEAN context: `spawn_session` (fresh by default
+  since v3.5) + a brief file in `_intel/briefs/` + a short pointer envelope. Use for
+  independent tracks: research, QA, a task that does not depend on the parent's
+  conversation. The peer is continuable (progress/result over the same corr).
+- **fork-lite** — the peer inherits the parent's ACCUMULATED context via a handoff file
+  written by the dying/full session (`handoffs/…`), then a fresh session resumes from it.
+  This is the fleet's `/clear` recycle (feedback: reciclar-pane-con-clear-no-spawn —
+  handoff → `/clear` in the SAME pane → re-brief). Use when the work IS the continuation
+  of prior context. dsh's insight worth keeping: a fork's value is the shared prefix —
+  keep the handoff faithful to what the parent actually established; a handoff that
+  re-frames the work destroys what forking was for.
+
+Rule of thumb: continuation of a thread → fork-lite in the same pane; independent new
+track → spawn. Either way the brief/handoff FILE is the contract — the envelope is only
+a pointer to it.
+
+## Sender-side enforcement added 2026-08-24 (runtime≠repo: applies per MCP server restart)
+
+- **T-0238 dispatch gate**: `type=request` on `corr=T-NNNN` is refused while the card is
+  blocked/gated — the card is the authority, not the envelope.
+- **M1 lease-on-dispatch**: the same dispatch TAKES the card's lease for the executor
+  (project name preferred). A provable lease conflict refuses the dispatch; lease
+  plumbing failure fails open. Running-without-owner cannot be created via `a2a_send`.
+- **R2 result shape**: `type=result` without a `criteria:` block carrying per-criterion
+  `pass|fail` is refused before transport with the exact template to add.
+  `WEZBRIDGE_RESULT_SHAPE_ENFORCE=0` reverts to the old warn-only detection.
 
 ## Reference
 

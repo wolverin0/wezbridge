@@ -284,4 +284,69 @@ function checkDispatchGate({ corr, type, readFile }) {
   };
 }
 
-module.exports = { intelDir, detectV2, detectAbandons, detectDecisions, detectEvidence, recordEvent, recordResultBody, updateThreads, autoAckResult, checkDispatchGate };
+/**
+ * R2 (robo swarm-forge, 2026-08-24): validate the DRAFT before transport.
+ * swarm-forge's handoff daemon rejects malformed handoff files before queuing;
+ * here the fleet contract is "every type=result carries a criteria: block with
+ * per-criterion pass|fail" (docs/a2a-protocol.md), and until today it was
+ * detected (detectV2) but never enforced — prose-only results kept arriving.
+ *
+ * Enforced only at the SENDER whose server has this code (runtime≠repo:
+ * old servers keep sending unchecked until restarted — mm-fe58 class).
+ * Escape hatch: WEZBRIDGE_RESULT_SHAPE_ENFORCE=0 reverts to warn-only.
+ */
+function checkResultShape({ type, body }) {
+  if (type !== 'result') return { allowed: true };
+  if (process.env.WEZBRIDGE_RESULT_SHAPE_ENFORCE === '0') return { allowed: true };
+  const shape = detectV2(body);
+  if (shape === 'ok') return { allowed: true };
+  return {
+    allowed: false,
+    shape,
+    reason: shape === 'missing'
+      ? 'type=result requires a criteria: block (fleet contract, docs/a2a-protocol.md). Add:\ncriteria:\n- <criterion>: pass|fail — <evidence>\n(plus files_changed / next_action). Re-send with the block included.'
+      : 'the criteria: block has no pass|fail verdicts — each criterion needs an explicit "pass — <evidence>" or "fail — <reason>" line. Re-send with verdicts.',
+  };
+}
+
+/**
+ * M1 (retro 2026-08-24): lease-on-dispatch. T-0222 sat 15h in `running` with
+ * lease:null — an orphan nobody was executing, invisible until a steward
+ * finding caught it. A dispatched request now TAKES the card's lease for the
+ * executor (project name preferred: pane ids die on wezterm restart, T-0235),
+ * so "running without an owner" becomes impossible by construction for any
+ * work dispatched through a2a_send.
+ *
+ * Refuses only on a PROVABLE conflict (card leased to someone else, unexpired).
+ * Everything else fails OPEN with a warning: lease plumbing breaking must not
+ * take fleet comms down with it. ledger.cjs stays the only tasks/ writer —
+ * this shells out to its CLI instead of touching the JSON.
+ */
+function takeDispatchLease({ corr, type, owner, minutes = 90, runLease } = {}) {
+  if (type !== 'request') return { ok: true, skipped: 'not-a-request' };
+  if (!/^T-\d{4}$/.test(String(corr || ''))) return { ok: true, skipped: 'not-a-task-corr' };
+  if (!owner) return { ok: true, warning: 'no owner resolvable — lease not taken' };
+  const run = runLease || ((id, own, min) => {
+    const { execFileSync } = require('node:child_process');
+    const ledger = path.join(intelDir(), '..', '_docs-curation', 'ledger.cjs');
+    return execFileSync(process.execPath, [ledger, 'lease', id, '--owner', String(own), '--minutes', String(min)], {
+      encoding: 'utf8', timeout: 15_000, windowsHide: true,
+    });
+  });
+  try {
+    run(corr, owner, minutes);
+    return { ok: true, leased: { corr, owner, minutes } };
+  } catch (err) {
+    const msg = String((err && err.message) || err);
+    if (/already leased by/i.test(msg)) {
+      const m = msg.match(/already leased by (\S+) until (\S+)/i);
+      return {
+        ok: false,
+        reason: `card ${corr} is already leased by ${m ? m[1] : 'another owner'}${m ? ` until ${m[2]}` : ''} — two executors on one card is the orphan-running bug in reverse. Release the lease (ledger.cjs release ${corr}) or dispatch to the current owner.`,
+      };
+    }
+    return { ok: true, warning: `lease not taken (${msg.slice(0, 120)}) — dispatch allowed, but the card has no owner on record` };
+  }
+}
+
+module.exports = { intelDir, detectV2, detectAbandons, detectDecisions, detectEvidence, recordEvent, recordResultBody, updateThreads, autoAckResult, checkDispatchGate, checkResultShape, takeDispatchLease };

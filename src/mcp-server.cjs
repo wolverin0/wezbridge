@@ -1029,6 +1029,11 @@ function handleToolCall(name, args) {
           if (effectiveModel) codexArgv.push('--model', effectiveModel);
           cliCmd = codexArgv.map(shellQuoteArg).join(' ');
         }
+        // M3: a mux relaunched from inside a Claude session poisons every
+        // spawned pane with CLAUDE_CODE_CHILD_SESSION (transcript saving OFF —
+        // it cost a whole session on 2026-08-23). Sanitize at the one choke
+        // point we control: the typed command. See src/spawn-env.cjs.
+        if (cliCmd) cliCmd = require('./spawn-env.cjs').sanitizeAgentCmd(cliCmd, agent);
         if (cliCmd) wez.sendText(newPaneId, cliCmd);
 
         // Set tab title to persona name for discoverPanes() detection
@@ -1489,6 +1494,36 @@ function handleToolCall(name, args) {
         // key wins — the refusal lands in events.jsonl as its own event type.
         a2aIntel.recordEvent({ event: 'a2a.gate_refused', from_pane: fromPane, to_pane: toPane, corr, type: msgType, reason: gate.reason.slice(0, 200) });
         return { content: [{ type: 'text', text: `dispatch-gate: BLOCKED a2a_send — ${gate.reason}` }], isError: true };
+      }
+
+      // R2: a type=result without a criteria: block (per-criterion pass|fail)
+      // is refused BEFORE transport — validate the draft, not the delivery
+      // (swarm-forge handoffd pattern). The error tells the sender exactly
+      // what to add; WEZBRIDGE_RESULT_SHAPE_ENFORCE=0 reverts to warn-only.
+      const resultShape = a2aIntel.checkResultShape({ type: msgType, body });
+      if (!resultShape.allowed) {
+        a2aIntel.recordEvent({ event: 'a2a.result_shape_refused', from_pane: fromPane, to_pane: toPane, corr, type: msgType, shape: resultShape.shape });
+        return { content: [{ type: 'text', text: `result-shape: BLOCKED a2a_send — ${resultShape.reason}` }], isError: true };
+      }
+
+      // M1: a dispatched request TAKES the card's lease for the executor, so
+      // running-without-owner (T-0222's 15h orphan) can't happen via a2a_send.
+      // Provable conflict refuses; lease plumbing failure fails open with a
+      // warning surfaced in the response.
+      const leaseRes = a2aIntel.takeDispatchLease({
+        corr, type: msgType,
+        owner: toProject || (typeof toPane === 'number' ? `pane-${toPane}` : null),
+      });
+      if (!leaseRes.ok) {
+        a2aIntel.recordEvent({ event: 'a2a.lease_refused', from_pane: fromPane, to_pane: toPane, corr, type: msgType, reason: leaseRes.reason.slice(0, 200) });
+        return { content: [{ type: 'text', text: `dispatch-lease: BLOCKED a2a_send — ${leaseRes.reason}` }], isError: true };
+      }
+      if (leaseRes.leased) {
+        try {
+          require('./action-log.cjs').logAction('dispatch_leased', {
+            target: `corr=${corr}`, why: `lease → ${leaseRes.leased.owner} (${leaseRes.leased.minutes}m)`, extra: { to_pane: toPane },
+          });
+        } catch { /* audit never blocks dispatch */ }
       }
 
       const envelope = `[A2A from pane-${fromPane} to pane-${toPane} | corr=${corr} | type=${msgType}]\n${body}`;

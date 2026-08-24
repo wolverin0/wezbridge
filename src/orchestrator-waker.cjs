@@ -36,6 +36,7 @@ const DEFAULTS = {
   maxAttempts: 3, // per intent; cap reached -> flagged and dropped, never retried
   cooldownMs: 5 * 60 * 1000, // between poke attempts per repo
   deliveredKeep: 500, // delivered-id ring buffer size
+  ctxAlertPct: 80, // M2: pane context % at/above which the poke carries a handoff→/clear warning
 };
 
 function intentId(evt) {
@@ -79,6 +80,28 @@ function paneRunsBypass(panes, repo) {
     if (BYPASS_RE.test(String(p.lastLines || p.text || ''))) return true;
   }
   return false;
+}
+
+const CTX_RE = /Ctx Used:\s*(\d+(?:\.\d+)?)%/;
+
+/**
+ * M2 (retro 2026-08-24): context watermark. wabot reached 97% context before
+ * anyone noticed — the number was on its status bar the whole time, in the
+ * same lastLines this waker already reads for paneRunsBypass. Returns the
+ * watched repo's pane context %, or null when no pane/no marker (fail open:
+ * a missing number must never fake an alert).
+ */
+function paneContextPct(panes, repo) {
+  const want = `/${String(repo || '').replace(/\\/g, '/').replace(/\/$/, '').toLowerCase()}`;
+  if (want === '/') return null;
+  for (const p of panes || []) {
+    const proj = String(p.project || p.cwd || '').replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
+    if (!proj) continue;
+    if (proj !== want.slice(1) && !proj.endsWith(want)) continue;
+    const m = CTX_RE.exec(String(p.lastLines || p.text || ''));
+    if (m) return Number(m[1]);
+  }
+  return null;
 }
 
 function atomicWriteJson(file, value) {
@@ -411,11 +434,18 @@ function createWaker(opts) {
       // A results FILE outranks a turn-end: it names a node that actually
       // completed, where a turn-end is usually mid-work noise. Lead with it.
       const nodes = [...new Set(group.map((id) => state.pending[id].node).filter(Boolean))];
-      const text = nodes.length
+      let text = nodes.length
         ? `[orch-waker] ${repo} RESULT FILE(S) written: ${nodes.join(', ')}. Harvest ${repo}/.orchestrator/results/ and advance — ${facts}.`
         : openGraph(repo)
           ? `[orch-waker] Harvest ${repo}/.orchestrator/results/ and advance the graph — ${facts}.`
           : `[orch-waker] ${repo} finished work — ${facts}. No open graph, so no node completed: check what the pane actually did.`;
+      // M2: context watermark — the number was always on the pane's status
+      // bar; wabot hit 97% before anyone looked. ≥ threshold rides the poke
+      // so the orchestrator can arm handoff→/clear BEFORE the cliff.
+      const ctxPct = paneContextPct(panes, repo);
+      if (ctxPct !== null && ctxPct >= cfg.ctxAlertPct) {
+        text += ` CONTEXT ${ctxPct}% — arm the handoff→/clear recycle for this pane before it hits the wall.`;
+      }
       let ok = false;
       try {
         const delivered = await send.sendPromptDeferredEnter(targetId, text);
@@ -595,4 +625,4 @@ function resolveWakerConfig({ env = process.env, intelDir, readFile } = {}) {
   };
 }
 
-module.exports = { createWaker, intentId, DEFAULTS, resolveWakerConfig, isNoiseEvent, paneRunsBypass };
+module.exports = { createWaker, intentId, DEFAULTS, resolveWakerConfig, isNoiseEvent, paneRunsBypass, paneContextPct };
