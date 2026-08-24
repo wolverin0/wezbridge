@@ -306,6 +306,14 @@ textarea { min-height: 72px; resize: vertical; }
 }
 .findings-head .unruled-flag { color: var(--bad); }
 
+/* Hallazgos plegados: summary clickeable, cartas atenuadas — el diagnóstico
+   no compite en jerarquía con las decisiones que piden la mano del operador. */
+.findings-fold > summary { cursor: pointer; list-style: none; }
+.findings-fold > summary::-webkit-details-marker { display: none; }
+.findings-fold > summary::after { content: ' ▸'; color: var(--dim); }
+.findings-fold[open] > summary::after { content: ' ▾'; }
+.findings-fold .card, .findings-fold article { opacity: 0.72; }
+
 .last-ruled {
   color: var(--faint);
   font-size: 0.82rem;

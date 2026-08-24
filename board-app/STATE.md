@@ -31,6 +31,11 @@ every decision and deviation the spec requires justified.
    (rule idle findings T-0031/T-0013 via the UI) exposed that operator-gated tasks alone don't
    cover everything a ruling can land on. Same card, same actions; the server derives `category`
    from the live finding so lines stay schema-exact.
+   **2026-08-24: findings fold collapsed by default.** Operator read "Decisiones 3" over a
+   screen showing 21 identical cards and called the observability nefasto — findings are
+   diagnosis, not decisions, so they now live in a `<details class="findings-fold">` that stays
+   closed unless some finding is UNRULED (gate red forces it open). Cards inside render at 0.72
+   opacity. Rulings on findings remain one click away; nothing was removed.
 2. **`approved` rulings are mirrored into `_intel/operator-actions.jsonl`** (kind `approval`).
    Reason: the gate's own vocabulary treats unknown words as no-cover and `awaiting-operator`
    findings are never gated, so an approval line alone would reach nobody; the mirror is what the

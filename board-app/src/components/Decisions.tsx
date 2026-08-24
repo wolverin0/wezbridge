@@ -220,16 +220,22 @@ export default function Decisions({ decisions, findings, deferred, lastRuling, o
         </details>
       )}
 
+      {/* Hallazgos plegados por defecto: son diagnóstico del steward, no
+          decisiones — mostrarlos con la misma carta abierta hacía leer
+          "Decisiones 3" sobre una pantalla con 21 cartas. Se abren solos
+          únicamente cuando hay alguno SIN DECIDIR (gate rojo). */}
       {findingCards.length > 0 && (
-        <section aria-label="Hallazgos del steward">
-          <h3 className="findings-head">
-            Hallazgos del steward · {findingCards.length}
+        <details className="findings-fold" open={findings.some((f) => f.unruled)}>
+          <summary className="findings-head">
+            Hallazgos del steward · {findingCards.length} — diagnóstico, no decisiones
             {findings.some((f) => f.unruled) && <span className="unruled-flag"> — hay sin decidir</span>}
-          </h3>
-          {findingCards.map((d) => (
-            <DecisionCard key={`f-${d.id}`} d={d} onRule={onRule} onNote={onNote} busy={resolving.has(d.id)} />
-          ))}
-        </section>
+          </summary>
+          <section aria-label="Hallazgos del steward">
+            {findingCards.map((d) => (
+              <DecisionCard key={`f-${d.id}`} d={d} onRule={onRule} onNote={onNote} busy={resolving.has(d.id)} />
+            ))}
+          </section>
+        </details>
       )}
     </>
   );
