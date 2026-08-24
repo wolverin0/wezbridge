@@ -179,6 +179,39 @@ function readLatestSnapshot(opts = {}) {
 }
 
 /**
+ * T-0234: the RESTORE selector. "Latest group" is the wrong witness after a
+ * crash: the first post-crash tick captures only the one pane the operator
+ * already revived, and restoring THAT group (a) skips the fleet and (b) spawns
+ * a `--continue` duplicate of the live session — both happened on 2026-08-24
+ * (panes 6 and 8 duplicated the orchestrator; the 8-pane group sat 12 min
+ * earlier in the log). The fleet you want back is the RICHEST recent group:
+ * within `windowMs` of the newest group, pick the one with most panes; ties go
+ * to the newest. Beyond the window, old rich groups are history, not state.
+ */
+function readRichestRecentSnapshot({ logPath, windowMs = 30 * 60_000, now = Date.now() } = {}) {
+  const all = readAllSnapshots({ logPath });
+  if (all.length === 0) return [];
+  const groups = new Map(); // ts -> entries
+  for (const e of all) {
+    if (!e.snapshot_ts) continue;
+    if (!groups.has(e.snapshot_ts)) groups.set(e.snapshot_ts, []);
+    groups.get(e.snapshot_ts).push(e);
+  }
+  const cutoff = now - windowMs;
+  let best = null;
+  for (const [ts, entries] of groups) {
+    const t = Date.parse(ts);
+    if (Number.isNaN(t) || t < cutoff) continue;
+    if (!best
+      || entries.length > best.entries.length
+      || (entries.length === best.entries.length && ts > best.ts)) {
+      best = { ts, entries };
+    }
+  }
+  return best ? best.entries : readLatestSnapshot({ logPath });
+}
+
+/**
  * Run one snapshot tick: list current panes via the supplied callback,
  * capture each AI pane's cmdline, append a batch entry to the JSONL log.
  * Returns the number of entries written.
@@ -227,6 +260,7 @@ module.exports = {
   appendSnapshot,
   readAllSnapshots,
   readLatestSnapshot,
+  readRichestRecentSnapshot,
   snapshotOnce,
   startWatcher,
 };

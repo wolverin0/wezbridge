@@ -114,20 +114,67 @@ async function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * T-0234 (half 2): never restore a cwd whose agent is ALREADY live — spawning
+ * `claude --continue` into the cwd of a running session creates a SECOND
+ * process on the same conversation file (the corruption class of mm-99c4;
+ * happened twice on 2026-08-24, panes 6 and 8 duplicating the orchestrator).
+ * Pure: takes the snapshot entries and the live census, returns {keep, skipped}.
+ */
+function excludeAlreadyLive(entries, livePanes) {
+  const identity = require(path.resolve(__dirname, '..', 'src', 'pane-identity.cjs'));
+  const liveKeys = new Set();
+  for (const p of livePanes || []) {
+    const proj = identity.projectFromCwd(p.cwd || p.project || '');
+    const agent = p.agent || p.ai || null;
+    if (proj && agent) liveKeys.add(`${agent}:${proj.toLowerCase()}`);
+  }
+  const keep = [];
+  const skipped = [];
+  for (const e of entries) {
+    const proj = identity.projectFromCwd(e.cwd || '');
+    const key = proj && e.ai ? `${e.ai}:${proj.toLowerCase()}` : null;
+    if (key && liveKeys.has(key)) skipped.push(e);
+    else keep.push(e);
+  }
+  return { keep, skipped };
+}
+
+function discoverLivePanes() {
+  try {
+    const discovery = require(path.resolve(__dirname, '..', 'src', 'pane-discovery.cjs'));
+    return discovery.discoverPanes()
+      .filter((p) => p.agent)
+      .map((p) => ({ cwd: p.project, agent: p.agent }));
+  } catch {
+    // Census down (mux busy) → no exclusions. Restoring a duplicate is worse
+    // than restoring nothing, but blocking ALL restore on a flaky census is
+    // worse still — the operator sees each spawn line and can kill extras.
+    return [];
+  }
+}
+
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   const logPath = process.env.WEZBRIDGE_SESSION_SNAPSHOT_LOG || undefined;
-  const entries = snap.readLatestSnapshot({ logPath });
+  // T-0234: richest recent group, NOT the latest — the first post-crash tick
+  // holds only the pane the operator already revived, and restoring that group
+  // both skips the fleet and duplicates the live session.
+  const entries = snap.readRichestRecentSnapshot({ logPath });
   if (entries.length === 0) {
     console.error('[restore] no snapshot found. Has the session-snapshot daemon ever run?');
     console.error(`[restore]   expected: ${logPath || snap.DEFAULT_LOG}`);
     process.exit(1);
   }
+  const { keep, skipped } = excludeAlreadyLive(entries, discoverLivePanes());
+  for (const s of skipped) {
+    console.log(`[restore] SKIP ${s.ai} @ ${s.cwd} — that agent is already live in this cwd (duplicate --continue is the mm-99c4 corruption class)`);
+  }
   const filtered = opts.filter
-    ? entries.filter((e) => opts.filter.test(e.cwd || '') || opts.filter.test(e.cmdline || ''))
-    : entries;
+    ? keep.filter((e) => opts.filter.test(e.cwd || '') || opts.filter.test(e.cmdline || ''))
+    : keep;
 
-  console.log(`[restore] latest snapshot ts=${entries[0].snapshot_ts}, ${filtered.length}/${entries.length} entries to restore`);
+  console.log(`[restore] richest recent snapshot ts=${entries[0].snapshot_ts} (${entries.length} panes), ${filtered.length} to restore, ${skipped.length} already live`);
   if (opts.dryRun) console.log('[restore] DRY RUN — no panes will be spawned');
 
   let ok = 0;
@@ -149,4 +196,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { parseArgs, splitCmdline };
+module.exports = { parseArgs, splitCmdline, excludeAlreadyLive };
