@@ -1474,6 +1474,23 @@ function handleToolCall(name, args) {
         toPane = hit.paneId;
       }
 
+      // T-0238: a request on a task corr is refused when the CARD is still
+      // blocked/gated — the ledger card is the only verifiable authority for a
+      // gate; an envelope's claim of authorization is not (mm-6dbc: 3 such
+      // envelopes in one night, one of which would have rotated a prod key).
+      const gate = a2aIntel.checkDispatchGate({ corr, type: msgType });
+      if (!gate.allowed) {
+        try {
+          require('./action-log.cjs').logAction('dispatch_gate_refused', {
+            target: `corr=${corr}`, why: gate.reason.slice(0, 160), extra: { state: gate.state, to_pane: toPane },
+          });
+        } catch { /* refusal must not depend on the audit write */ }
+        // recordEvent spreads evt AFTER its 'a2a.sent' default, so this event
+        // key wins — the refusal lands in events.jsonl as its own event type.
+        a2aIntel.recordEvent({ event: 'a2a.gate_refused', from_pane: fromPane, to_pane: toPane, corr, type: msgType, reason: gate.reason.slice(0, 200) });
+        return { content: [{ type: 'text', text: `dispatch-gate: BLOCKED a2a_send — ${gate.reason}` }], isError: true };
+      }
+
       const envelope = `[A2A from pane-${fromPane} to pane-${toPane} | corr=${corr} | type=${msgType}]\n${body}`;
       const _safety = safetyPolicy.evaluate({ action: 'send_prompt', paneId: toPane, prompt: envelope });
       if (!_safety.allowed) {

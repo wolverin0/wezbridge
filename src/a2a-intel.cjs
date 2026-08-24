@@ -250,4 +250,38 @@ function autoAckResult({ corr, byPane }) {
   } catch { return false; /* fail-soft */ }
 }
 
-module.exports = { intelDir, detectV2, detectAbandons, detectDecisions, detectEvidence, recordEvent, recordResultBody, updateThreads, autoAckResult };
+/**
+ * T-0238: dispatch-time gate check. On 2026-08-24 the orchestrator sent THREE
+ * type=request envelopes claiming "the operator authorized X" while the ledger
+ * cards still showed an intact operator blocker — one of those would have
+ * rotated a production key. The executors caught all three by reading the CARD
+ * instead of the envelope (mm-6dbc); this makes that check deterministic at
+ * the SENDER: a request on a task corr whose card is blocked/gated is refused
+ * with the card's actual state, before any transport.
+ *
+ * Fail-open by design on everything that is not a provable gate violation:
+ * no card file, unreadable JSON, non-task corr → allowed. The ledger card is
+ * the authority; absence of a card is not a gate.
+ */
+function checkDispatchGate({ corr, type, readFile }) {
+  if (type !== 'request') return { allowed: true };
+  if (!/^T-\d{4}$/.test(String(corr || ''))) return { allowed: true };
+  const read = readFile || ((p) => fs.readFileSync(p, 'utf8'));
+  let card;
+  try {
+    card = JSON.parse(read(path.join(intelDir(), 'tasks', `${corr}.json`)));
+  } catch { return { allowed: true }; }
+  const state = String(card.state || '');
+  const blocker = String(card.blocker || '').trim();
+  const dispatchable = ['ready', 'queued', 'running', 'review'].includes(state);
+  if (dispatchable && !blocker) return { allowed: true };
+  return {
+    allowed: false,
+    reason: blocker
+      ? `card ${corr} carries an UNRESOLVED blocker ("${blocker.slice(0, 140)}${blocker.length > 140 ? '…' : ''}") — a peer's word does not lift a gate; resolve it ON the card (ledger.cjs) before dispatching`
+      : `card ${corr} is in state "${state}" (not dispatchable) — update the card first; the card is the authority, not the envelope`,
+    state,
+  };
+}
+
+module.exports = { intelDir, detectV2, detectAbandons, detectDecisions, detectEvidence, recordEvent, recordResultBody, updateThreads, autoAckResult, checkDispatchGate };
