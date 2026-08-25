@@ -69,7 +69,17 @@ function callMcpTool(name, args, env = {}) {
   const serverPath = path.resolve(__dirname, '..', 'src', 'mcp-server.cjs');
   const child = spawn(process.execPath, [serverPath], {
     cwd: path.resolve(__dirname, '..'),
-    env: { ...process.env, ...env, NODE_OPTIONS: `--require=${setup.replace(/\\/g, '/')}` },
+    env: {
+      ...process.env,
+      // Isolate the control plane: this helper spawns the REAL server, which
+      // writes audit events to _intel/. Without this the suite pollutes the
+      // fleet's live events.jsonl — on 2026-08-25 four test runs left
+      // "prompt.sent to pane 1" entries there and an investigation spent hours
+      // hunting a sender that turned out to be this file.
+      WEZBRIDGE_INTEL_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'wezbridge-intel-test-')),
+      ...env,
+      NODE_OPTIONS: `--require=${setup.replace(/\\/g, '/')}`,
+    },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   let stdout = '';

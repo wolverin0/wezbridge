@@ -2,6 +2,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 const { assertBypassPermissionsAllowed } = require(path.resolve(__dirname, '..', 'src', 'safety-policy.cjs'));
@@ -55,7 +57,13 @@ function callMcpTool(name, args) {
   const serverPath = path.resolve(__dirname, '..', 'src', 'mcp-server.cjs');
   const child = spawn(process.execPath, [serverPath], {
     cwd: path.resolve(__dirname, '..'),
-    env: { ...process.env },
+    env: {
+      ...process.env,
+      // Aislar el plano de control: este helper spawnea el servidor REAL,
+      // que escribe eventos de auditoria en _intel/. Sin esto el suite
+      // contamina el events.jsonl vivo de la flota (2026-08-25).
+      WEZBRIDGE_INTEL_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'wezbridge-intel-test-')),
+    },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 

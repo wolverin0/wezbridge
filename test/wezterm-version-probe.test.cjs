@@ -34,6 +34,10 @@ function callMcp(method, params, env = {}) {
     cwd: path.resolve(__dirname, '..'),
     env: {
       ...process.env,
+      // Aislar el plano de control: este helper spawnea el servidor REAL,
+      // que escribe eventos de auditoria en _intel/. Sin esto el suite
+      // contamina el events.jsonl vivo de la flota (2026-08-25).
+      WEZBRIDGE_INTEL_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'wezbridge-intel-test-')),
       ...env,
       NODE_OPTIONS: `--require=${setupPath.replace(/\\/g, '/')}`,
     },
