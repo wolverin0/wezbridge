@@ -120,6 +120,73 @@ function findGuiSocket() {
   return null;
 }
 
+/**
+ * Compare the pane lists two mux sockets report, keyed by tab title.
+ *
+ * This machine can run a GUI mux AND a mux-server at once, both serving the
+ * SAME panes under different ids (measured 2026-08-25, mm-0dc1). The MCP server
+ * talks to the GUI socket while each pane's own WEZTERM_PANE comes from the
+ * other, so every id a pane says about itself is wrong in the space that would
+ * have to deliver to it. `collisions` is the dangerous half: an id that is a
+ * LIVE pane in both spaces but a different session in each, which turns a stale
+ * address into a wrong delivery rather than an error.
+ *
+ * Pure so it can be tested without a terminal.
+ */
+function compareSocketSpaces(guiPanes, envPanes) {
+  const key = (p) => (p.tab_title || p.title || '').trim();
+  const byTab = (list) => {
+    const m = new Map();
+    for (const p of list || []) {
+      const k = key(p);
+      if (k && !m.has(k)) m.set(k, p.pane_id);
+    }
+    return m;
+  };
+  const gui = byTab(guiPanes);
+  const env = byTab(envPanes);
+  const shared = [];
+  for (const [tab, guiId] of gui) {
+    if (!env.has(tab)) continue;
+    const envId = env.get(tab);
+    if (guiId !== envId) shared.push({ tab, guiId, envId });
+  }
+  const guiIds = new Map((guiPanes || []).map((p) => [p.pane_id, key(p)]));
+  const collisions = [];
+  for (const p of envPanes || []) {
+    const guiTab = guiIds.get(p.pane_id);
+    const envTab = key(p);
+    if (guiTab !== undefined && envTab && guiTab && guiTab !== envTab) {
+      collisions.push({ id: p.pane_id, guiTab, envTab });
+    }
+  }
+  return { diverged: shared.length > 0, shared, collisions };
+}
+
+/**
+ * Run compareSocketSpaces against the two sockets actually present.
+ * Returns null when there is no second socket to compare (the healthy case) or
+ * when either listing fails — an unanswered socket proves nothing (mm-c03b).
+ */
+function detectSocketDivergence() {
+  const guiSocket = findGuiSocket();
+  const envSocket = process.env.WEZTERM_UNIX_SOCKET || null;
+  if (!guiSocket || !envSocket || guiSocket === envSocket) return null;
+  const listVia = (sock) => {
+    try {
+      const out = execFileSync(WEZTERM, ['cli', 'list', '--format', 'json'], {
+        encoding: 'utf-8', timeout: 5000, windowsHide: true,
+        env: { ...process.env, WEZTERM_UNIX_SOCKET: sock },
+      });
+      return JSON.parse(out);
+    } catch { return null; }
+  };
+  const gui = listVia(guiSocket);
+  const env = listVia(envSocket);
+  if (!gui || !env) return null;
+  return { ...compareSocketSpaces(gui, env), guiSocket, envSocket };
+}
+
 function buildCliInvocation(args) {
   if (process.env.WEZBRIDGE_PREFER_MUX === '1') {
     const muxEnv = { ...process.env };
@@ -638,6 +705,8 @@ function spawnSshDomain(domainName, { cwd, program, args: spawnArgs } = {}) {
 }
 
 module.exports = {
+  compareSocketSpaces,
+  detectSocketDivergence,
   listPanes,
   spawnPane,
   sendText,

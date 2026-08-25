@@ -160,4 +160,44 @@ function resolveSelfPane({ explicitPane, envPane, cwd, panes, aliasMap = new Map
   };
 }
 
-module.exports = { projectFromCwd, identify, buildAliasMap, resolve, resolveSelfPane };
+/**
+ * Validate a to_pane target BEFORE transport.
+ *
+ * Measured 2026-08-25 (mm-0dc1): this machine runs two WezTerm mux sockets that
+ * both serve the SAME live panes under DIFFERENT ids — the GUI socket the MCP
+ * server talks to numbered them 2/11/14/33/36 while each pane's own
+ * WEZTERM_PANE (the default socket) said 6/15/18/28/30. So a peer that replies
+ * to the "pane-N" a colleague advertised addresses an id that does not exist in
+ * the sender's space, and the envelope dies in _intel/queues/_dead-letter.jsonl
+ * unread: 10 of 10 dead letters were addressed to a pane 6 that, in the sending
+ * server's space, was nobody. Worse, the spaces OVERLAP — id 33 was the wabot
+ * pane in one and a codex pane in the other — so a stale id can reach the wrong
+ * live session instead of failing.
+ *
+ * An unknown target id is therefore refused, not attempted: the caller is told
+ * which project it probably meant so the retry uses to_project, which resolves
+ * at send time and is durably queued.
+ */
+function validateTargetPane({ paneId, panes, aliasMap = new Map() }) {
+  const ids = (panes || []).map((p) => identify(p, aliasMap));
+  const hit = ids.find((i) => i.paneId === paneId);
+  if (hit) {
+    return { ok: true, project: hit.canonical, reason: null, alternatives: [] };
+  }
+  const alternatives = ids
+    .filter((i) => i.canonical)
+    .map((i) => ({ paneId: i.paneId, project: i.canonical }));
+  // No census at all is not proof the pane is absent — that is the empty-read
+  // fallacy (mm-c03b). Only an ANSWERING census can convict a pane of absence.
+  if (!alternatives.length) {
+    return { ok: true, project: null, reason: null, alternatives: [], unverified: true };
+  }
+  return {
+    ok: false,
+    project: null,
+    reason: `pane ${paneId} is not in the live census — it is a stale or foreign-socket id`,
+    alternatives,
+  };
+}
+
+module.exports = { projectFromCwd, identify, buildAliasMap, resolve, resolveSelfPane, validateTargetPane };

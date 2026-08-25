@@ -1479,6 +1479,27 @@ function handleToolCall(name, args) {
         toPane = hit.paneId;
       }
 
+      // Guard the raw to_pane path (mm-0dc1): an id that no live pane answers to
+      // is refused here instead of dead-lettering unread. selfCensus was already
+      // gathered above for self-identity, so this costs no extra discovery.
+      let targetProject = toProject;
+      if (!toProject) {
+        const targetRes = selfIdentity.validateTargetPane({ paneId: toPane, panes: selfCensus });
+        if (!targetRes.ok) {
+          const suggest = targetRes.alternatives
+            .map((a) => `${a.project} = pane ${a.paneId}`).join(' · ');
+          a2aIntel.recordEvent({ event: 'a2a.unknown_target', from_pane: fromPane, to_pane: toPane, corr, type: msgType });
+          return {
+            content: [{
+              type: 'text',
+              text: `unknown-target: BLOCKED a2a_send — ${targetRes.reason}. NEVER address a peer by the pane id it advertises about itself: this machine runs two mux sockets that number the same panes differently. Re-send with to_project (resolved at send time and durably queued). Live: ${suggest}`,
+            }],
+            isError: true,
+          };
+        }
+        targetProject = targetRes.project;
+      }
+
       // T-0238: a request on a task corr is refused when the CARD is still
       // blocked/gated — the ledger card is the only verifiable authority for a
       // gate; an envelope's claim of authorization is not (mm-6dbc: 3 such
@@ -1659,6 +1680,9 @@ function handleToolCall(name, args) {
               ...(selfRes.source === 'env-corrected' ? { from_identity_note: selfRes.warning } : {}),
               to_pane: toPane,
               ...(toProject ? { to_project: toProject, queued: queued ? queued.ok : false } : {}),
+              // Raw to_pane: name WHO that id actually is, so a send that lands
+              // on the wrong live session is visible instead of plausible.
+              ...(!toProject && targetProject ? { to_project_resolved: targetProject } : {}),
               ...(autoAcked ? { auto_acked: true } : {}),
               type: msgType,
               ...(v2 ? { v2 } : {}),
@@ -1765,6 +1789,23 @@ async function handleBridgeHealth() {
     session_snapshot_armed: snap ? snap.armed : 'unknown',
     ok: wezterm.reachable, // wezterm is the only hard dependency for core MCP tools
   };
+  // Two mux sockets serving the same panes under different ids is invisible
+  // until envelopes start dying (mm-0dc1: 10 dead letters addressed to a pane
+  // that was nobody in the sending server's space). It is a top-level verdict
+  // because every A2A id in the fleet is wrong while it holds.
+  try {
+    const divergence = wez.detectSocketDivergence();
+    if (divergence && divergence.diverged) {
+      health.pane_id_spaces = {
+        diverged: true,
+        shared: divergence.shared,
+        collisions: divergence.collisions,
+        note: 'Two WezTerm mux sockets number the SAME panes differently. Any pane id a session reports about itself is wrong in the space that must deliver to it — address peers with to_project only. `collisions` are ids that are a DIFFERENT live pane in each space: those misdeliver instead of failing.',
+      };
+      health.ok = false;
+    }
+  } catch { /* detection is diagnostic; never let it fail the health probe */ }
+
   // The orchestrator loop is the thing whose silent death is expensive, so it
   // gets a top-level verdict rather than being buried in the services blob.
   const waker = services && services.orchestrator_waker;
