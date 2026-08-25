@@ -1679,6 +1679,17 @@ function handleToolCall(name, args) {
         if (decisions && decisions.count > 0) {
           note += ` Decision ledger: ${decisions.count} decision(s) recorded to a2a-results.jsonl.`;
         }
+        // The most repeated failure of 2026-08-24/25, five instances across
+        // three panes: "it finished without error" accepted as "it did the
+        // thing". Name the passes that cite nothing checkable — never block,
+        // because punishing honest phrasing on a heuristic is worse than the
+        // gap it guards.
+        if (msgType === 'result') {
+          const weak = a2aIntel.weakPasses(body);
+          if (weak.length > 0) {
+            note += ` UNVERIFIABLE PASSES (${weak.length}): ${weak.join(', ')} — these say pass but cite no artifact. A green check counts only if you can NAME what it produced: the file, the row, the SHA, the count, the test that ran. If "finished without error" is the only evidence, nothing was verified.`;
+          }
+        }
         if (autoAcked) {
           note += ' Auto-ack: delivery verified, so the receipt bookkeeping is done (thread closed in a2a-threads.json) — the requester needs NO ack turn, only its own validation of the result.';
         }

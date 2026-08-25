@@ -350,6 +350,57 @@ function takeDispatchLease({ corr, type, owner, minutes = 90, runLease } = {}) {
 }
 
 /**
+ * Name the `pass` verdicts whose evidence cites nothing checkable.
+ *
+ * The most repeated failure of 2026-08-24/25, five separate instances across
+ * three panes: a Checkpoint task returning 0 while writing no backup; a green
+ * suite while it emptied a profile; a PPR-7 check reporting PASS while counting
+ * 6,752 unrecorded outcomes; a test file CI never executes because of its
+ * marker; and a reviewer reporting "missing tests" for ten covered functions
+ * because it counted definitions instead of invocations. Same shape every time:
+ * "it finished without error" was accepted as "it did the thing".
+ *
+ * The rule that survived all five: a green check counts only if you can NAME
+ * the artifact it produced — the backup file, the row, the SHA, the count, the
+ * test that ran. So this looks for an artifact TOKEN in each passing
+ * criterion's evidence: a number, a path, a hash, a URL, or quoted output.
+ *
+ * It never blocks and never calls a criterion wrong — it only says which passes
+ * cite nothing. Blocking on a heuristic would punish honest phrasing, and a
+ * guard that fires on compliant work is worse than no guard at all: it teaches
+ * people to spend context appeasing it.
+ */
+const ARTIFACT_TOKEN = /\d|[/\\][\w.-]|https?:\/\/|`[^`]+`|\.(js|cjs|ts|py|json|md|sql|gz|yml|yaml)\b/i;
+
+// Naming a thing is citing it even without a number: "CSP completa, HSTS,
+// nosniff, X-Frame DENY" is real evidence and must never be flagged — that
+// exact line came from a live result and this guard tried to bite it. But an
+// acronym that carries no information about WHAT was produced does not count.
+const EMPTY_ACRONYMS = new Set(['OK', 'PASS', 'FAIL', 'SI', 'NO', 'YES', 'TODO', 'NA']);
+const NAMED_TOKEN = /\b[A-Z][A-Z0-9-]+\b/g;
+
+function citesArtifact(evidence) {
+  if (ARTIFACT_TOKEN.test(evidence)) return true;
+  for (const m of evidence.matchAll(NAMED_TOKEN)) {
+    if (!EMPTY_ACRONYMS.has(m[0])) return true;
+  }
+  return false;
+}
+
+function weakPasses(body) {
+  const lines = String(body || '').split('\n');
+  const weak = [];
+  for (const line of lines) {
+    const m = line.match(/^\s*[-*]?\s*(.+?):\s*pass\b\s*(?:[—:-]\s*(.*))?$/i);
+    if (!m) continue;
+    const criterion = m[1].trim();
+    const evidence = (m[2] || '').trim();
+    if (!citesArtifact(evidence)) weak.push(criterion);
+  }
+  return weak;
+}
+
+/**
  * Detect an A2A envelope hand-written into a raw prompt.
  *
  * Every fleet safety control — the dispatch gate, the result-shape check, the
@@ -375,4 +426,4 @@ function detectSmuggledEnvelope(text) {
   return { smuggled: true, corr: m[1], type: m[2].toLowerCase() };
 }
 
-module.exports = { intelDir, detectV2, detectAbandons, detectDecisions, detectEvidence, recordEvent, recordResultBody, updateThreads, autoAckResult, checkDispatchGate, checkResultShape, takeDispatchLease, detectSmuggledEnvelope };
+module.exports = { intelDir, detectV2, detectAbandons, detectDecisions, detectEvidence, recordEvent, recordResultBody, updateThreads, autoAckResult, checkDispatchGate, checkResultShape, takeDispatchLease, detectSmuggledEnvelope, weakPasses };
