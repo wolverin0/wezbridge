@@ -646,6 +646,36 @@ function handleToolCall(name, args) {
         };
       }
 
+      // A hand-written envelope pushed through here would skip every control
+      // a2a_send applies and leave no trace (mm-6043 / T-0265). Refuse it: the
+      // gates are not optional just because a cheaper door exists.
+      const smuggled = a2aIntel.detectSmuggledEnvelope(text);
+      if (smuggled.smuggled) {
+        a2aIntel.recordEvent({
+          event: 'a2a.smuggled_envelope_refused',
+          to_pane: paneId, corr: smuggled.corr, type: smuggled.type,
+        });
+        return {
+          content: [{
+            type: 'text',
+            text: `smuggled-envelope: BLOCKED send_prompt — this text contains an A2A envelope (corr=${smuggled.corr}, type=${smuggled.type}). send_prompt applies NO dispatch gate, NO result-shape check, NO lease, NO durable queue and writes NO audit record, so hand-writing an envelope here bypasses every fleet control and leaves nothing behind. Use a2a_send (pass from_pane explicitly if you are a headless sender).`,
+          }],
+          isError: true,
+        };
+      }
+
+      // Audit EVERY prompt, envelope or not: an unlogged write path into a
+      // pane is how a request to delete a live 16 GB database arrived with no
+      // record of who sent it. The body is hashed, never stored.
+      try {
+        a2aIntel.recordEvent({
+          event: 'prompt.sent',
+          to_pane: paneId,
+          bytes: Buffer.byteLength(text, 'utf8'),
+          body_sha256: require('node:crypto').createHash('sha256').update(text).digest('hex').slice(0, 16),
+        });
+      } catch { /* the audit must never block the send it is auditing */ }
+
       return (async () => {
         try {
           await sendPromptDeferredEnter(paneId, text);

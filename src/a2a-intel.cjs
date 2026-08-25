@@ -349,4 +349,30 @@ function takeDispatchLease({ corr, type, owner, minutes = 90, runLease } = {}) {
   }
 }
 
-module.exports = { intelDir, detectV2, detectAbandons, detectDecisions, detectEvidence, recordEvent, recordResultBody, updateThreads, autoAckResult, checkDispatchGate, checkResultShape, takeDispatchLease };
+/**
+ * Detect an A2A envelope hand-written into a raw prompt.
+ *
+ * Every fleet safety control — the dispatch gate, the result-shape check, the
+ * lease, the durable queue, the audit event — lives in a2a_send. send_prompt
+ * has none of them. So typing the envelope by hand and pushing it through
+ * send_prompt is not a shortcut, it is the bypass: the receiving pane cannot
+ * tell the two apart, and nothing anywhere records that the message existed.
+ *
+ * Measured 2026-08-25 (mm-6043): a request to delete a 16 GB LIVE database
+ * volume reached a pane signed "orchestrator-headless" on corr T-0192, and
+ * events.jsonl — holding 4789 a2a.sent records, provably logging other
+ * envelopes of that same corr within 90 seconds — had no record of it at all.
+ * The pane refused because it re-derived against the system, not because any
+ * control caught it. There was no control to catch it.
+ *
+ * Matches the envelope SHAPE rather than a specific sender, because the sender
+ * field is exactly the part a hand-written envelope is free to invent.
+ */
+function detectSmuggledEnvelope(text) {
+  const s = String(text || '');
+  const m = s.match(/\[A2A\b[^\]]*\|\s*corr=([^\s|\]]+)[^\]]*\|\s*type=([a-z]+)[^\]]*\]/i);
+  if (!m) return { smuggled: false, corr: null, type: null };
+  return { smuggled: true, corr: m[1], type: m[2].toLowerCase() };
+}
+
+module.exports = { intelDir, detectV2, detectAbandons, detectDecisions, detectEvidence, recordEvent, recordResultBody, updateThreads, autoAckResult, checkDispatchGate, checkResultShape, takeDispatchLease, detectSmuggledEnvelope };
