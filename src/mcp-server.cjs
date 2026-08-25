@@ -24,6 +24,20 @@ const safetyPolicy = require('./safety-policy.cjs');
 const discovery = require('./pane-discovery.cjs');
 const wez = require('./wezterm.cjs');
 const a2aIntel = require('./a2a-intel.cjs');
+
+/**
+ * Agent-pane census in the shape pane-identity expects. Returns [] when
+ * discovery is down, which resolveSelfPane treats as "cannot prove my own
+ * pane" rather than as absence — an unanswering instrument is not evidence.
+ */
+function selfCensusFor() {
+  try {
+    return discovery.discoverPanes()
+      .filter((p) => p.agent)
+      .map((p) => ({ pane_id: p.paneId, cwd: p.project, tab_title: p.tabTitle || p.title || null }));
+  } catch { return []; }
+}
+
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
@@ -668,9 +682,22 @@ function handleToolCall(name, args) {
       // pane is how a request to delete a live 16 GB database arrived with no
       // record of who sent it. The body is hashed, never stored.
       try {
+        // Recording only the DESTINATION was not enough: on 2026-08-25 this
+        // audit caught two identical 16KB prompts sent to a pane that does not
+        // exist, and could not name the sender — the exact question the audit
+        // existed to answer. Identify the caller the same way a2a_send does.
+        const promptSelf = require('./pane-identity.cjs').resolveSelfPane({
+          envPane: parseInt(process.env.WEZTERM_PANE || '', 10),
+          cwd: process.cwd(),
+          panes: selfCensusFor(),
+        });
         a2aIntel.recordEvent({
           event: 'prompt.sent',
           to_pane: paneId,
+          from_pane: Number.isInteger(promptSelf.paneId) ? promptSelf.paneId : null,
+          from_project: promptSelf.project || null,
+          from_source: promptSelf.source,
+          caller_cwd: process.cwd(),
           bytes: Buffer.byteLength(text, 'utf8'),
           body_sha256: require('node:crypto').createHash('sha256').update(text).digest('hex').slice(0, 16),
         });
