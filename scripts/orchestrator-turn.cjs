@@ -105,14 +105,27 @@ function classifyEvent(evt) {
  * which is what makes "% of turns with no action" a derivable number instead
  * of an anecdote.
  */
-function classifyWake({ gateExit, reviewCount, events = [] }) {
+function classifyWake({ gateExit, reviewCount, reviewTasks, events = [] }) {
   const reasons = [];
   const classes = [];
   const noise = [];
+  // `reviewTasks` (ids) is the shape since T-0288; `reviewCount` (a number) is
+  // kept because the 91 turn records already on disk were written with it and
+  // the board back-fills their classes from these very strings.
+  const named = Array.isArray(reviewTasks) ? reviewTasks : null;
+  const reviews = named ? named.length : (reviewCount || 0);
   if (gateExit === 1) { reasons.push('gate RED: work past deadline with no ruling'); classes.push('real-stall'); }
   if (gateExit === 3) { reasons.push('gate UNKNOWN: it could not read its own findings'); classes.push('exception'); }
   if (gateExit !== 0 && gateExit !== 1 && gateExit !== 3) { reasons.push(`gate exited ${gateExit}, which is not a verdict this loop knows`); classes.push('exception'); }
-  if (reviewCount > 0) { reasons.push(`${reviewCount} task(s) in review with finished work nobody has judged`); classes.push('results-directed'); }
+  if (reviews > 0) {
+    // AC5: name them. The old poke said "1 task(s)" and made every woken turn
+    // re-derive which card it was — four turns in a row did exactly that.
+    // The substring "in review with finished work" is load-bearing: the board's
+    // classOfReason() matches on it, and test/board-observability.test.cjs
+    // generates its expectations THROUGH this function so the two cannot drift.
+    reasons.push(`${reviews} task(s) in review with finished work nobody has judged${named ? `: ${named.join(', ')}` : ''}`);
+    classes.push('results-directed');
+  }
   for (const evt of events) {
     const cls = classifyEvent(evt);
     const desc = `${(evt && evt.event) || 'unrecognised event'}${evt && evt.repo ? ` from ${evt.repo}` : ''}`;
@@ -163,14 +176,71 @@ function snapshot() {
   return { rulings, taskCount, taskMtime };
 }
 
-function reviewCount() {
+/**
+ * Which cards in `review` still need a human turn — RULINGS INCLUDED.
+ *
+ * T-0288. The old `reviewCount()` did a readdir, filtered `state === 'review'`
+ * and returned a LENGTH. It never opened rulings.jsonl, so a deferral — the
+ * mechanism this very routine defines for parking something on purpose — could
+ * not suppress anything. THE ASYMMETRY WAS THE BUG: steward-gate DOES read
+ * rulings and was returning GREEN over the same ledger, so two authorities
+ * disagreed about one file and the orchestrator obeyed the one that was not
+ * reading it. Measured on 2026-08-27: the 22:00Z, 00:00Z, 02:00Z and 04:00Z
+ * turns were all woken by T-0207, deferred until 12:30Z since 20:12Z, and the
+ * only move left to a turn with nothing to do was to write another defensive
+ * ruling so as not to count as silence — with rulings.jsonl being the very
+ * yardstick the routine uses to measure whether a turn produced anything.
+ *
+ * FAILS OPEN, per T-0268. This component's failure mode is a BLIND
+ * orchestrator, so suppression happens only on a positive, explicit,
+ * still-in-the-future `until`. Unreadable file, corrupt line, unknown ruling
+ * word, missing or unparseable `until`, wrong category — every one of those
+ * pokes. Silence is never the default; it is earned by a live deferral.
+ *
+ * Pure: no clock, no filesystem. `rulings` that is not an array means "could
+ * not be read", which suppresses nothing.
+ */
+function reviewWakeTargets({ tasks, rulings, now }) {
+  const cards = (Array.isArray(tasks) ? tasks : []).filter((t) => t && t.state === 'review');
+  if (!Array.isArray(rulings)) return cards.map((t) => t.id);   // fail open
+  return cards.filter((t) => {
+    // Latest applicable line wins, so a deferral is revised by appending —
+    // the same rule steward-gate uses, deliberately.
+    const applicable = rulings.filter((r) => r && r.task === t.id);
+    const hit = [...applicable].reverse().find((r) => deferralIsLive(r, now));
+    return !hit;
+  }).map((t) => t.id);
+}
+
+/** Only a `deferred` ruling with an `until` still ahead of `now` buys silence. */
+function deferralIsLive(ruling, now) {
+  if (!ruling || ruling.ruling !== 'deferred') return false;
+  // Category is part of the match, as in steward-gate: a card parked while
+  // merely idle must not stay silent once its finished work needs judging.
+  // Absent category matches anything, which is that function's own laxity.
+  if (ruling.category && ruling.category !== 'review') return false;
+  if (!ruling.until) return false;                 // a deferral with no end is a shrug
+  const until = Date.parse(ruling.until);
+  return Number.isFinite(until) && now < until;
+}
+
+/** IO shell over an explicit _intel dir, so tests never touch the live ledger. */
+function reviewTargetsIn(intelDir, now = Date.now()) {
+  let tasks;
   try {
-    return fs.readdirSync(path.join(INTEL, 'tasks'))
+    tasks = fs.readdirSync(path.join(intelDir, 'tasks'))
       .filter((f) => f.endsWith('.json'))
-      .filter((f) => {
-        try { return JSON.parse(fs.readFileSync(path.join(INTEL, 'tasks', f), 'utf8')).state === 'review'; } catch { return false; }
-      }).length;
-  } catch { return 0; }
+      .map((f) => { try { return JSON.parse(fs.readFileSync(path.join(intelDir, 'tasks', f), 'utf8')); } catch { return null; } })
+      .filter(Boolean);
+  } catch { return []; }        // no ledger at all: nothing to claim about it
+  let rulings = null;           // null = unreadable => fail open
+  try {
+    rulings = fs.readFileSync(path.join(intelDir, 'rulings.jsonl'), 'utf8')
+      .split('\n').filter(Boolean)
+      .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+      .filter(Boolean);
+  } catch { rulings = null; }
+  return reviewWakeTargets({ tasks, rulings, now });
 }
 
 function runGate() {
@@ -277,8 +347,9 @@ function main() {
   }
 
   const gateExit = runGate();
-  const reviews = reviewCount();
-  const { wake, reasons, classes, noise } = classifyWake({ gateExit, reviewCount: reviews });
+  const reviewTasks = reviewTargetsIn(INTEL);
+  const reviews = reviewTasks.length;
+  const { wake, reasons, classes, noise } = classifyWake({ gateExit, reviewTasks });
   const now = snapshot();
   const prev = lastTurn();
 
@@ -399,4 +470,4 @@ function main() {
 }
 
 if (require.main === module) process.exit(main());
-module.exports = { classifyWake, classifyEvent, shouldWake, turnWasProductive, STALL_LIMIT };
+module.exports = { reviewWakeTargets, reviewTargetsIn, deferralIsLive, classifyWake, classifyEvent, shouldWake, turnWasProductive, STALL_LIMIT };
