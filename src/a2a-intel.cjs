@@ -263,6 +263,47 @@ function autoAckResult({ corr, byPane }) {
  * no card file, unreadable JSON, non-task corr → allowed. The ledger card is
  * the authority; absence of a card is not a gate.
  */
+/**
+ * Palabras de ruling que declaran CIERRE. Igualdad exacta contra un Set de una
+ * sola palabra, deliberadamente: ~20 líneas de rulings.jsonl llevan párrafos
+ * doctrinales enteros dentro del campo `ruling`, y cualquier `.includes()`
+ * sobre eso da match accidental. `cancelled` queda AFUERA por medición: sumaba
+ * 3 falsos positivos y 0 verdaderos.
+ */
+const CLOSING_RULINGS = new Set(['resolved']);
+
+/**
+ * ¿Hay un ruling de cierre POSTERIOR al último movimiento de la tarjeta?
+ *
+ * Compara contra un HECHO del archivo de la tarjeta (`state_changed_at`, con
+ * fallback a `updated_at`), no contra "el último ruling de cualquier tipo".
+ * Esa elección es lo que impide que el guard se auto-silencie: el hábito real
+ * de la flota es escribir el cierre y DESPUÉS anexar la narrativa del
+ * despacho — las tres tareas más recientes tienen esa forma — así que una
+ * regla de "último gana" se apagaría sola con prosa, que es exactamente la
+ * falla que toda esta cadena existe para impedir.
+ *
+ * Fail-open en todo lo que no sea una violación probable: archivo ausente,
+ * ilegible, línea corrupta, `at` impresentable, tarjeta sin marca temporal.
+ */
+function closingRulingAfterMove(corr, card, read) {
+  const moved = Date.parse(card.state_changed_at || card.updated_at || '');
+  if (!Number.isFinite(moved)) return null;
+  let raw;
+  try { raw = read(path.join(intelDir(), 'rulings.jsonl')); } catch { return null; }
+  let hit = null;
+  for (const l of String(raw).split('\n')) {
+    if (!l.trim()) continue;
+    let r;
+    try { r = JSON.parse(l); } catch { continue; }   // una línea rota no tumba la lectura
+    if (!r || r.task !== corr || !CLOSING_RULINGS.has(r.ruling)) continue;
+    const at = Date.parse(r.at || '');
+    if (!Number.isFinite(at) || at <= moved) continue;
+    if (!hit || at > hit.ms) hit = { ms: at, at: r.at };
+  }
+  return hit;
+}
+
 function checkDispatchGate({ corr, type, readFile }) {
   if (type !== 'request') return { allowed: true };
   if (!/^T-\d{4}$/.test(String(corr || ''))) return { allowed: true };
@@ -274,7 +315,15 @@ function checkDispatchGate({ corr, type, readFile }) {
   const state = String(card.state || '');
   const blocker = String(card.blocker || '').trim();
   const dispatchable = ['ready', 'queued', 'running', 'review'].includes(state);
-  if (dispatchable && !blocker) return { allowed: true };
+  if (dispatchable && !blocker) {
+    const closed = closingRulingAfterMove(corr, card, read);
+    if (!closed) return { allowed: true };
+    return {
+      allowed: false,
+      state,
+      reason: `card ${corr} is open in state "${state}" but a ruling dated ${closed.at} declares it RESOLVED, and the card has not moved since — the ledger and rulings.jsonl disagree. Either move the card (ledger.cjs) or append a ruling declaring the reopen; do not dispatch finished work`,
+    };
+  }
   return {
     allowed: false,
     reason: blocker
