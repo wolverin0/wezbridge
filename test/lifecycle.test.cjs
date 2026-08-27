@@ -192,9 +192,23 @@ test('wezterm chokepoint: split past the cap throws, logs spawn_refused, and nev
     assert.strictEqual(refusal.target, 'G:/x/mutual');
     assert.strictEqual(refusal.extra.max, 1);
 
-    // Disabled cap → the same split reaches the (mock) mux instead of throwing.
+    // Disabled cap → the CAP no longer refuses. T-0239: this used to assert
+    // doesNotThrow, which quietly made a live pane with id 1 a precondition —
+    // `splitHorizontal` calls the real mux once the gate lets it through, and
+    // wezterm renumbers panes after every crash. The suite then went red with
+    // no bug, which is the verifier-accuses-the-subject class (mm-151b).
+    //
+    // What is under test here is `assertPaneCap`, not the mux. So the assertion
+    // is now on the CAP error specifically: whether the split then succeeds or
+    // fails against whatever panes happen to exist is none of this test's
+    // business. The count check below is the real proof the gate stayed shut.
     process.env.WEZBRIDGE_MAX_PANES = '0';
-    assert.doesNotThrow(() => wez.splitHorizontal(1, { cwd: 'G:/x/mutual' }));
+    try {
+      wez.splitHorizontal(1, { cwd: 'G:/x/mutual' });
+    } catch (e) {
+      assert.doesNotMatch(String(e && e.message), /pane cap reached/,
+        'with the cap disabled the refusal must not come from the cap');
+    }
     const after = fs.readFileSync(path.join(intelDir, 'actions.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
     assert.strictEqual(after.filter((l) => l.action === 'spawn_refused').length, 1, 'no second refusal once the cap is off');
   } finally {
