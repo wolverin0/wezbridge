@@ -311,6 +311,26 @@ function createConsumer(opts) {
       // orchestrate skill forbids.
       return { delivered: 0, flagged: 0, skipped: ids.length };
     }
+    // T-0242/AC6: el pane esta idle PERO su composer retiene texto que todavia
+    // no envio (tipico: el operador escribio y no dio Enter). Entregar aca no
+    // manda el sobre — manda "su texto + el sobre" concatenados como un solo
+    // prompt. Se difiere igual que con un pane ocupado: sin consumir intentos
+    // ni cooldown, asi la entrega se reanuda sola en el proximo drain cuando el
+    // composer se vacie.
+    //
+    // El log NO es decorativo: es como se descubre un placeholder de TUI nuevo
+    // que el predicado todavia no conoce. Un diferimiento silencioso se ve
+    // igual que una cola vacia.
+    //
+    // Fail-open si el `send` inyectado no trae el helper (fakes de tests
+    // viejos): un guard que no puede medir no puede frenar.
+    if (typeof send.paneComposerHoldsForeignText === 'function'
+        && send.paneComposerHoldsForeignText(targetId)) {
+      log(`project-queue[${project}]: pane-${targetId} idle pero su composer retiene texto sin enviar `
+        + `— difiriendo ${ids.length} entrada(s), reintento en el proximo drain`);
+      return { delivered: 0, flagged: 0, skipped: ids.length, deferredComposer: ids.length };
+    }
+
     // Cooldown (waker rule): undefined = never attempted, never blocked.
     if (state.lastAttemptAt !== undefined && now() - state.lastAttemptAt < cfg.cooldownMs) {
       return { delivered: 0, flagged: 0, skipped: ids.length };

@@ -17,6 +17,43 @@ function inputBoxContent(tailLines) {
   return last.replace(/^[\s│|]*[❯>›]\s*/, '').replace(/[\s│|]+$/, '').replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
+// ── T-0242 / AC6 — el composer retiene texto AJENO, no entregar encima ──────
+// Reproducido en vivo 2026-08-28: TRES panes (infra, memorymaster, wabot)
+// tenian instrucciones del operador SIN ENVIAR, y los tres reportaban `idle`.
+// `idle` NO significa composer vacio. Un envio en esa ventana no manda el
+// sobre: manda "texto del operador + sobre" concatenados como UN solo prompt.
+//
+// Y diferir es la unica salida, no una entre varias: un Enter inyectado NO
+// vacia un composer con texto tipeado a mano — medido con 3 intentos (2 por
+// MCP send_key, 1 por `wezterm cli send-text` directo). El reintento de Enter
+// de verifyPromptSubmission no rescata este caso.
+//
+// Es el MISMO predicado que verifica entrega (inputBoxContent), corrido ANTES
+// en vez de DESPUES: alli se pregunta "¿sigue MI texto?", aca "¿hay texto de
+// alguien?".
+
+// Chrome del TUI que OCUPA la linea del composer sin ser texto del usuario.
+// MEDIDO, no supuesto: un placeholder tratado como texto retenido cortaria
+// toda entrega a ese tipo de pane — el falso positivo es peor que el bug.
+const COMPOSER_PLACEHOLDERS = [
+  'ask codex to do anything',   // codex CLI, medido en pane 35 (omniremote)
+];
+
+/**
+ * @param tail texto reciente del pane (`wezterm cli get-text`)
+ * @returns true si el composer retiene texto que el pane todavia NO envio.
+ *
+ * FAIL-OPEN a proposito (tail vacio/ilegible => false): misma postura que el
+ * resto del camino de entrega. Un guard que falla cerrado sobre un pane que no
+ * puede leer paraliza al fleet, y eso es peor que el bug que arregla.
+ */
+function composerHoldsForeignText(tail) {
+  if (!tail) return false;
+  const content = inputBoxContent(String(tail).split(/\r?\n/));
+  if (!content) return false;
+  return !COMPOSER_PLACEHOLDERS.includes(content);
+}
+
 function createVerifiedSend({ wez, sleep }) {
   // Returns 'submitted' | 'stuck' | 'unknown' (pane unreadable / non-TUI shell).
   async function verifyPromptSubmission(paneId, text, { retries = 2, settleMs = 700 } = {}) {
@@ -53,6 +90,15 @@ function createVerifiedSend({ wez, sleep }) {
     return 'stuck';
   }
 
+  // Version ligada al pane: lee el tail y aplica el predicado. Fail-open ante
+  // un pane ilegible, igual que verifyPromptSubmission.
+  function paneComposerHoldsForeignText(paneId) {
+    try {
+      wez.invalidateGetTextCache(paneId);
+      return composerHoldsForeignText(wez.getFullText(paneId, 25));
+    } catch { return false; }
+  }
+
   // Delivery-INTEGRITY verdict, distinct from submission: 'ok' if the composer
   // visibly holds the tail of our payload before submit, 'truncated' if missing,
   // 'unknown' if unreadable or the paste is collapsed. A truncated message
@@ -87,7 +133,7 @@ function createVerifiedSend({ wez, sleep }) {
     return delivered;
   }
 
-  return { verifyPromptSubmission, composerHoldsTail, sendPromptDeferredEnter };
+  return { verifyPromptSubmission, composerHoldsTail, sendPromptDeferredEnter, paneComposerHoldsForeignText };
 }
 
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -95,8 +141,11 @@ const bound = createVerifiedSend({ wez: require('./wezterm.cjs'), sleep: default
 
 module.exports = {
   inputBoxContent,
+  composerHoldsForeignText,
+  COMPOSER_PLACEHOLDERS,
   createVerifiedSend,
   verifyPromptSubmission: bound.verifyPromptSubmission,
   composerHoldsTail: bound.composerHoldsTail,
   sendPromptDeferredEnter: bound.sendPromptDeferredEnter,
+  paneComposerHoldsForeignText: bound.paneComposerHoldsForeignText,
 };
