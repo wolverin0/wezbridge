@@ -324,8 +324,23 @@ function raiseStall(stalls, reasons) {
     const card = open || ledger.create({
       title: 'The orchestrator loop is firing and achieving nothing',
       goal: 'Decide whether the loop is broken, the work is genuinely blocked, or the trigger is wrong.',
-      kind: 'general',
+      // `question`, no `general`. La tarjeta dice textual "a human decides", y
+      // kinds.json define question como class:coordination con
+      // fallback_gate:operator — "a question IS an operator decision". `general`
+      // tiene fallback_gate null, así que la alarma no ganaba gate por NINGUNA
+      // rama de create() y el steward la clasificaba blocked-not-gated: deadline
+      // de 48h sobre un estado correcto, y fuera de la lista que el operador lee.
+      // Declarar el kind honesto es lo que la pone en awaiting-operator.
+      kind: 'question',
       repo: 'wezbridge',
+      // `state` y `blocked-by` se declaran, y el GATE lo deriva el ledger del kind
+      // con independencia de ambos. Eso ultimo no siempre fue cierto: hasta T-0269
+      // las dos ramas de gate de create() estaban guardadas por
+      // `!['blocked','cancelled'].includes(state)`, asi que declarar state:'blocked'
+      // aca CORTOCIRCUITABA el gate y la alarma nacia con `gate: null`. Hoy el
+      // ledger deriva el gate antes de mirar el estado, y hay un test que lo fija
+      // (`ledger-fleet-minimum-gate.test.cjs`) — si alguien vuelve a acoplarlos,
+      // ese test se pone rojo antes de que esta alarma se apague en silencio.
       state: 'blocked',
       'blocked-by': 'operator',
       origin: `${STALL_ORIGIN}:${new Date().toISOString()}`,

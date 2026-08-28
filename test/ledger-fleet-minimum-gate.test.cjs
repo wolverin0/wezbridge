@@ -211,3 +211,44 @@ test('REGRESIÓN 25129f4: la alarma de stall volvió a caer en blocked-not-gated
       + 'orquestación no funciona está ella misma fuera de la lista que el operador lee');
   });
 });
+
+test('el gate se deriva del KIND aunque la tarjeta nazca declarada en blocked', () => {
+  // El guard `!['blocked','cancelled'].includes(state)` existe para no pisar el
+  // estado de algo que ya nace bloqueado, y arrastraba al gate con él: una
+  // tarjeta creada explícitamente en `blocked` salía con `gate: null` aunque su
+  // kind fuera operator-gated. Medido con la alarma de loop muerto, que nace
+  // `blocked` a propósito y por eso quedaba invisible dos veces.
+  //
+  // Nada cubría esta propiedad, así que la fijo acá: el gate responde al KIND,
+  // el estado responde a otra cosa, y volver a acoplarlos tiene que ponerse rojo.
+  sandbox(({ intel, ledger }) => {
+    const made = ledger.create({
+      title: 'nace bloqueada a propósito', goal: 'y', kind: GATED_KIND, repo: 'wezbridge',
+      state: 'blocked', 'blocked-by': 'operator',
+    });
+    const card = onDisk(intel, made.id);
+    assert.equal(gateOf(card), 'operator',
+      'declarar el estado en la llamada apagó el gate: el gate es del KIND y no puede depender '
+      + 'de con qué estado nace la tarjeta');
+    assert.equal(steward.classify(age(intel, made.id, 200), Date.now(), intel).category, 'awaiting-operator');
+  });
+});
+
+test('la alarma de stall completa: escrita, visible, y en la lista del operador', () => {
+  // Cierre de las dos mitades. T-0290 la hizo VISIBLE (id T-NNNN gobernable);
+  // T-0269 la pone en la lista que el operador realmente lee. Una alarma visible
+  // pero mal clasificada sigue sin llegar: caía en blocked-not-gated, con
+  // deadline de 48h sobre un estado que es correcto.
+  sandbox(({ intel, ledger, turn }) => {
+    const card = turn.raiseStall(3, ['gate RED']);
+    assert.match(card.id, /^T-\d{4}$/, 'T-0290: id gobernable por el ledger');
+    assert.ok(ledger.allTasks().some((t) => t.id === card.id), 'T-0290: visible para allTasks()');
+    assert.equal(card.kind, 'question', 'una pregunta al operador se declara como tal');
+    assert.equal(gateOf(onDisk(intel, card.id)), 'operator', 'T-0269: el gate quedó legible');
+
+    const aged = age(intel, card.id, 200);
+    assert.equal(steward.classify(aged, Date.now(), intel).category, 'awaiting-operator');
+    assert.equal(detectNewDecisions([aged], {}, Date.now()).toNotify.length, 1,
+      'y se le empuja al operador, que es el único punto de toda la alarma');
+  });
+});

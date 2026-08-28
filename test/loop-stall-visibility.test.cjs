@@ -41,6 +41,14 @@ function withTempIntel(fn) {
   const prev = process.env.WEZBRIDGE_INTEL_DIR;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wezbridge-stall-'));
   fs.mkdirSync(path.join(tmp, 'tasks'), { recursive: true });
+  // El sandbox lleva el kinds.json REAL. Sin él, `fleetMinimumGate()` devuelve
+  // null para todo, ninguna rama de gate de create() corre, y la alarma nace
+  // `queued` en vez de `blocked` — o sea que el test mediría comportamiento
+  // derivado del gate en un entorno donde el vocabulario de gates no existe, y
+  // el verde no probaría nada sobre el sistema real. Mismo patrón que
+  // ledger-kind-vocabulary.test.cjs:30, que copia el vocabulario de verdad.
+  fs.copyFileSync(path.join(__dirname, '..', '..', '_intel', 'kinds.json'),
+    path.join(tmp, 'kinds.json'));
   process.env.WEZBRIDGE_INTEL_DIR = tmp;
   delete require.cache[TURN_SRC];
   delete require.cache[LEDGER_SRC];
