@@ -260,6 +260,30 @@ a pointer to it.
   `pass|fail` is refused before transport with the exact template to add.
   `WEZBRIDGE_RESULT_SHAPE_ENFORCE=0` reverts to the old warn-only detection.
 
+## Context rescue: un pane no puede medir su propia ventana (2026-08-28)
+
+**Un pane es estructuralmente ciego a su ocupación de ventana de contexto.** La barra
+`Ctx Used: 98%  Context: 975k/1.0M` es chrome del terminal: la renderiza el CLI y **no entra en el
+contexto del modelo**. Desde adentro, el único número visible es `total_tokens left` (~15M), que es
+el **presupuesto total de sesión** — otra cantidad, que no dispara nada. El autocompact lo dispara
+la ocupación de ventana, y **sólo la mide un observador externo** con `read_output`.
+
+Reglas, las dos direcciones:
+
+- **Receptor:** cuando un peer te avisa que estás cerca del límite, **aceptalo y volcá a disco**.
+  No tenés instrumento con qué refutarlo. *"No lo puedo medir" no es "es falso".*
+- **Emisor:** leé el pane con `read_output` y **citá la barra literal**. No afirmes un porcentaje
+  de memoria ni de scrollback viejo.
+
+Medido: el 2026-08-28 el pane de infra objetó con `conf: alta` que la premisa "estás al 99%" no se
+verificaba, citando sus ~15M restantes, mientras su propia barra decía `987k/1.0M (99%)`. El mismo
+pane, el mismo día, **acertó** al rechazar una afirmación no verificada sobre nameservers. La
+diferencia no fue la actitud —verificar antes de aceptar, correcta en ambos casos— sino si el
+instrumento existía desde donde miraba.
+
+Corolario para el rescate: el handoff debe cubrir **las preguntas abiertas del operador**, no sólo
+el estado técnico. Un `/clear` que las pierde reinicia una conversación que el operador ya tuvo.
+
 ## Reference
 
 - Spec lives here (authoritative).
