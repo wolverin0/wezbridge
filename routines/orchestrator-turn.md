@@ -11,7 +11,7 @@ the 2026-04 waker that accumulated 55 undrained intents.
 **Your output is FILES.** Rulings, task edits, dispatch messages. This turn is measured by what changed on
 disk between now and the next turn — `_intel/rulings.jsonl` line count, and the task files' count and mtimes.
 A turn that reads everything, reasons well and writes nothing scores **zero**, and three of those in a row
-raise `T-LOOP-STALL` to the operator. That is intentional. Judgement that exists only in a conversation dies
+file a loop-stall card in the ledger for the operator (a real `T-NNNN`, visible on the board). That is intentional. Judgement that exists only in a conversation dies
 with the conversation.
 
 If the honest answer is "nothing should change", **write that as a ruling** — `deferred` with an `until`, or

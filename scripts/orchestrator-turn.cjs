@@ -269,36 +269,74 @@ function writeTurn(rec) {
 }
 
 /**
+ * Stable prefix for the loop-stall alert's `origin_key`. The EPISODE suffix is
+ * minted the first time a stall is raised with no open card; that is what lets a
+ * closed alert be raised again instead of silently resurrecting the one the
+ * operator already ruled on.
+ */
+const STALL_ORIGIN = 'orchestrator:loop-stall';
+
+/** First line of an error, for one-line logs. */
+const firstLine = (e) => String(e && e.message).split(String.fromCharCode(10))[0];
+
+/** The fleet ledger lives in a sibling repo; resolved late so a missing checkout is diagnosable. */
+function loadLedger() {
+  return require(path.join(REPO, '..', '_docs-curation', 'ledger.cjs'));
+}
+
+/**
  * Tell the operator the loop is spinning. Written as a normal ledger task so it
  * appears on his board and in the gate like anything else — a bespoke alert
  * channel is one more thing that can be ignored.
+ *
+ * WHY THIS GOES THROUGH ledger.cjs AND NOT fs.writeFileSync (T-0290, 2026-08-28).
+ * It used to write `_intel/tasks/T-LOOP-STALL.json` by hand. `allTasks()` filters
+ * `/^T-\d{4}\.json$/`, so that file was invisible to `list`, to `dashboard`, and
+ * to everything derived from them — the alert of last resort reached nobody, and
+ * it had ALREADY FIRED in production without anyone noticing. The alternative fix
+ * (widening the regex) was rejected by consequence, not taste: `nextId()` does
+ * `parseInt(id.slice(2), 10)` over `allTasks()`, so admitting `T-LOOP-STALL`
+ * makes `Math.max(...)` NaN and the fleet's next card `T-NaN`. A real `T-NNNN`
+ * id also buys the card the whole governed surface — update, lease, rulings,
+ * blocked_by accounting — instead of a second task format nothing else speaks.
+ *
+ * FAIL LOUD, NEVER SILENT: if the ledger cannot be reached the alert is logged
+ * and the turn still exits 30. What must never happen again is a write that
+ * SUCCEEDS and is read by nobody.
+ *
+ * @returns the ledger task, or null when the alert could not be filed.
  */
 function raiseStall(stalls, reasons) {
-  const id = 'T-LOOP-STALL';
-  const file = path.join(INTEL, 'tasks', `${id}.json`);
-  const now = new Date().toISOString();
-  let task;
-  try { task = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { task = null; }
-  if (task && task.state !== 'done' && task.state !== 'cancelled') {
-    task.updated_at = now;
-    task.blocker = `${stalls} consecutive turns have fired and changed nothing. Latest reasons: ${reasons.join(' | ')}`;
-    fs.writeFileSync(file, JSON.stringify(task, null, 2));
-    return;
+  const blocker = `${stalls} consecutive turns fired against a non-green gate and produced no `
+    + `ruling and no task change. Latest reasons: ${reasons.join(' | ')}. This is the failure mode `
+    + 'of the 2026-04 orchestrator-waker, which accumulated 55 undrained intents while looking '
+    + 'healthy. It is surfaced here rather than re-poking forever.';
+  let ledger;
+  try { ledger = loadLedger(); } catch (e) {
+    log(`CANNOT FILE THE STALL ALERT — the fleet ledger is unreachable (${firstLine(e)}). ${blocker}`);
+    return null;
   }
-  fs.writeFileSync(file, JSON.stringify({
-    id,
-    title: 'The orchestrator loop is firing and achieving nothing',
-    goal: 'Decide whether the loop is broken, the work is genuinely blocked, or the trigger is wrong.',
-    kind: 'general',
-    repo: 'wezbridge',
-    state: 'blocked',
-    gate: 'operator',
-    blocker: `${stalls} consecutive turns fired against a non-green gate and produced no ruling and no task change. Latest reasons: ${reasons.join(' | ')}. This is the failure mode of the 2026-04 orchestrator-waker, which accumulated 55 undrained intents while looking healthy. It is surfaced here rather than re-poking forever.`,
-    acceptance_criteria: ['a human decides: fix the loop, unblock the work, or change the trigger'],
-    lease: null,
-    created_at: now,
-    updated_at: now,
-  }, null, 2));
+  try {
+    const open = ledger.list({ state: 'open' })
+      .find((t) => typeof t.origin_key === 'string' && t.origin_key.startsWith(`${STALL_ORIGIN}:`));
+    // Create and re-raise converge on the same update, so the blocker text a
+    // human reads is produced by ONE path and cannot drift between them.
+    const card = open || ledger.create({
+      title: 'The orchestrator loop is firing and achieving nothing',
+      goal: 'Decide whether the loop is broken, the work is genuinely blocked, or the trigger is wrong.',
+      kind: 'general',
+      repo: 'wezbridge',
+      state: 'blocked',
+      'blocked-by': 'operator',
+      origin: `${STALL_ORIGIN}:${new Date().toISOString()}`,
+      criteria: 'a human decides: fix the loop, unblock the work, or change the trigger',
+      next: 'read the last turn records under _intel/turns/, then rule: fix the loop, unblock the work, or change the trigger',
+    });
+    return ledger.update(card.id, { blocker });
+  } catch (e) {
+    log(`CANNOT FILE THE STALL ALERT — the ledger refused the card (${firstLine(e)}). ${blocker}`);
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -367,7 +405,7 @@ function main() {
     log(`DRY RUN | gate=${gateExit} reviews=${reviews} stalls=${stalls} wake=${wake} classes=[${classes.join(', ')}]`);
     reasons.forEach((r, i) => log(`  reason [${classes[i]}]: ${r}`));
     for (const n of noise) log(`  noise (not waking): ${n}`);
-    log(`  would: ${!wake ? 'nothing, no model invoked' : stalls >= STALL_LIMIT ? 'raise T-LOOP-STALL to the operator' : 'poke the wezbridge pane, or run headless if none'}`);
+    log(`  would: ${!wake ? 'nothing, no model invoked' : stalls >= STALL_LIMIT ? 'file the loop-stall alert as a ledger card for the operator' : 'poke the wezbridge pane, or run headless if none'}`);
     return 0;
   }
 
@@ -400,9 +438,15 @@ function main() {
   }
 
   if (stalls >= STALL_LIMIT) {
-    raiseStall(stalls, reasons);
-    writeTurn({ ...base, woke: false, action: 'stall-raised', note: `${stalls} unproductive turns - handed to the operator instead of poking again` });
-    log(`STALLED: ${stalls} turns fired and changed nothing. Raised T-LOOP-STALL for the operator.`);
+    // The card id goes into the turn record and the log: an alert nobody can
+    // NAME is barely better than one nobody can see.
+    const card = raiseStall(stalls, reasons);
+    writeTurn({
+      ...base, woke: false, action: 'stall-raised', stall_task: card ? card.id : null,
+      note: `${stalls} unproductive turns - handed to the operator instead of poking again`
+        + (card ? '' : ' (THE ALERT COULD NOT BE FILED - see the log line above)'),
+    });
+    log(`STALLED: ${stalls} turns fired and changed nothing. ${card ? `Raised ${card.id} for the operator.` : 'The alert could NOT be filed.'}`);
     return 30;
   }
 
@@ -470,4 +514,4 @@ function main() {
 }
 
 if (require.main === module) process.exit(main());
-module.exports = { reviewWakeTargets, reviewTargetsIn, deferralIsLive, classifyWake, classifyEvent, shouldWake, turnWasProductive, STALL_LIMIT };
+module.exports = { reviewWakeTargets, reviewTargetsIn, deferralIsLive, classifyWake, classifyEvent, shouldWake, turnWasProductive, raiseStall, STALL_LIMIT };

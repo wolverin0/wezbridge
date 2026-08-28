@@ -55,16 +55,64 @@ function intelDir() {
     || path.join(__dirname, '..', '..', '_intel');
 }
 
+/**
+ * What the LEDGER counts as a task file — `_docs-curation/ledger.cjs ::
+ * allTasks()`. Mirrored here so the steward can name the difference between
+ * the two views instead of merely having one.
+ *
+ * WHY THE TWO LOADERS DELIBERATELY DIFFER (T-0290, 2026-08-28). The ledger MUST
+ * be strict: `nextId()` does `parseInt(id.slice(2), 10)` over everything
+ * `allTasks()` returns, so admitting a non-numeric id mints `T-NaN` for the
+ * whole fleet. The steward MUST stay lax: it is the fleet's alarm, and an alarm
+ * that narrows its own input fails GREEN on exactly the files nobody else can
+ * see — the one direction this gate must never fail in.
+ *
+ * So they differ, on purpose, in the safe direction: the steward's view is a
+ * SUPERSET of the ledger's, and every file in the gap is reported as an
+ * `ungoverned-task-file` finding. That is the fix for the real defect, which was
+ * never "two criteria" but "the gap was silent": `raiseStall` wrote
+ * `T-LOOP-STALL.json`, the ledger never listed it, the steward read it without
+ * comment, and the alert of last resort reached nobody for three days.
+ */
+const TASK_FILE = /^T-\d{4}\.json$/;
+
+function taskFiles(dir) {
+  try { return fs.readdirSync(dir); } catch { return []; }
+}
+
 function loadTasks() {
   const dir = path.join(intelDir(), 'tasks');
-  let files;
-  try { files = fs.readdirSync(dir); } catch { return []; }
   const out = [];
-  for (const f of files) {
+  for (const f of taskFiles(dir)) {
     if (!f.endsWith('.json')) continue;
     try { out.push(JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'))); } catch { /* skip unreadable */ }
   }
   return out;
+}
+
+/**
+ * The gap between the two views: files the steward reads that the ledger cannot
+ * govern. Never silent — that silence WAS the defect.
+ */
+function auditTaskFiles(dir = intelDir(), now = Date.now()) {
+  const tasksDir = path.join(dir, 'tasks');
+  const findings = [];
+  for (const f of taskFiles(tasksDir)) {
+    if (!f.endsWith('.json') || TASK_FILE.test(f)) continue;
+    let age = 0;
+    try { age = hours(now - fs.statSync(path.join(tasksDir, f)).mtimeMs); } catch { /* unstattable */ }
+    findings.push({
+      category: 'ungoverned-task-file',
+      id: f.replace(/\.json$/, ''),
+      repo: 'fleet',
+      age_hours: age,
+      owner: null,
+      title: f,
+      why: `tasks/${f} is not a T-NNNN.json card, so the ledger cannot list, update, lease or rule on it. `
+        + 'Whatever wrote it bypassed ledger.cjs create; re-file it as a real card or delete it.',
+    });
+  }
+  return findings;
 }
 
 /** Rulings feed the W2 lint. Unparseable lines are skipped, absent file is zero. */
@@ -375,6 +423,8 @@ function audit(tasks, now = Date.now(), dir = intelDir()) {
     // Proposals that never became tasks (2026-08-20): same enforcement loop,
     // read from the beacon stream instead of the ledger.
     ...auditProposals(dir, now),
+    // Files in tasks/ that neither loader governs (T-0290).
+    ...auditTaskFiles(dir, now),
   ];
   // Operator-owed items first: those are the ones that block other people's work.
   // routine-silent ranks high because a routine that stopped firing invalidates
@@ -386,7 +436,10 @@ function audit(tasks, now = Date.now(), dir = intelDir()) {
     // builder session; an unlanded value is a live near-miss. Both outrank
     // "nobody picked this up yet".
     'dispatch-unspecced': 8, 'ruling-unlanded': 9, 'proposal-unledgered': 10,
-    'blocked-not-gated': 11, idle: 12,
+    // An ungoverned file outranks backlog noise: it is invisible to the board
+    // by construction, so nothing else will ever raise it.
+    'ungoverned-task-file': 11,
+    'blocked-not-gated': 12, idle: 13,
   };
   const order = (f) => (rank[f.category] === undefined ? 99 : rank[f.category]);
   findings.sort((a, b) => (order(a) - order(b)) || (b.age_hours - a.age_hours));
@@ -414,7 +467,7 @@ function render(report) {
 }
 
 module.exports = {
-  classify, audit, render, RULES, loadTasks, loadRulings,
+  classify, audit, render, RULES, loadTasks, loadRulings, auditTaskFiles, TASK_FILE,
   lastTransition, lastProgress, ownProgress, buildContext, auditProposals,
 };
 
