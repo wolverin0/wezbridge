@@ -52,6 +52,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { latestRulingWhere } = require('../src/rulings.cjs');
 
 const HERE = __dirname;
 const REPO = path.join(HERE, '..');
@@ -206,8 +207,9 @@ function reviewWakeTargets({ tasks, rulings, now }) {
   return cards.filter((t) => {
     // Latest applicable line wins, so a deferral is revised by appending —
     // the same rule steward-gate uses, deliberately.
-    const applicable = rulings.filter((r) => r && r.task === t.id);
-    const hit = [...applicable].reverse().find((r) => deferralIsLive(r, now));
+    // Mismo criterio de orden que el gate y el lint, importado y no recopiado
+    // (T-0294): tres copias del mismo criterio vuelven a divergir.
+    const hit = latestRulingWhere(rulings, t.id, (r) => deferralIsLive(r, now));
     return !hit;
   }).map((t) => t.id);
 }

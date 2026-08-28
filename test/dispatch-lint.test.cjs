@@ -139,9 +139,41 @@ test('pre-epoch rulings are never retro-flagged', () => {
 test('latest ruling wins: a corrected re-append clears the finding', () => {
   const bad = ruling({ at: iso(NOW - H(3)) });
   const fix = ruling({ at: iso(NOW - H(1)), value_landed_in: 'yolo26/config/pilot.env' });
+  // El caso real: la correccion se appendea DESPUES y ademas lleva `at` mayor.
+  // Los dos criterios coinciden aca, y es la forma que tienen el 100% de las
+  // tareas del archivo vivo.
   assert.equal(lintRulings([bad, fix], NOW).length, 0);
-  // and the reverse order in the file changes nothing — `at` decides
-  assert.equal(lintRulings([fix, bad], NOW).length, 0);
+});
+
+// ESTA ASERCION CAMBIO DE SENTIDO EN T-0294, y es la parte mas contestable del
+// cambio, asi que queda escrita en vez de reescrita en silencio.
+//
+// Antes decia: `lintRulings([fix, bad])` da 0 — "el orden invertido en el
+// archivo no cambia nada, decide `at`". O sea que este archivo era el UNICO
+// lugar donde el criterio de timestamp estaba afirmado como requisito, mientras
+// steward-gate y orchestrator-turn usaban orden de archivo sobre el MISMO
+// rulings.jsonl. T-0294 existe para que haya UN criterio, y el elegido es el
+// orden de escritura:
+//
+//  · `rulings.jsonl` es append-only: appendear ES decidir, asi que el orden del
+//    archivo es el orden real de las decisiones.
+//  · 103 de 248 valores de `at` (42%) terminan en `:00Z` — tipeados a mano por
+//    un agente, no medidos. Ya hay UNA tarea con dos rulings del mismo `at`,
+//    donde el orden por timestamp esta indefinido y cae de vuelta en el del
+//    archivo.
+//  · La unica inversion real del archivo es una linea appendeada con `at` mas
+//    viejo. Por timestamp esa decision NUEVA perderia contra una escrita antes,
+//    que es la direccion equivocada del error.
+//
+// Medido: sobre los rulings reales los dos criterios dan hallazgos IDENTICOS
+// (0 y 0), asi que este cambio no mueve nada vivo. Si el operador prefiere el
+// timestamp, se revierte cambiando UNA funcion en src/rulings.cjs — que es
+// justamente lo que este diseno compra.
+test('T-0294: con el archivo fuera de orden decide la ULTIMA LINEA ESCRITA, no `at`', () => {
+  const bad = ruling({ at: iso(NOW - H(3)) });
+  const fix = ruling({ at: iso(NOW - H(1)), value_landed_in: 'yolo26/config/pilot.env' });
+  assert.equal(lintRulings([fix, bad], NOW).length, 1,
+    'la ultima linea escrita es `bad`, que cambia un valor y no nombra archivo');
 });
 
 // ---------------------------------------------------------------------------

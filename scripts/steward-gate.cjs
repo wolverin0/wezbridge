@@ -28,6 +28,8 @@
  *              3 UNKNOWN (could not read the inputs — NEVER reported as 0)
  */
 const fs = require('node:fs');
+const { latestRulingWhere } = require('../src/rulings.cjs');
+
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
@@ -133,8 +135,9 @@ function evaluate({ findings, rulings, now, deadlines = DEADLINES }) {
     if (limit === undefined || !Number.isFinite(limit)) continue;   // not gated
     if (f.age_hours < limit) continue;                              // not yet due
 
-    const applicable = rulings.filter((r) => r && r.task === f.id);
-    const hit = [...applicable].reverse().find((r) => rulingCovers(r, f, now));
+    // El criterio de "cual ruling es el mas reciente" vive en src/rulings.cjs y
+    // en un solo lugar (T-0294): tres piezas lo interpretaban por su cuenta.
+    const hit = latestRulingWhere(rulings, f.id, (r) => rulingCovers(r, f, now));
     (hit ? covered : unruled).push(hit ? { finding: f, ruling: hit } : f);
   }
   return { unruled, covered, verdict: unruled.length ? 'RED' : 'GREEN' };

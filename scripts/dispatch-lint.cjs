@@ -29,6 +29,8 @@
  */
 
 /** Only work born after the lints exist is linted. */
+const { latestRulingWhere, taskIds } = require('../src/rulings.cjs');
+
 const LINT_EPOCH_MS = Date.parse('2026-08-16T00:00:00Z');
 
 /** Task kinds/titles that mean "this ships an interface". */
@@ -82,16 +84,29 @@ function lintSpecRefs(tasks, now) {
  * path-looking token in `why`.
  */
 function lintRulings(rulings, now) {
-  const latest = new Map();
-  for (const r of rulings) {
-    if (!r || !r.task) continue;
-    const at = Date.parse(r.at || '');
-    if (!Number.isFinite(at) || at < LINT_EPOCH_MS) continue;
-    const prev = latest.get(r.task);
-    if (!prev || at >= prev.at_ms) latest.set(r.task, { ...r, at_ms: at });
+  // T-0294: esto ordenaba por `at` mientras el gate y el waker ordenaban por
+  // orden de archivo — tres interpretes de "el mas reciente" sobre el mismo
+  // archivo. El criterio unico vive en src/rulings.cjs y es el orden de
+  // ESCRITURA: `rulings.jsonl` es append-only, y el 42% de los `at` esta
+  // tipeado a mano por un agente (redondeado a `:00Z`), asi que ordenar por ese
+  // reloj es ordenar por ruido encima del orden verdadero.
+  //
+  // La epoca sigue siendo un FILTRO de alcance, no el criterio de orden: se
+  // busca la ultima linea ESCRITA que ademas sea post-epoca. La semantica
+  // propia de este lint no cambia — sigue siendo "la mas reciente, y despues la
+  // evaluo": un ruling revisado por otro posterior deja de contar, y una linea
+  // vieja no lo rescata.
+  const postEpoch = (r) => {
+    const at = Date.parse((r && r.at) || '');
+    return Number.isFinite(at) && at >= LINT_EPOCH_MS;
+  };
+  const latest = [];
+  for (const task of taskIds(rulings)) {
+    const r = latestRulingWhere(rulings, task, postEpoch);
+    if (r) latest.push({ ...r, at_ms: Date.parse(r.at) });
   }
   const out = [];
-  for (const r of latest.values()) {
+  for (const r of latest) {
     const why = String(r.why || '');
     if (!VALUE_CHANGE_RE.test(why)) continue;
     if (r.value_landed_in) continue;
