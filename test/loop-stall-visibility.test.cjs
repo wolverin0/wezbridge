@@ -144,7 +144,7 @@ test('POR QUÉ el id es T-NNNN: ensanchar el regex de allTasks() envenena nextId
   // próxima tarjeta de TODA la flota se llamaría `T-NaN`. El costo de un
   // segundo formato de id no es cosmético: rompe el asignador.
   withTempIntel(({ intel, ledger }) => {
-    ledger.create({ title: 'a', goal: 'b', 'blocked-by': 'agent' });
+    ledger.create({ title: 'a', goal: 'b', 'blocked-by': 'agent', repo: 'wezbridge' });
     const rogue = { id: 'T-LOOP-STALL', title: 'x', goal: 'y', kind: 'general', state: 'blocked', blocked_by: 'operator' };
     fs.writeFileSync(path.join(intel, 'tasks', 'T-LOOP-STALL.json'), JSON.stringify(rogue));
 
@@ -172,8 +172,8 @@ test('POR QUÉ el id es T-NNNN: ensanchar el regex de allTasks() envenena nextId
 
 test('la vista del steward es un superconjunto de la del ledger, nunca un conjunto distinto', () => {
   withTempIntel(({ intel, ledger }) => {
-    ledger.create({ title: 'a', goal: 'b', 'blocked-by': 'agent' });
-    ledger.create({ title: 'c', goal: 'd', 'blocked-by': 'agent' });
+    ledger.create({ title: 'a', goal: 'b', 'blocked-by': 'agent', repo: 'wezbridge' });
+    ledger.create({ title: 'c', goal: 'd', 'blocked-by': 'agent', repo: 'wezbridge' });
     fs.writeFileSync(path.join(intel, 'tasks', 'T-LOOP-STALL.json'),
       JSON.stringify({ id: 'T-LOOP-STALL', title: 'x', goal: 'y', state: 'blocked', blocked_by: 'operator' }));
 
@@ -192,7 +192,7 @@ test('la vista del steward es un superconjunto de la del ledger, nunca un conjun
 
 test('la diferencia entre los dos cargadores se NOMBRA: nada se descarta en silencio', () => {
   withTempIntel(({ intel, ledger }) => {
-    ledger.create({ title: 'a', goal: 'b', 'blocked-by': 'agent' });
+    ledger.create({ title: 'a', goal: 'b', 'blocked-by': 'agent', repo: 'wezbridge' });
     fs.writeFileSync(path.join(intel, 'tasks', 'T-LOOP-STALL.json'), JSON.stringify({ id: 'T-LOOP-STALL' }));
 
     const steward = require('../scripts/fleet-steward.cjs');

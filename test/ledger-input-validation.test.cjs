@@ -109,15 +109,37 @@ test('create RECHAZA una tarjeta sin repo', () => {
   });
 });
 
-test('create RECHAZA una tarjeta sin criterios de aceptación', () => {
+/**
+ * DECISIÓN PENDIENTE DEL OPERADOR, pineada acá para que no se pierda en prosa.
+ *
+ * El argumento para exigir criterios en `create()` es bueno: una tarjeta sin
+ * ellos nace INCERRABLE, porque `update --state done` exige `--evidence` y la
+ * evidencia se mide CONTRA los criterios. Con ninguno no hay contra qué medir.
+ *
+ * PERO exigirlos rompe el camino de intents del OPERADOR, y esto está MEDIDO,
+ * no supuesto: `clawtrol-bridge.cjs:411` empuja `--criteria` sólo si el payload
+ * trae `acceptance`, así que con el fail-closed puesto **4 tests de
+ * clawtrol-bridge se pusieron en rojo, y no son fixtures — es la ruta viva por
+ * la que el operador abre trabajo**.
+ *
+ * Cambiar eso cambia SU flujo de trabajo, y ésa no es una decisión del ledger
+ * ni de un agente. El número que la acompaña: 16 de 49 tarjetas abiertas hoy no
+ * tienen criterios.
+ *
+ * Este test fija el comportamiento ACTUAL. Si alguien lo pone fail-closed, se
+ * pone rojo y lee acá por qué se decidió lo contrario, en vez de descubrirlo
+ * cuando el operador no pueda abrir una tarjeta.
+ */
+test('DECISIÓN ABIERTA: create ACEPTA sin criterios — exigirlos rompe el camino del operador', () => {
   sandbox((intel) => {
     const r = cli(intel, ['create', '--title', 'sin medida', '--goal', 'x',
       '--repo', 'wezbridge', '--blocked-by', 'agent']);
-    assert.equal(r.ok, false,
-      'sin criterios la tarjeta no se puede cerrar con evidencia: no hay contra qué medirla, '
-      + 'y `update --state done` ya exige --evidence justamente para eso');
-    assert.match(r.stderr, /criteri/i);
-    assert.equal(cards(intel).length, 0);
+    assert.equal(r.ok, true,
+      'hoy se acepta a propósito: el fail-closed rompe clawtrol-bridge, que es cómo el '
+      + 'operador abre trabajo. La decisión de cambiarlo es suya, no del ledger');
+    assert.equal(cards(intel).length, 1);
+    assert.deepEqual(cards(intel)[0].acceptance_criteria, [],
+      'nace sin criterios y por lo tanto incerrable: el hueco es REAL y queda visible acá');
   });
 });
 
