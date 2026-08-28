@@ -100,7 +100,14 @@ function detectDecisions(body) {
  */
 function detectEvidence(body) {
   const items = [];
-  for (const m of String(body).matchAll(/^\s*-\s+.+?:\s*(?:pass(?:ed)?|fail(?:ed)?)\b\s*[—–-]{1,2}\s*(\S.*)$/gim)) {
+  // El bullet es OPCIONAL y `:` cuenta como separador, igual que en weakPasses.
+  // Antes este regex exigía bullet `-` y no aceptaba `:`, así que sobre el MISMO
+  // texto un lector veía la evidencia y este contaba cero — medido en vivo el
+  // 2026-08-27 sobre un result cuyas líneas sí la traían. El contador existe
+  // para decir "criteria=5, evidence=0 es un result que pide que le crean";
+  // sub-contar por un separador convierte esa señal en una acusación contra
+  // quien cumplió, que es peor que no tener contador.
+  for (const m of String(body).matchAll(/^\s*[-*]?\s*.+?:\s*(?:pass(?:ed)?|fail(?:ed)?)\b\s*[—–:-]{1,2}\s*(\S.*)$/gim)) {
     items.push(m[1].trim());
   }
   return { count: items.length, items };
