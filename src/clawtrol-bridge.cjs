@@ -437,7 +437,25 @@ async function applyIntent(intent) {
     // intent.task_origin_key ("...:task:<T-NNNN>").
     const taskId = resolveTaskId(intent);
     if (!taskId) return { ...base, result: { ...base.result, reason: `${intent.kind} requires payload.task_id or a task_origin_key ending :task:<T-NNNN>` } };
-    const target = intent.kind === 'approve' ? 'ready' : intent.kind === 'retry' ? 'queued' : 'cancelled';
+    // `retry` apunta a `ready`, NO a `queued` (T-0292). Medido, no elegido por
+    // gusto: `queued` no es destino de ninguna arista del FSM, asi que todo
+    // retry fallaba con "illegal transition ... (allowed: ready)" — el propio
+    // ledger nombraba la respuesta en su mensaje de error.
+    //
+    // POR QUE `ready` Y NO ABRIR `<estado> -> queued`:
+    //  · `ledger.cjs:427` incrementa `attempt` SOLO en failed -> ready, y es el
+    //    unico escritor del campo despues de la creacion. clawtrol le devuelve
+    //    ese contador al operador (:493) y fleet-status lo renderiza (:103). Un
+    //    segundo camino de reintento por `queued` no lo tocaria, asi que los
+    //    reintentos del operador quedarian fuera del tablero que este mismo
+    //    archivo dibuja — la misma familia de dropper silencioso que T-0282.
+    //  · `queued` es el estado de nacimiento (`ledger.cjs:288`) y no tiene
+    //    aristas de entrada a proposito: significa "todavia no la triage nadie".
+    //    Volver ahi borraria el hecho de que la tarjeta ya fue trabajada.
+    //  · Abrir `-> queued` pediria aristas desde 5 estados para no ganar nada:
+    //    `dispatchable()` ya toma `ready` y `queued` por igual.
+    // Desde `running` sigue rechazando, y esta bien: esa tarjeta tiene dueno.
+    const target = intent.kind === 'approve' ? 'ready' : intent.kind === 'retry' ? 'ready' : 'cancelled';
     const r = await runLedger(['update', taskId, '--state', target, '--note', `${intent.kind} via clawtrol intent ${intent.id}`]);
     if (!r.ok || /ledger error/i.test(r.stdout + r.stderr)) {
       return { ...base, result: { ...base.result, reason: `illegal transition or ledger error: ${(r.stderr || r.stdout).slice(0, 300)}` } };
