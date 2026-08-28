@@ -362,6 +362,29 @@ function runLedger(args) {
   });
 }
 
+/**
+ * La tarjeta que el ledger REALMENTE escribio, parseada de su stdout (el CLI
+ * imprime `JSON.stringify(task, null, 2)`).
+ *
+ * T-0296: antes habia dos formas de contestar "en que estado quedo" y ninguna
+ * miraba la respuesta completa — `create_task` la scrapeaba con un regex sobre
+ * stdout, y el camino de transicion devolvia directamente `target`, o sea el
+ * estado que el intent PIDIO. Confundir la intencion con el resultado es lo
+ * mismo que T-0293 cerro en el retorno de `update()`, pero una capa mas arriba:
+ * en lo que el operador LEE, que es la base de su proxima decision. Y el ledger
+ * SI fuerza estados: un kind gateado nace `blocked` sin importar el pedido.
+ *
+ * Devuelve null cuando no hay JSON legible. Ese null se reporta tal cual: "no
+ * se" es honesto, repetir el pedido es inventar, y un estado inventado es peor
+ * que ninguno porque el operador no puede distinguirlo de uno medido.
+ */
+function parseLedgerTask(stdout) {
+  const text = String(stdout || '');
+  const i = text.indexOf('{');
+  if (i < 0) return null;
+  try { return JSON.parse(text.slice(i)); } catch { return null; }
+}
+
 /** Ledger task id from payload.task_id or the ":task:<T-NNNN>" tail of task_origin_key. */
 function resolveTaskId(intent) {
   const p = intent.payload || {};
@@ -411,9 +434,8 @@ async function applyIntent(intent) {
       if (criteria) args.push('--criteria', criteria);
       const r = await runLedger(args);
       if (!r.ok) return { ...base, result: { ...base.result, reason: `ledger create failed: ${r.stderr.slice(0, 300)}` } };
-      const idMatch = r.stdout.match(/"id":\s*"(T-\d+)"/);
-      const stateMatch = r.stdout.match(/"state":\s*"(\w+)"/);
-      const taskId = idMatch ? idMatch[1] : null;
+      const created = parseLedgerTask(r.stdout);
+      const taskId = created ? created.id : null;
       if (p.kind === 'question' && taskId) {
         appendTaskMessage({
           task_id: taskId,
@@ -427,7 +449,7 @@ async function applyIntent(intent) {
       return {
         ...base, status: 'applied',
         result: {
-          ...base.result, task_id: taskId, task_state: stateMatch ? stateMatch[1] : null,
+          ...base.result, task_id: taskId, task_state: created ? created.state : null,
           ...(p.priority ? { note: 'priority not persisted (ledger v1 has no priority field)' } : {}),
         },
       };
@@ -467,13 +489,17 @@ async function applyIntent(intent) {
     // Sigue siendo `applied` a proposito: pedir un estado que ya se tiene es
     // benigno, y devolver error ahi seria un guard disparando sobre lo correcto.
     // Lo que cambia es que ahora lo DICE.
-    const unchanged = /"state_unchanged":\s*true/.test(r.stdout);
+    // T-0296: el estado se lee de la RESPUESTA, no de `target`. Y el no-op sale
+    // de `state_unchanged`, la senal que el ledger declara desde T-0293, en vez
+    // de inferirlo con un regex sobre el mismo texto.
+    const moved = parseLedgerTask(r.stdout);
+    const unchanged = Boolean(moved && moved.state_unchanged === true);
     return {
       ...base,
       status: 'applied',
       result: {
-        ...base.result, task_id: taskId, task_state: target,
-        ...(unchanged ? { note: `already in "${target}" — nothing moved` } : {}),
+        ...base.result, task_id: taskId, task_state: moved ? moved.state : null,
+        ...(unchanged ? { note: `already in "${moved.state}" — nothing moved` } : {}),
       },
     };
   } catch (e) {
