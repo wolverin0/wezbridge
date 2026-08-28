@@ -96,7 +96,7 @@ const GATED_KIND = 'infra-migration';
 test('la rama de FLEET MINIMUM persiste un gate LEGIBLE, no sólo prosa en blocker', () => {
   sandbox(({ intel, ledger }) => {
     const made = ledger.create({
-      title: 'mover el NAS viejo', goal: 'retirar el host', kind: GATED_KIND, repo: 'wezbridge',
+      title: 'mover el NAS viejo', goal: 'retirar el host', kind: GATED_KIND, repo: 'wezbridge', criteria: 'algo medible',
     });
     const card = onDisk(intel, made.id);
 
@@ -116,7 +116,7 @@ test('la rama de FLEET MINIMUM persiste un gate LEGIBLE, no sólo prosa en block
 test('el steward la clasifica awaiting-operator, NO blocked-not-gated', () => {
   sandbox(({ intel, ledger }) => {
     const made = ledger.create({
-      title: 'mover el NAS viejo', goal: 'retirar el host', kind: GATED_KIND, repo: 'wezbridge',
+      title: 'mover el NAS viejo', goal: 'retirar el host', kind: GATED_KIND, repo: 'wezbridge', criteria: 'algo medible',
     });
     age(intel, made.id, 200);
     const found = steward.classify(onDisk(intel, made.id), Date.now(), intel);
@@ -131,7 +131,7 @@ test('el steward la clasifica awaiting-operator, NO blocked-not-gated', () => {
 test('el board y decision-push la ven como decisión del operador', () => {
   sandbox(({ intel, ledger }) => {
     const made = ledger.create({
-      title: 'abrir un puerto al exterior', goal: 'exponer el panel', kind: 'infra-exposure', repo: 'wezbridge',
+      title: 'abrir un puerto al exterior', goal: 'exponer el panel', kind: 'infra-exposure', repo: 'wezbridge', criteria: 'algo medible',
     });
     const card = onDisk(intel, made.id);
     const { toNotify } = detectNewDecisions([card], {}, Date.now());
@@ -162,7 +162,7 @@ test('la rama de GRAPH CONTRACT sigue intacta — el arreglo no puede pisarla', 
 test('un kind SIN gate no gana uno: el guard no puede disparar sobre lo correcto', () => {
   sandbox(({ intel, ledger }) => {
     const made = ledger.create({
-      title: 'arreglar un watcher', goal: 'que ande', kind: 'tooling-fix', repo: 'wezbridge',
+      title: 'arreglar un watcher', goal: 'que ande', kind: 'tooling-fix', repo: 'wezbridge', criteria: 'algo medible',
       'blocked-by': 'agent',
     });
     const card = onDisk(intel, made.id);
@@ -177,7 +177,7 @@ test('gate y blocked_by siguen siendo campos DISTINTOS (criterio 4 de la tarjeta
     // gate = "esta clase de trabajo requiere al operador POR CONTRATO"
     // blocked_by = "qué espera HOY". Mezclarlos rompe la cuenta de espera-al-operador.
     const made = ledger.create({
-      title: 'rotar una credencial', goal: 'cambiar la clave', kind: 'credential-change', repo: 'wezbridge',
+      title: 'rotar una credencial', goal: 'cambiar la clave', kind: 'credential-change', repo: 'wezbridge', criteria: 'algo medible',
     });
     const card = onDisk(intel, made.id);
     assert.equal(gateOf(card), 'operator');
@@ -223,7 +223,7 @@ test('el gate se deriva del KIND aunque la tarjeta nazca declarada en blocked', 
   // el estado responde a otra cosa, y volver a acoplarlos tiene que ponerse rojo.
   sandbox(({ intel, ledger }) => {
     const made = ledger.create({
-      title: 'nace bloqueada a propósito', goal: 'y', kind: GATED_KIND, repo: 'wezbridge',
+      title: 'nace bloqueada a propósito', goal: 'y', kind: GATED_KIND, repo: 'wezbridge', criteria: 'algo medible',
       state: 'blocked', 'blocked-by': 'operator',
     });
     const card = onDisk(intel, made.id);

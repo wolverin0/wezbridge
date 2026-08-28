@@ -51,7 +51,7 @@ const card = (dir, id) => JSON.parse(fs.readFileSync(path.join(dir, 'tasks', `${
 /** Una tarjeta recién creada, caminada hasta `review` (único camino legal a done). */
 function upToReview(dir) {
   const out = run(dir, ['create', '--title', 'probe', '--goal', 'probe',
-    '--kind', 'tooling-fix', '--blocked-by', 'agent']);
+    '--kind', 'tooling-fix', '--blocked-by', 'agent', '--repo', 'wezbridge', '--criteria', 'algo medible']);
   const id = JSON.parse(out).id;
   run(dir, ['update', id, '--state', 'ready', '--blocked-by', 'agent']);
   run(dir, ['update', id, '--state', 'running', '--blocked-by', 'agent']);

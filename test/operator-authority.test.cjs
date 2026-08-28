@@ -39,7 +39,7 @@ function withTempIntel(fn) {
 
 test('crear una tarjeta con decision del operador deja el registro corroborante', () => {
   withTempIntel((ledger, dir) => {
-    const task = ledger.create({
+    const task = ledger.create({ repo: 'wezbridge', criteria: 'algo medible',
       title: 'limpiar filas en una base de terceros',
       goal: 'objetivo verificable',
       'blocked-by': 'agent',
@@ -56,11 +56,11 @@ test('crear una tarjeta con decision del operador deja el registro corroborante'
 
 test('operatorDecisionsFor encuentra la corroboracion por id de tarjeta', () => {
   withTempIntel((ledger) => {
-    const task = ledger.create({
+    const task = ledger.create({ repo: 'wezbridge', criteria: 'algo medible',
       title: 'con autoridad', goal: 'g', 'blocked-by': 'agent',
       'operator-decision': 'autorizado en vivo',
     });
-    const otra = ledger.create({ title: 'sin autoridad', goal: 'g', 'blocked-by': 'agent' });
+    const otra = ledger.create({ repo: 'wezbridge', criteria: 'algo medible', title: 'sin autoridad', goal: 'g', 'blocked-by': 'agent' });
     assert.strictEqual(ledger.operatorDecisionsFor(task.id).length, 1);
     // Una tarjeta que NO trae decision no debe parecer autorizada.
     assert.deepStrictEqual(ledger.operatorDecisionsFor(otra.id), []);

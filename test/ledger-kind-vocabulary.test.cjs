@@ -36,6 +36,7 @@ function createTask(dir, kind) {
     // --blocked-by es obligatorio desde T-0183 (assertBlockedBy falla cerrado);
     // este test mide el vocabulario de KINDS, no el de blocked_by.
     LEDGER, 'create', '--title', 'probe', '--goal', 'probe', '--kind', kind, '--blocked-by', 'agent',
+    '--repo', 'wezbridge', '--criteria', 'algo medible',
   ], { env: { ...process.env, WEZBRIDGE_INTEL_DIR: dir }, encoding: 'utf8', stdio: 'pipe' });
 }
 
