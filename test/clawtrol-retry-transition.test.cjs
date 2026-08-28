@@ -161,3 +161,24 @@ test('el estado que clawtrol REPORTA es el que quedó en disco', async () => {
 });
 
 test.after(() => fs.rmSync(TMP, { recursive: true, force: true }));
+
+test('T-0293: clawtrol DICE cuando la tarjeta ya estaba en el estado pedido', async () => {
+  // Cierra el silencio que hacía que el retry roto pareciera funcionar. Sigue
+  // siendo `applied` —pedir un estado que ya se tiene es benigno— pero ahora el
+  // operador ve que nada se movió, en vez de leer un éxito indistinguible.
+  const id = cardInState('T-1800', 'ready');
+  const r = await retry(id, 'unchanged');
+  assert.strictEqual(r.status, 'applied', `un no-op benigno no puede volverse error: ${r.result && r.result.reason}`);
+  assert.strictEqual(card(id).state, 'ready');
+  assert.match(String(r.result.note || ''), /nothing moved/,
+    'clawtrol le reportó al operador un "applied" liso sobre una tarjeta que no se movió');
+});
+
+test('T-0293: una transición REAL no lleva esa nota', async () => {
+  const id = cardInState('T-1900', 'failed');
+  const r = await retry(id, 'moved');
+  assert.strictEqual(r.status, 'applied');
+  assert.strictEqual(card(id).state, 'ready');
+  assert.strictEqual(r.result.note, undefined,
+    'si la nota apareciera también en un movimiento real no distinguiría nada');
+});

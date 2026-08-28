@@ -460,7 +460,22 @@ async function applyIntent(intent) {
     if (!r.ok || /ledger error/i.test(r.stdout + r.stderr)) {
       return { ...base, result: { ...base.result, reason: `illegal transition or ledger error: ${(r.stderr || r.stdout).slice(0, 300)}` } };
     }
-    return { ...base, status: 'applied', result: { ...base.result, task_id: taskId, task_state: target } };
+    // T-0293: el ledger ahora DECLARA cuando el estado pedido era el que la
+    // tarjeta ya tenia. Sin esto, el operador ve `applied` sobre una tarjeta que
+    // no se movio y no tiene forma de saberlo — el silencio que hacia que el
+    // retry roto de T-0292 pareciera funcionar justo donde no hacia nada.
+    // Sigue siendo `applied` a proposito: pedir un estado que ya se tiene es
+    // benigno, y devolver error ahi seria un guard disparando sobre lo correcto.
+    // Lo que cambia es que ahora lo DICE.
+    const unchanged = /"state_unchanged":\s*true/.test(r.stdout);
+    return {
+      ...base,
+      status: 'applied',
+      result: {
+        ...base.result, task_id: taskId, task_state: target,
+        ...(unchanged ? { note: `already in "${target}" — nothing moved` } : {}),
+      },
+    };
   } catch (e) {
     return { ...base, result: { ...base.result, reason: `apply crashed: ${String(e && e.message).slice(0, 200)}` } };
   }
