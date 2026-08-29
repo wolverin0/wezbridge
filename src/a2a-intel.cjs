@@ -311,6 +311,32 @@ function closingRulingAfterMove(corr, card, read) {
   return hit;
 }
 
+/**
+ * El vocabulario cerrado de kinds, o null si no se puede establecer.
+ *
+ * Acepta las dos formas que el registro tuvo en la practica — lista pelada y
+ * objeto con `kinds` — porque adivinar mal la forma seria peor que no mirar:
+ * daria un vocabulario vacio y refutaria TODOS los kinds. Devolver null ante
+ * cualquier duda es lo que mantiene el gate fail-open.
+ */
+function readKnownKinds(read) {
+  let raw;
+  try { raw = read(path.join(intelDir(), 'kinds.json')); } catch { return null; }
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { return null; }
+  const list = Array.isArray(parsed)
+    ? parsed
+    : (Array.isArray(parsed && parsed.kinds) ? parsed.kinds
+      : (parsed && typeof parsed.kinds === 'object' && parsed.kinds ? Object.keys(parsed.kinds)
+        : (parsed && typeof parsed === 'object' ? null : null)));
+  if (!Array.isArray(list) || !list.length) return null;
+  const names = list
+    .map((k) => (typeof k === 'string' ? k : (k && typeof k === 'object' ? k.name || k.kind || k.id : null)))
+    .filter((k) => typeof k === 'string' && k.trim())
+    .map((k) => k.trim());
+  return names.length ? new Set(names) : null;
+}
+
 function checkDispatchGate({ corr, type, readFile }) {
   if (type !== 'request') return { allowed: true };
   if (!/^T-\d{4}$/.test(String(corr || ''))) return { allowed: true };
@@ -322,6 +348,30 @@ function checkDispatchGate({ corr, type, readFile }) {
   const state = String(card.state || '');
   const blocker = String(card.blocker || '').trim();
   const dispatchable = ['ready', 'queued', 'running', 'review'].includes(state);
+
+  // Un kind fuera del vocabulario cerrado NO MATCHEA NINGUNA REGLA, y por eso
+  // no pasa por ningun gate de contrato: es el unico camino de despacho sin
+  // control. Medido el 2026-08-29 con T-0262 (kind "data-fix"), que un
+  // orchestrator headless despacho como DELETE sobre la DB de un TERCERO. El
+  // test R.2 de intel-registries venia gritandolo desde el 25-ago; nadie lo
+  // conecto con el despacho porque el gate no lo miraba.
+  //
+  // Se chequea ANTES del estado a proposito: si la tarjeta no esta gobernada,
+  // que este "ready" es irrelevante. Fail-open si kinds.json no se puede leer
+  // o no se entiende — un gate que falla cerrado sobre su propio registro
+  // paraliza el fleet, que es peor que el agujero que tapa.
+  const kind = String(card.kind || '').trim();
+  if (dispatchable && kind) {
+    const known = readKnownKinds(read);
+    if (known && !known.has(kind)) {
+      return {
+        allowed: false,
+        state,
+        reason: `card ${corr} declares kind "${kind}", which is NOT in kinds.json — it matches no contract rule, so it passes no gate. Dispatching it is dispatching through the one unchecked path. Either add "${kind}" to the closed vocabulary (an operator decision: it defines what the kind is allowed to do) or retag the card to a governed kind`,
+      };
+    }
+  }
+
   if (dispatchable && !blocker) {
     const closed = closingRulingAfterMove(corr, card, read);
     if (!closed) return { allowed: true };

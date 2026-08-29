@@ -25,6 +25,7 @@
  */
 
 const fs = require('node:fs');
+const { composerHoldsForeignText, inputBoxContent } = require('./verified-send.cjs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
@@ -100,6 +101,41 @@ function paneContextPct(panes, repo) {
     if (proj !== want.slice(1) && !proj.endsWith(want)) continue;
     const m = CTX_RE.exec(String(p.lastLines || p.text || ''));
     if (m) return Number(m[1]);
+  }
+  return null;
+}
+
+/**
+ * El composer de este repo retiene texto que el pane NO envio todavia.
+ *
+ * MEDIDO 2026-08-29: tres panes tenian instrucciones del operador sin enviar y
+ * el waker reporto "finished work" por cada una. El pane no habia terminado ese
+ * trabajo: nunca lo habia recibido. Decir "termino" sobre un pane que no
+ * proceso nada es la ficcion que el comentario del poke ya prohibe.
+ *
+ * Lee el MISMO lastLines que paneRunsBypass y paneContextPct. Precondicion
+ * verificada contra las 12 panes vivas: son las ultimas 20 lineas NO vacias
+ * (pane-discovery:130) y la linea del composer entra en las 8 panes de agente.
+ *
+ * Fail-open (null) si no hay pane, no hay texto o el composer esta limpio:
+ * un rider que se cuelga siempre se aprende a ignorar, y eso es peor que
+ * no tenerlo.
+ */
+function paneHeldComposer(panes, repo) {
+  // fromCharCode(92) es la barra invertida. Escrita asi a proposito: un literal
+  // escapado se rompe al pasar por capas de edicion, y ya paso dos veces hoy.
+  const BS = String.fromCharCode(92);
+  const norm = (v) => String(v || '').split(BS).join('/').replace(/\/+$/, '').toLowerCase();
+  const want = `/${norm(repo)}`;
+  if (want === '/') return null;
+  for (const p of panes || []) {
+    const proj = norm(p.project || p.cwd);
+    if (!proj) continue;
+    if (proj !== want.slice(1) && !proj.endsWith(want)) continue;
+    const tail = String(p.lastLines || p.text || '');
+    if (!tail) continue;
+    if (!composerHoldsForeignText(tail)) continue;
+    return inputBoxContent(tail.split(/\r?\n/));
   }
   return null;
 }
@@ -446,6 +482,13 @@ function createWaker(opts) {
       if (ctxPct !== null && ctxPct >= cfg.ctxAlertPct) {
         text += ` CONTEXT ${ctxPct}% — arm the handoff→/clear recycle for this pane before it hits the wall.`;
       }
+      // T-0242: "finished work" es FALSO si el composer retiene texto que el
+      // pane nunca envio. Medido el 2026-08-29 en tres panes a la vez. Se cita
+      // el texto porque sin el, el operador sabe que algo se trabo pero no QUE.
+      const held = paneHeldComposer(panes, repo);
+      if (held) {
+        text += ` OJO: su composer RETIENE texto sin enviar (${JSON.stringify(held.slice(0, 80))}) — no proceso eso; una tecla del operador lo destraba.`;
+      }
       let ok = false;
       try {
         const delivered = await send.sendPromptDeferredEnter(targetId, text);
@@ -625,4 +668,4 @@ function resolveWakerConfig({ env = process.env, intelDir, readFile } = {}) {
   };
 }
 
-module.exports = { createWaker, intentId, DEFAULTS, resolveWakerConfig, isNoiseEvent, paneRunsBypass, paneContextPct };
+module.exports = { createWaker, intentId, DEFAULTS, resolveWakerConfig, isNoiseEvent, paneRunsBypass, paneContextPct, paneHeldComposer };
