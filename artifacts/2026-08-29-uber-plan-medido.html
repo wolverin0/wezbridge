@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>El plan de Uber, medido contra nuestra propia sesión</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#161a21; --panel2:#1b2029; --line:#2a3140;
+    --tx:#e6e9ef; --dim:#9aa4b5; --acc:#7dd3a0; --warn:#f0b45e; --bad:#f07b7b;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);
+       font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}
+  .wrap{max-width:920px;margin:0 auto;padding:48px 24px 96px}
+  h1{font-size:30px;line-height:1.25;margin:0 0 8px;letter-spacing:-.02em}
+  .sub{color:var(--dim);margin:0 0 40px;font-size:15px}
+  h2{font-size:20px;margin:48px 0 14px;letter-spacing:-.01em;
+     padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:16px;margin:28px 0 8px;color:var(--acc)}
+  p{margin:0 0 14px}
+  .lead{font-size:17px}
+  code,.mono{font-family:var(--mono);font-size:13.5px}
+  code{background:var(--panel2);padding:1px 5px;border-radius:3px;color:#cfe3ff}
+  pre{background:#0b0d11;border:1px solid var(--line);border-radius:8px;
+      padding:14px 16px;overflow-x:auto;font-family:var(--mono);font-size:13px;
+      line-height:1.55;color:#c8d3e3;margin:0 0 18px}
+  table{width:100%;border-collapse:collapse;margin:0 0 20px;font-size:14.5px}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:12.5px;text-transform:uppercase;letter-spacing:.04em}
+  td.num{font-family:var(--mono);text-align:right;white-space:nowrap}
+  .scroll{overflow-x:auto}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+        padding:18px 20px;margin:0 0 18px}
+  .card.bad{border-left:3px solid var(--bad)}
+  .card.warn{border-left:3px solid var(--warn)}
+  .card.ok{border-left:3px solid var(--acc)}
+  .card h3{margin-top:0}
+  .kpi{display:flex;gap:14px;flex-wrap:wrap;margin:0 0 26px}
+  .kpi div{flex:1 1 190px;background:var(--panel);border:1px solid var(--line);
+           border-radius:10px;padding:14px 16px}
+  .kpi b{display:block;font-family:var(--mono);font-size:23px;line-height:1.2;
+         color:var(--tx);letter-spacing:-.02em}
+  .kpi span{display:block;color:var(--dim);font-size:12.5px;margin-top:5px}
+  .kpi .r b{color:var(--bad)}
+  .tag{display:inline-block;font-size:11.5px;letter-spacing:.05em;text-transform:uppercase;
+       padding:2px 8px;border-radius:99px;border:1px solid var(--line);color:var(--dim);
+       vertical-align:middle;margin-left:8px}
+  .tag.kill{color:var(--bad);border-color:#5a2a2a;background:#2a1618}
+  .tag.go{color:var(--acc);border-color:#2a5a3f;background:#152a20}
+  .tag.op{color:var(--warn);border-color:#5a482a;background:#2a2318}
+  .q{border-left:2px solid var(--line);padding-left:16px;color:var(--dim);margin:0 0 18px}
+  ul{margin:0 0 16px;padding-left:22px} li{margin:0 0 7px}
+  .foot{margin-top:56px;padding-top:18px;border-top:1px solid var(--line);
+        color:var(--dim);font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>El plan de Uber, medido contra nuestra propia sesión</h1>
+<p class="sub">29 de agosto de 2026 · wezbridge · números tomados del transcript de esta misma sesión con <code>scripts/session-cost.cjs</code></p>
+
+<p class="lead">Leímos el artículo de Uber Engineering sobre cómo bajaron el costo de sus agentes. En vez de adoptar sus palancas, las corrí contra nuestros propios datos. <strong>Dos sobreviven, una muere, y la medición encontró algo que el artículo ni menciona y que es la palanca más grande que tenemos.</strong></p>
+
+<div class="kpi">
+  <div class="r"><b>0 / 856</b><span>turnos con más de una llamada. Cero batching, en toda la sesión.</span></div>
+  <div class="r"><b>543.813</b><span>tokens de contexto reenviados por request (mediana 555k, p90 920k)</span></div>
+  <div><b>1.150.709.211</b><span>tokens de contexto reenviado en total</span></div>
+  <div><b>96</b><span>turnos trivialmente colapsables ≈ 52M tokens de reenvío puro</span></div>
+</div>
+
+<h2>1. Lo que mide el instrumento</h2>
+
+<p>Escribí <code>scripts/session-cost.cjs</code> antes que el plan, a propósito: sin él esto sería prosa, y prosa es esperanza. Lee un transcript <code>.jsonl</code> y devuelve turnos, ratio de batching, percentiles del contexto reenviado y las rachas colapsables. Corriéndolo sobre esta sesión:</p>
+
+<pre>  turnos con herramienta : 856
+  llamadas totales       : 856
+  turnos batcheados      : 0  (0.0%)
+
+  rachas de sólo-lectura : 48  (la mayor: 12 turnos seguidos)
+  turnos colapsables     : 96
+  reenvío evitable       : ~52.206.048 tokens
+
+  CONTEXTO REENVIADO     : 1.150.709.211 tokens
+    cache read           : 1.134.827.659
+  contexto medio/request : 543.813
+  mediana / p90 / máx    : 555.128 / 920.063 / 997.581</pre>
+
+<p>Es reproducible: <code>node scripts/session-cost.cjs --latest</code>.</p>
+
+<h2>2. Las palancas de Uber contra nuestros datos</h2>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Palanca de Uber</th><th>Qué dice nuestra medición</th><th>Veredicto</th></tr></thead>
+<tbody>
+<tr>
+  <td><strong>Code-mode</strong><br><span class="mono" style="color:var(--dim)">envolver llamadas MCP charlatanas en código</span></td>
+  <td>Los 101 <code>a2a_send</code> fueron <strong>101 envíos distintos, ni un fan-out</strong>. No había ninguna repetición que colapsar.</td>
+  <td><span class="tag kill">muerta</span></td>
+</tr>
+<tr>
+  <td><strong>MCP como CLI</strong></td>
+  <td>wezbridge ya lo hace: <code>scripts/</code> habla con el CLI de WezTerm directo, sin daemon. La palanca ya está tirada.</td>
+  <td><span class="tag kill">ya hecha</span></td>
+</tr>
+<tr>
+  <td><strong>Compactar a 400k</strong></td>
+  <td>Mediana real: <strong>555k</strong>. p90: 920k. <code>CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=75</code> compacta recién a ~750k.</td>
+  <td><span class="tag go">adoptar</span></td>
+</tr>
+<tr>
+  <td><strong>Cache TTL de 1 hora</strong></td>
+  <td>Ya está activo en esta sesión. 1.134B de los 1.150B fueron cache read — la caché funciona; el problema es cuánto hay que releer.</td>
+  <td><span class="tag kill">ya hecha</span></td>
+</tr>
+<tr>
+  <td><strong>Bajar el modelo de los subagentes</strong></td>
+  <td>5 llamadas a <code>Agent</code> en 856. El ahorro es ruido.</td>
+  <td><span class="tag kill">irrelevante</span></td>
+</tr>
+<tr>
+  <td><strong>AI Context Graph</strong></td>
+  <td>Es GitNexus + graphify, que ya tenemos. GitNexus no conectó hoy (<code>CONNECTION_CLOSED</code>) — eso es una falla operativa, no una palanca nueva.</td>
+  <td><span class="tag op">arreglar, no construir</span></td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<h2>3. Lo que el artículo no dice y es lo más caro que tenemos</h2>
+
+<div class="card bad">
+<h3>Cero batching, 856 de 856</h3>
+<p>Cada request reenvía la conversación entera. <strong>Los turnos son el costo.</strong> El system prompt ya decía «issue them together in one message rather than one per turn». Se violó el 100&nbsp;% de las veces, no el 60 ni el 80: <em>siempre</em>.</p>
+<p>El piso conservador —sólo rachas de turnos consecutivos que <em>únicamente leían</em>— son 96 turnos colapsables, con una racha de 12 seguidos. A 543k de contexto medio, eso solo son ~52M de tokens de reenvío que no compraron nada.</p>
+</div>
+
+<div class="card bad">
+<h3>La sesión vivió entera fuera de la zona útil</h3>
+<p>Nuestro propio CLAUDE.md dice que la zona útil es ~100k y que la podredumbre entra a 300–400k. La mediana de hoy fue <strong>555k</strong> y el p90 <strong>920k</strong>. Con el autocompact a 75&nbsp;% de una ventana de 1M, nada iba a dispararse antes de ~750k.</p>
+<p>Y esto no es sólo plata. Los errores del día son exactamente los que esa regla predice: leer scrollback viejo como si fuera estado actual, un monitor que hizo match contra mi propio prompt, y declarar cuatro arreglos «shippeados» cuando ningún servidor MCP vivo los tenía cargados. <strong>El costo y los errores subieron juntos, por la misma causa.</strong></p>
+</div>
+
+<h2>4. El plan</h2>
+
+<div class="card ok">
+<h3>A. Bajar el umbral de autocompactación <span class="tag op">decisión tuya</span></h3>
+<p>Variable de usuario de Windows, hoy en <code>75</code>. Propuesta: <code>40</code> — la cifra de Uber, y la que cae dentro de nuestra propia zona declarada.</p>
+<pre>[Environment]::SetEnvironmentVariable(
+  'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE', '40', 'User')</pre>
+<p>Es archivo tuyo: lo propongo, no lo aplico. Contra: compactar más seguido pierde detalle más seguido. A favor: hoy la alternativa fue no compactar nunca y trabajar todo el día a 555k.</p>
+</div>
+
+<div class="card ok">
+<h3>B. El batching, con un número que se chequea</h3>
+<p>No sirve otra línea de prosa: ya existía y no funcionó. Lo que sí existe ahora es <code>session-cost.cjs</code>, que convierte «batcheá» en una cifra observable: <strong>ratio de batching &gt; 0</strong>, y rachas de sólo-lectura sin racha mayor a 3.</p>
+<p>Deliberadamente <em>no</em> propongo un hook que dispare por turno. Un artefacto que se activa sobre comportamiento correcto entrena a gastar contexto en aplacarlo — es peor que no tenerlo. Esto se corre al cerrar una sesión que se sintió cara, y el número dice si mejoró.</p>
+</div>
+
+<div class="card warn">
+<h3>C. Reconectar GitNexus <span class="tag op">operativo</span></h3>
+<p>El «AI Context Graph» de Uber es lo que ya tenemos y hoy estuvo caído (<code>CONNECTION_CLOSED</code>), además de con el índice desactualizado desde <code>7b42744</code>. Un grafo de código caído se paga en greps: 535 llamadas a Bash esta sesión, muchas de ellas exploratorias.</p>
+</div>
+
+<h2>5. Lo que este plan NO hace</h2>
+<ul>
+  <li><strong>No envuelve llamadas MCP en code-mode.</strong> Era lo que te iba a traer, y la medición lo mató: no había fan-out que colapsar.</li>
+  <li><strong>No baja el modelo de los subagentes.</strong> 5 de 856 llamadas; el ahorro no existe.</li>
+  <li><strong>No agrega un hook por turno.</strong> Ver B.</li>
+  <li><strong>No toca settings tuyos.</strong> A se propone, no se aplica.</li>
+</ul>
+
+<h2>6. Cómo se sabe si funcionó</h2>
+<p>Corriendo el mismo medidor sobre la próxima sesión larga y comparando contra esta línea base fechada:</p>
+<div class="scroll">
+<table>
+<thead><tr><th>Métrica</th><th class="num">Hoy (2026-08-29)</th><th class="num">Objetivo</th></tr></thead>
+<tbody>
+<tr><td>turnos batcheados</td><td class="num">0 %</td><td class="num">&gt; 0 %</td></tr>
+<tr><td>racha de sólo-lectura más larga</td><td class="num">12</td><td class="num">≤ 3</td></tr>
+<tr><td>mediana de contexto reenviado</td><td class="num">555.128</td><td class="num">&lt; 400.000</td></tr>
+<tr><td>turnos colapsables</td><td class="num">96</td><td class="num">&lt; 20</td></tr>
+</tbody>
+</table>
+</div>
+<p>Ninguna de las cuatro es una opinión. Las cuatro salen del mismo comando.</p>
+
+<p class="foot">Medido con <code>wezbridge/scripts/session-cost.cjs</code> sobre <code>0801a245-…jsonl</code>, 2026-08-29. Un conteo sin fecha de medición envejece a mentira: re-medir antes de citar estos números.</p>
+
+</div>
+</body>
+</html>
