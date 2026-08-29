@@ -50,4 +50,58 @@ function a2aLengthRefusal(body, allowLong, limit = A2A_BODY_SOFT_LIMIT) {
     + 'If the payload genuinely must go inline, re-send with allow_long: true.';
 }
 
-module.exports = { a2aLengthRefusal, A2A_BODY_SOFT_LIMIT };
+
+/**
+ * DERRAMA un cuerpo largo a disco y devuelve un PUNTERO corto en su lugar.
+ *
+ * Por que existe, y por que no alcanzaba con refusar: el guard de arriba tenia
+ * razon en el diagnostico y se quedo corto en el remedio. Medido el 2026-08-29
+ * en UNA sesion: la refusion se disparo SEIS veces, el emisor acorto a mano las
+ * seis, y DOS de esos reenvios "cortos" volvieron igual con delivered:truncated.
+ * Si el sistema ya sabe que el cuerpo no entra Y ya sabe cual es el remedio, no
+ * hay motivo para devolverselo al llamador: derramar es determinista, acortar a
+ * ojo no.
+ *
+ * LA INVARIANTE: el puntero NUNCA puede pasarse del limite. Un puntero truncado
+ * deja al receptor con una RUTA cortada, que es peor que un cuerpo cortado
+ * porque parece completa. Por eso el preview se recorta contra el espacio que
+ * queda, y el corr del llamador se acota antes de entrar al nombre del archivo.
+ *
+ * FAIL-SOFT: si el disco falla, devuelve el cuerpo ORIGINAL con el error. Perder
+ * el mensaje seria peor que arriesgar un truncado — esa eleccion es del llamador.
+ *
+ * @returns {{spilled: boolean, body: string, path?: string, error?: string}}
+ */
+function a2aSpill({ body, corr, limit = A2A_BODY_SOFT_LIMIT, dir, writeFile, now = () => new Date() }) {
+  const text = String(body ?? '');
+  if (text.length <= limit) return { spilled: false, body: text };
+
+  // El corr viene del llamador: se sanea y se acota ANTES de formar el nombre,
+  // para que no pueda empujar el puntero por encima del limite.
+  const slug = String(corr || 'sin-corr').replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 60);
+  const stamp = now().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const file = `${slug}-${stamp}.md`;
+  const full = `${String(dir || '.').replace(/[\/]+$/, '')}/${file}`;
+
+  const header = `[CUERPO DERRAMADO: ${text.length} chars, no entraba en ${limit}]\n`
+    + `Completo en: ${full}\n`
+    + `Leelo con:   cat "${full}"\n`;
+
+  try {
+    writeFile(full, `<!-- a2a spill · corr=${corr} · ${text.length} chars · ${now().toISOString()} -->\n\n${text}\n`);
+  } catch (err) {
+    return { spilled: false, body: text, error: String((err && err.message) || err) };
+  }
+
+  // El preview se recorta contra lo que sobra, no contra un numero fijo: con un
+  // corr largo el header crece y el preview tiene que ceder, no el limite.
+  const marker = '\n--- primeras lineas ---\n';
+  const room = limit - header.length - marker.length - 1;
+  const pointer = room > 40
+    ? `${header}${marker}${text.slice(0, room)}`
+    : header.slice(0, limit);
+
+  return { spilled: true, body: pointer, path: full };
+}
+
+module.exports = { a2aLengthRefusal, a2aSpill, A2A_BODY_SOFT_LIMIT };
