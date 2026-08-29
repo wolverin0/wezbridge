@@ -179,8 +179,15 @@ test('delivery: pending entry is delivered to the pane resolved NOW, not the sta
   const out = await c.drain();
   assert.strictEqual(out.delivered, 1);
   assert.strictEqual(calls[0].paneId, 7, 'must re-resolve via pane-identity at delivery time');
-  assert.match(calls[0].text, /^\[A2A from pane-0 to pane-7 \| corr=T-d1 \| type=request\]\n/,
-    'envelope must be rebuilt with the freshly resolved pane');
+  // El requisito es "no se reenvia el sobre viejo", no "el header dice pane-7".
+  // Desde 2026-08-29 el header direcciona por NOMBRE DE PROYECTO, que es la
+  // unica direccion estable (el mismo pane es 11 en el espacio MCP y 15 en el
+  // del CLI de wezterm). Este aserto se reancla al requisito: el sobre entregado
+  // NO puede llevar el pane obsoleto con el que se encolo.
+  assert.doesNotMatch(calls[0].text, /pane-3\b/,
+    'el sobre NO puede reenviarse con el pane obsoleto (3) que vio el emisor original');
+  assert.match(calls[0].text, /^\[A2A from pane-0 to wezbridge \| corr=T-d1 \| type=request\]\n/,
+    'envelope rebuilt: destino por nombre de proyecto, cuerpo intacto');
   assert.strictEqual(c.status().pending, 0);
 });
 

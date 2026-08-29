@@ -312,6 +312,31 @@ function closingRulingAfterMove(corr, card, read) {
 }
 
 /**
+ * Arma el header del envelope, direccionando por NOMBRE DE PROYECTO cuando se
+ * lo conoce y cayendo a pane-N cuando no.
+ *
+ * El pane-id NO es una direccion: vive en dos espacios —el que publica el MCP y
+ * el del CLI de wezterm— y el mismo pane es 11 en uno y 15 en el otro. Medido
+ * el 2026-08-29: la pane de infra reporto DOS VECES un misruteo que no existia,
+ * porque leia el id MCP del header contra el suyo del CLI. El envio estaba
+ * bien; el formato no podia expresar la direccion real.
+ *
+ * El fallback a pane-N no es cortesia: hay envelopes headless y panes sin cwd
+ * resoluble. Un header sin direccion es peor que uno ambiguo.
+ *
+ * Los dos parsers (handlers/shared.cjs y telegram-streamer.cjs) aceptan las dos
+ * formas, asi que los panes con servidor viejo pueden seguir emitiendo pane-N
+ * sin que nadie los pierda.
+ */
+function buildEnvelope({ fromPane, fromProject, toPane, toProject, corr, type, body }) {
+  const addr = (project, pane) => {
+    const name = String(project || '').trim();
+    return name || `pane-${pane}`;
+  };
+  return `[A2A from ${addr(fromProject, fromPane)} to ${addr(toProject, toPane)} | corr=${corr} | type=${type}]\n${body}`;
+}
+
+/**
  * El vocabulario cerrado de kinds, o null si no se puede establecer.
  *
  * Acepta las dos formas que el registro tuvo en la practica — lista pelada y
@@ -532,4 +557,4 @@ function detectSmuggledEnvelope(text) {
   return { smuggled: true, corr: m[1], type: m[2].toLowerCase() };
 }
 
-module.exports = { intelDir, detectV2, detectAbandons, detectDecisions, detectEvidence, recordEvent, recordResultBody, updateThreads, autoAckResult, checkDispatchGate, checkResultShape, takeDispatchLease, detectSmuggledEnvelope, weakPasses };
+module.exports = { intelDir, buildEnvelope, detectV2, detectAbandons, detectDecisions, detectEvidence, recordEvent, recordResultBody, updateThreads, autoAckResult, checkDispatchGate, checkResultShape, takeDispatchLease, detectSmuggledEnvelope, weakPasses };

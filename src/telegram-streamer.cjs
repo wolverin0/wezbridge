@@ -601,8 +601,13 @@ function extractSections(rawText) {
   }
   sections.errors = sections.errors.slice(-2);
 
-  // A2A envelopes — last 2
-  for (const m of tail.matchAll(/\[A2A from pane-(\d+) to pane-(\d+) \| corr=([^\s|]+) \| type=(\w+)\]/g)) {
+  // A2A envelopes — last 2.
+  // El `pane-` es opcional: el header puede direccionar por NOMBRE DE PROYECTO,
+  // que es la unica direccion estable (los pane-id viven en dos espacios, MCP y
+  // CLI de wezterm, y el mismo pane es 11 en uno y 15 en el otro). Los panes con
+  // servidor viejo siguen emitiendo pane-N hasta reiniciar, asi que este parser
+  // TIENE que entender las dos formas o los pierde en silencio.
+  for (const m of tail.matchAll(/\[A2A from (?:pane-)?([^\s|]+) to (?:pane-)?([^\s|]+) \| corr=([^\s|]+) \| type=(\w+)\]/g)) {
     sections.a2as.push({ from: m[1], to: m[2], corr: m[3].slice(0, 40), type: m[4] });
   }
   sections.a2as = sections.a2as.slice(-2);

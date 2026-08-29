@@ -344,7 +344,19 @@ function createConsumer(opts) {
       if (!entry) continue;
       // Envelope is REBUILT with the pane resolved NOW — the pane the original
       // send saw may be long dead; the project is the durable address.
-      const envelope = `[A2A from pane-${entry.from_pane} to pane-${targetId} | corr=${entry.corr} | type=${entry.type}]\n${entry.body}`;
+      // El destino se direcciona por NOMBRE, que es lo unico estable: esta cola
+      // ES por proyecto, y el pane que la drena se resolvio recien. Poner el
+      // pane-id aca era doblemente enganoso — el numero cambia entre espacios
+      // MCP/CLI Y el pane resuelto hoy no es el que vio el emisor original.
+      const envelope = require('./a2a-intel.cjs').buildEnvelope({
+        fromPane: entry.from_pane,
+        fromProject: entry.from_project,
+        toPane: targetId,
+        toProject: project,
+        corr: entry.corr,
+        type: entry.type,
+        body: entry.body,
+      });
       let ok = false;
       let submitted = 'unknown';
       let integrity = 'unknown';

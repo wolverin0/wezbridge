@@ -31,7 +31,6 @@ const NOISE_EVENTS = new Set(['heartbeat', 'metrics_summary', 'watcher_started',
 const a2aState = new Map();
 const A2A_MAX = 500;
 const A2A_TTL_MS = 24 * 3600 * 1000;
-const A2A_ENVELOPE_RE = /\[A2A from pane-(\d+) to pane-(\d+) \| corr=([^\s|]+) \| type=(\w+)/g;
 const handoffRegistry = new Map();
 const sseClients = new Set();
 const worktreeRegistry = new Map();
@@ -218,6 +217,42 @@ function a2aTouch(corr, patch) {
   a2aEvict();
 }
 
+/**
+ * Extrae los envelopes A2A de un texto. Devuelve [{from, to, corr, type}].
+ *
+ * EXTRAIDA A FUNCION PURA por el mismo motivo que composerStillHolds en su dia:
+ * mientras el parseo vivia dentro del bucle de recordA2AFromRawEvent, la unica
+ * forma de probarlo era greppear la fuente, y un test que matchea texto mide la
+ * ortografia, no la conducta.
+ *
+ * `from` y `to` se devuelven COMO STRING, tal cual vienen. Antes se hacia
+ * parseInt y eso ataba el formato a un numero. Los pane-id de wezbridge viven
+ * en DOS espacios (MCP y CLI de wezterm): el mismo pane es 11 en uno y 15 en el
+ * otro, asi que el numero del header no es una direccion — es una etiqueta que
+ * el receptor lee distinto. Medido el 2026-08-29: la pane de infra reporto dos
+ * veces un misruteo que no existia, porque leia el id MCP contra el suyo del
+ * CLI. El nombre de proyecto SI es una direccion estable.
+ *
+ * Acepta las DOS formas a proposito. Los panes con servidor viejo van a seguir
+ * emitiendo `pane-N` hasta que reinicien (runtime != repo), y un parser que
+ * solo entienda el formato nuevo los perderia en silencio.
+ */
+function parseA2AEnvelopes(text) {
+  const out = [];
+  if (typeof text !== 'string' || !text) return out;
+  const re = /\[A2A from (?:pane-)?([^\s|]+) to (?:pane-)?([^\s|]+) \| corr=([^\s|]+) \| type=(\w+)/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    out.push({
+      from: /^\d+$/.test(m[1]) ? `pane-${m[1]}` : m[1],
+      to: /^\d+$/.test(m[2]) ? `pane-${m[2]}` : m[2],
+      corr: m[3],
+      type: m[4],
+    });
+  }
+  return out;
+}
+
 function recordA2AFromRawEvent(raw) {
   if (!raw) return;
   if (raw.event === 'peer_orphaned' && raw.corr) {
@@ -229,13 +264,7 @@ function recordA2AFromRawEvent(raw) {
       ? `[A2A from pane-${raw.pane || 0} to pane-0 | corr=${raw.raw.corr} | type=request]`
       : null;
   if (!haystack) return;
-  A2A_ENVELOPE_RE.lastIndex = 0;
-  let m;
-  while ((m = A2A_ENVELOPE_RE.exec(haystack)) !== null) {
-    const from = parseInt(m[1], 10);
-    const to = parseInt(m[2], 10);
-    const corr = m[3];
-    const type = m[4];
+  for (const { from, to, corr, type } of parseA2AEnvelopes(haystack)) {
     const _now = Date.now();
     if (type === 'request') {
       a2aTouch(corr, { from, to, status: 'active', lastProgressAt: _now, notified_silent: false });
@@ -320,4 +349,4 @@ function createSharedContext(deps) {
   };
 }
 
-module.exports = { createSharedContext };
+module.exports = { createSharedContext, parseA2AEnvelopes };

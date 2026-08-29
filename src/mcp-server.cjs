@@ -1604,7 +1604,13 @@ function handleToolCall(name, args) {
         } catch { /* audit never blocks dispatch */ }
       }
 
-      const envelope = `[A2A from pane-${fromPane} to pane-${toPane} | corr=${corr} | type=${msgType}]\n${body}`;
+      // Header por NOMBRE DE PROYECTO cuando se lo conoce (fallback a pane-N).
+      // El pane-id no es una direccion: vive en dos espacios y el mismo pane es
+      // 11 en el del MCP y 15 en el del CLI de wezterm — el 2026-08-29 eso hizo
+      // que un receptor reportara dos misruteos que no existian.
+      const envelope = a2aIntel.buildEnvelope({
+        fromPane, fromProject: selfRes.project, toPane, toProject, corr, type: msgType, body,
+      });
       const _safety = safetyPolicy.evaluate({ action: 'send_prompt', paneId: toPane, prompt: envelope });
       if (!_safety.allowed) {
         if (_safety.tripwire) return { content: [{ type: 'text', text: _safety.response }] };
