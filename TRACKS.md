@@ -132,3 +132,63 @@ nuevas. Preservar embeddings con el flag: sin el se borran.
 
 **Criterio:** `.gitnexus/meta.json` reporta un `stats.embeddings` mayor que cero y un SHA
 posterior a `7b42744`.
+
+
+---
+
+# Cola de dispatch — formato `owns=` para /auto-harness
+
+Cada track declara los archivos que POSEE. Dos tracks nunca comparten un `owns=`: es la
+condicion para despachar varios agentes en paralelo sin que se pisen el commit.
+
+Los cinco primeros (T1-T5) estan detallados arriba con su evidencia medida. Los que siguen
+salen de un escaneo real del 2026-08-30: modulos de `src/` que no tienen NINGUN archivo de
+test propio, ordenados por tamano. No son relleno — cada uno es codigo en produccion sin una
+sola asercion encima.
+
+## Contrato, otra vez, porque es lo unico que importa
+
+Un track sin **fail-first en los dos sentidos** y sin **una mutacion que ponga rojo SOLO al
+test que dice cubrir eso** no esta hecho, por mas verde que este. Un test que sobrevive a la
+mutacion de lo que afirma cubrir no cubre nada.
+
+## Defectos medidos
+
+- [ ] T1 — persistir el CUERPO de los envelopes mandados con `to_pane` owns=src/mcp-server.cjs,test/a2a-to-pane-body-persist.test.cjs
+- [ ] T2 — tests para `session-cost.cjs` (hoy cero) owns=scripts/session-cost.cjs,test/session-cost.test.cjs
+- [ ] T3 — el guard de composer confunde una lista de opciones con texto tipeado owns=src/verified-send.cjs,test/composer-foreign-text-guard.test.cjs
+- [ ] T4 — cubrir el camino de reintento de `queue-drain` owns=scripts/queue-drain.cjs,test/queue-drain-retry.test.cjs
+- [ ] T5 — reindexar GitNexus preservando embeddings owns=.gitnexus/
+
+## Modulos en produccion sin un solo test
+
+- [ ] T6 — `telegram-streamer` (1184 lineas, el mas grande sin cobertura) owns=src/telegram-streamer.cjs,test/telegram-streamer.test.cjs
+- [ ] T7 — `tasks-watcher` (330) owns=src/tasks-watcher.cjs,test/tasks-watcher.test.cjs
+- [ ] T8 — `dashboard-server-routes` (323) owns=src/dashboard-server-routes.cjs,test/dashboard-server-routes.test.cjs
+- [ ] T9 — `pane-discovery` (265) owns=src/pane-discovery.cjs,test/pane-discovery.test.cjs
+- [ ] T10 — `daemon-status` (204) owns=src/daemon-status.cjs,test/daemon-status.test.cjs
+- [ ] T11 — `github-webhook` (202) owns=src/github-webhook.cjs,test/github-webhook.test.cjs
+- [ ] T12 — `project-scanner` (200) owns=src/project-scanner.cjs,test/project-scanner.test.cjs
+- [ ] T13 — `plugin-host` (197) owns=src/plugin-host.cjs,test/plugin-host.test.cjs
+- [ ] T14 — `voice-handler` (185) owns=src/voice-handler.cjs,test/voice-handler.test.cjs
+- [ ] T15 — `task-parser` (173) owns=src/task-parser.cjs,test/task-parser.test.cjs
+- [ ] T16 — `media-handler` (155) owns=src/media-handler.cjs,test/media-handler.test.cjs
+- [ ] T17 — `decision-push` (147) owns=src/decision-push.cjs,test/decision-push.test.cjs
+- [ ] T18 — `routines-config` (134) owns=src/routines-config.cjs,test/routines-config.test.cjs
+- [ ] T19 — `diff-reporter` (131) owns=src/diff-reporter.cjs,test/diff-reporter.test.cjs
+- [ ] T20 — `dashboard-server-ipc` (126) owns=src/dashboard-server-ipc.cjs,test/dashboard-server-ipc.test.cjs
+- [ ] T21 — `ntfy-notifier` (98) owns=src/ntfy-notifier.cjs,test/ntfy-notifier.test.cjs
+- [ ] T22 — `rulings` (74) owns=src/rulings.cjs,test/rulings.test.cjs
+- [ ] T23 — `permission-alerts` (63) owns=src/permission-alerts.cjs,test/permission-alerts.test.cjs
+
+## Higiene del plano de control
+
+- [ ] T24 — los 4 fails de la suite son DATOS del ledger, no codigo: T-0286 `running` sin `blocked_by`, kind `data-fix` de T-0262 fuera del vocabulario cerrado, y el path de `walksim` que no existe. Decidir por cada uno si se arregla el dato o se ensancha el registro, y dejarlo escrito owns=../_intel/kinds.json,../_intel/repos.json
+- [ ] T25 — `DOCS-MAP.md` no menciona `TRACKS.md`, `monitoring.md` ni `scripts/session-cost.cjs`, todos creados o reescritos entre el 29 y el 30 de agosto. Un mapa de docs que no lista lo nuevo manda a leer el arbol entero owns=DOCS-MAP.md
+
+## Lo que NINGUN track puede hacer
+
+- Commitear a `main`. Rama propia siempre.
+- Tocar `_intel/tasks/*.json` — el ledger se mueve por su FSM con `ledger.cjs`, nunca a mano.
+- Debilitar un test existente para que pase. Si un test viejo estorba, se dice por que y se
+  para: bajar la barra para cerrar un track es el fraude que este contrato existe para evitar.
