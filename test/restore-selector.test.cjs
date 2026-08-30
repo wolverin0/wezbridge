@@ -15,7 +15,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const snap = require('../src/session-snapshot.cjs');
-const { excludeAlreadyLive } = require('../scripts/restore-session.cjs');
+const { excludeAlreadyLive, normalizeSnapshotCwd } = require('../scripts/restore-session.cjs');
 
 const NOW = Date.parse('2026-08-24T22:12:30Z');
 const RICH_TS = '2026-08-24T21:59:34.875Z'; // 12 min before "now"
@@ -94,6 +94,12 @@ test('T-0234: same cwd but DIFFERENT agent is not a duplicate (claude live, code
   const { keep, skipped } = excludeAlreadyLive(entries, live);
   assert.strictEqual(skipped.length, 0, 'a codex session next to a claude session is legitimate');
   assert.strictEqual(keep.length, 1);
+});
+
+test('Windows snapshot file URLs become native drive paths before pane spawn', () => {
+  const cwd = normalizeSnapshotCwd('file:///G:/Py%20Apps/project-costa/');
+  if (process.platform === 'win32') assert.equal(cwd, 'G:\\Py Apps\\project-costa\\');
+  else assert.equal(cwd, '/G:/Py Apps/project-costa/');
 });
 
 test('T-0234: empty census (mux down) excludes nothing — restore proceeds visibly', () => {

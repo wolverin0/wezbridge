@@ -62,6 +62,17 @@ function splitCmdline(cmdline) {
   return out;
 }
 
+function normalizeSnapshotCwd(value) {
+  if (!value) return '';
+  let cwd = value;
+  if (/^file:/i.test(value)) {
+    try { cwd = decodeURIComponent(new URL(value).pathname); }
+    catch { cwd = decodeURIComponent(value.replace(/^file:\/\/[^/]*/i, '')); }
+  }
+  if (process.platform === 'win32' && /^\/[a-z]:\//i.test(cwd)) cwd = cwd.slice(1);
+  return process.platform === 'win32' ? cwd.replaceAll('/', '\\') : cwd;
+}
+
 // The resume command per agent. Snapshots capture ai via title/discovery hint
 // and usually have a null cmdline (headless pid unknown), so we reconstruct the
 // launch from `ai` rather than replaying a captured process line.
@@ -98,7 +109,7 @@ function paneStillAlive(paneId) {
 }
 
 function spawnPane(entry, opts = {}) {
-  const cwd = entry.cwd ? entry.cwd.replace(/^file:\/\/[^/]*/, '').replace(/%20/g, ' ') : '';
+  const cwd = normalizeSnapshotCwd(entry.cwd);
   const parts = splitCmdline(entry.cmdline);
 
   // WINDOWS: `claude` y `codex` son shims .cmd/.ps1, no ejecutables. Pasarlos
@@ -241,4 +252,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { parseArgs, splitCmdline, excludeAlreadyLive };
+module.exports = { parseArgs, splitCmdline, normalizeSnapshotCwd, excludeAlreadyLive };
