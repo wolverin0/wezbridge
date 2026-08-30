@@ -75,12 +75,41 @@ function resumeCommandFor(ai) {
   return 'claude --continue --dangerously-skip-permissions';       // default: claude
 }
 
+/**
+ * ¿El pane sigue vivo unos segundos despues de crearlo?
+ *
+ * MEDIDO EL 2026-08-30, y por eso existe: tras un crash real este script
+ * reporto "9/9 spawned successfully" y los NUEVE murieron. `wezterm cli spawn`
+ * devuelve un pane id apenas crea el pane, ANTES de que el programa de adentro
+ * viva o muera — asi que tomar ese id como exito es contar la intencion, no el
+ * resultado. Es exactamente la clase de defecto que este repo viene cazando:
+ * un instrumento que reporta algo cierto (el pane se creo) y lo presenta como
+ * otra cosa (el agente esta corriendo).
+ *
+ * Un pane muerto queda listado con titulo "wezterm" y sin CWD, mostrando
+ * `Process "<x>" didn't exit cleanly`.
+ */
+function paneStillAlive(paneId) {
+  const res = spawnSync('wezterm', ['cli', 'list'], { encoding: 'utf8' });
+  if (res.error || res.status !== 0) return null; // no se pudo medir: no afirmar nada
+  const line = (res.stdout || '').split('\n').find((l) => new RegExp(`\\s${paneId}\\s`).test(l));
+  if (!line) return false;                       // el pane desaparecio
+  return !/\swezterm\s*$/.test(line.trimEnd());  // titulo "wezterm" pelado = el programa murio
+}
+
 function spawnPane(entry, opts = {}) {
   const cwd = entry.cwd ? entry.cwd.replace(/^file:\/\/[^/]*/, '').replace(/%20/g, ' ') : '';
   const parts = splitCmdline(entry.cmdline);
 
+  // WINDOWS: `claude` y `codex` son shims .cmd/.ps1, no ejecutables. Pasarlos
+  // como programa del pane (`spawn -- claude`) los hace salir con codigo 1 al
+  // instante. El camino que SI funciona es spawnear el shell por defecto y
+  // TIPEAR el comando, que es lo que hace el Path B. Medido el 2026-08-30
+  // restaurando 13 panes tras un crash: Path A murio 9 de 9, Path B anduvo.
+  const forceShellPath = process.platform === 'win32';
+
   // Path A: a real captured cmdline → replay it verbatim (legacy snapshots).
-  if (parts.length > 0) {
+  if (parts.length > 0 && !forceShellPath) {
     const args = ['cli', 'spawn'];
     if (cwd) args.push('--cwd', cwd);
     args.push('--', ...parts);
@@ -105,8 +134,24 @@ function spawnPane(entry, opts = {}) {
     return false;
   }
   const newPaneId = (res.stdout || '').trim();
+
+  // El pane necesita que su shell arranque antes de poder recibir texto. Sin
+  // esta espera el send-text llega a un pane que todavia no lee stdin y se
+  // pierde en silencio — el pane queda vivo pero vacio, que se ve igual que un
+  // exito hasta que alguien lo mira.
+  spawnSync(process.execPath, ['-e', 'setTimeout(()=>{},2500)'], { stdio: 'ignore' });
+
   spawnSync('wezterm', ['cli', 'send-text', '--pane-id', newPaneId, '--no-paste'], { input: cmd + '\r', encoding: 'utf8' });
-  console.log(`[restore] spawned ${entry.ai || 'shell'} pane (was ${entry.pane_id}, now ${newPaneId}) cwd=${cwd} → ${cmd}`);
+
+  // VERIFICAR, no afirmar. Ver el comentario de paneStillAlive.
+  spawnSync(process.execPath, ['-e', 'setTimeout(()=>{},4000)'], { stdio: 'ignore' });
+  const alive = paneStillAlive(newPaneId);
+  if (alive === false) {
+    console.error(`[restore] MURIO pane ${newPaneId} (era ${entry.pane_id}) cwd=${cwd} — el proceso salio al arrancar; NO cuenta como restaurado`);
+    return false;
+  }
+  const nota = alive === null ? ' (no se pudo verificar: wezterm cli list fallo)' : '';
+  console.log(`[restore] spawned ${entry.ai || 'shell'} pane (was ${entry.pane_id}, now ${newPaneId}) cwd=${cwd} → ${cmd}${nota}`);
   return true;
 }
 
