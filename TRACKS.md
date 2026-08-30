@@ -181,6 +181,8 @@ mutacion de lo que afirma cubrir no cubre nada.
 - [ ] T22 — `rulings` (74) owns=src/rulings.cjs,test/rulings.test.cjs
 - [ ] T23 — `permission-alerts` (63) owns=src/permission-alerts.cjs,test/permission-alerts.test.cjs
 
+- [ ] T27 — `diffTasks` no tiene null-guard y una rama rota MATA EL WATCHER EN SILENCIO. Encontrado el 2026-08-30 por el agente de T7 MUTANDO, no leyendo: si la rama `added` de `diffTasks` recibe algo inesperado, tira un TypeError sin capturar que se lleva puesto el `tick()` entero de `src/tasks-watcher.cjs`. El proceso del watcher muere y nadie se entera — y ese watcher es el que mantiene `vault/active_tasks.md`, la fuente canonica del puntero de tarea activa segun docs/architecture.md. O sea: el estado que leen las otras sesiones se congela sin ninguna senal. Es exactamente la familia que este repo viene pagando toda la semana: un instrumento que deja de medir y sigue pareciendo vivo. CRITERIOS: un test fail-first que hoy sea ROJO pasandole a `diffTasks` la entrada que lo rompe; el guard que lo hace fallar RUIDOSAMENTE en vez de morir; y —lo que mas importa— que el `tick()` sobreviva a una excepcion de `diffTasks` y lo REPORTE, en vez de terminar el proceso. Un watchdog que se muere en silencio es peor que no tener watchdog. owns=src/tasks-watcher.cjs,test/tasks-watcher-diff-guard.test.cjs
+
 ## Higiene del plano de control
 
 - [ ] T24 — los 4 fails de la suite son DATOS del ledger, no codigo: T-0286 `running` sin `blocked_by`, kind `data-fix` de T-0262 fuera del vocabulario cerrado, y el path de `walksim` que no existe. Decidir por cada uno si se arregla el dato o se ensancha el registro, y dejarlo escrito owns=../_intel/kinds.json,../_intel/repos.json
