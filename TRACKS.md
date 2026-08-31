@@ -152,6 +152,11 @@ Un track sin **fail-first en los dos sentidos** y sin **una mutacion que ponga r
 test que dice cubrir eso** no esta hecho, por mas verde que este. Un test que sobrevive a la
 mutacion de lo que afirma cubrir no cubre nada.
 
+Y "la mutacion murio" no alcanza: hay que mirar **QUE test la mato**. Medido en memorymaster
+el 2026-08-30 (PR #246): seis mutaciones daban MUERTA, pero una moria por un AttributeError
+incidental en OTRO test — el test que decia cubrirla estaba verde y mintiendo. Un arnes que
+solo reporta vivo/muerto deja pasar exactamente eso; el reporte tiene que nombrar al asesino.
+
 ## Defectos medidos
 
 - [x] T1 — persistir el CUERPO de los envelopes mandados con `to_pane` — CERRADO 2026-08-30, commit 72dc954 (era 03d2282 antes del cherry-pick que lo saco de la rama equivocada). Verificado en worktree aislado: 3/3 pass, y revirtiendo el fix al estado pre-arreglo quedan rojos EXACTAMENTE los dos tests de to_pane mientras el control de to_project sigue verde. Reusa la cola de to_project resolviendo el pane a proyecto via pane-identity, con fallback a _dead-letter cuando no hay proyecto resoluble — una sola registry durable, no una segunda a medida. owns=src/mcp-server.cjs,test/a2a-to-pane-body-persist.test.cjs
