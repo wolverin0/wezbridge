@@ -356,6 +356,49 @@ function raiseStall(stalls, reasons) {
   }
 }
 
+/**
+ * T-0283 AC6: la alarma de stall se LIMPIA sola cuando el loop vuelve a ser
+ * productivo. raiseStall() la creaba y re-levantaba, el contador `stalls` se
+ * reseteaba (main), pero NADA cerraba la tarjeta: quedaba blocked para siempre
+ * en el tablero del operador. Control: una tarjeta que un humano ya rulo (hay
+ * lineas en rulings.jsonl para su id) o que no es de stall (origin_key ajeno) no
+ * se toca — cancelar el trabajo de otro es peor que dejar una alarma vieja.
+ */
+function clearStall({ productive, now = new Date().toISOString(), reason = '' } = {}) {
+  const out = { cleared: [], skipped: [] };
+  if (!productive) return out;
+  let ledger;
+  try { ledger = loadLedger(); } catch (e) { log(`clearStall: ledger unreachable (${firstLine(e)})`); return out; }
+  let rulings = [];
+  try {
+    rulings = fs.readFileSync(path.join(INTEL, 'rulings.jsonl'), 'utf8').split('\n').filter(Boolean)
+      .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  } catch { /* sin rulings */ }
+  let open = [];
+  try {
+    open = ledger.list({ state: 'open' })
+      .filter((t) => typeof t.origin_key === 'string' && t.origin_key.startsWith(`${STALL_ORIGIN}:`));
+  } catch (e) { log(`clearStall: ledger.list failed (${firstLine(e)})`); return out; }
+  for (const card of open) {
+    if (rulings.some((r) => r && r.task === card.id)) {
+      out.skipped.push({ id: card.id, reason: 'ruling humano sobre la tarjeta: no se cierra sola' });
+      continue;
+    }
+    try {
+      ledger.update(card.id, {
+        state: 'cancelled',
+        evidence: `loop productivo de nuevo ${now}${reason ? ` (${reason})` : ''}: la alarma de stall se cierra sola (T-0283 AC6)`,
+        note: 'clearStall: turno productivo posterior a la alarma',
+      });
+      out.cleared.push(card.id);
+      log(`stall alert ${card.id} cleared: the loop is productive again`);
+    } catch (e) {
+      out.skipped.push({ id: card.id, reason: `ledger refused: ${firstLine(e)}` });
+    }
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -387,7 +430,7 @@ function takeLease(kind) {
   }));
 }
 
-function main() {
+async function main() {
   // W3: the orchestrator's own rotation discipline, checked before anything
   // else so THIS turn's gate already sees the verdict. Reports through the
   // routine-audit contract (run record + findings artifact) — the same chain
@@ -411,9 +454,17 @@ function main() {
   // Stall accounting happens BEFORE deciding what to do, so a spinning loop is
   // caught even on the turn where it would otherwise fire again.
   let stalls = 0;
-  if (prev && prev.woke && !turnWasProductive(prev.snapshot, now)) stalls = (prev.stalls || 0) + 1;
+  const productive = !!(prev && prev.woke && turnWasProductive(prev.snapshot, now));
+  if (prev && prev.woke && !productive) stalls = (prev.stalls || 0) + 1;
 
-  const base = { at: new Date().toISOString(), gate_exit: gateExit, reviews, reasons, classes, ...(noise.length ? { noise } : {}), snapshot: now, stalls };
+  // T-0283 AC6: el contador se resetea aca desde siempre; ahora la ALARMA tambien.
+  let stallCleared = null;
+  if (productive && !process.argv.includes('--dry-run')) {
+    const c = clearStall({ productive, reason: `rulings ${prev.snapshot && prev.snapshot.rulings}->${now.rulings}, tasks ${prev.snapshot && prev.snapshot.taskCount}->${now.taskCount}` });
+    if (c.cleared.length || c.skipped.length) stallCleared = c;
+  }
+
+  const base = { at: new Date().toISOString(), gate_exit: gateExit, reviews, reasons, classes, ...(noise.length ? { noise } : {}), snapshot: now, stalls, ...(stallCleared ? { stall_cleared: stallCleared } : {}) };
 
   // --dry-run: evaluate and report, touch nothing. Exists so the trigger can be
   // inspected against live state without waking anyone — including from the
@@ -517,18 +568,30 @@ function main() {
   let alog = null;
   try { alog = require(path.join(REPO, 'src', 'action-log.cjs')); } catch {}
   if (alog) alog.logAction('orchestrator_turn_start', { why: 'scheduled headless turn' });
-  const r = spawnSync('claude', ['-p', '--dangerously-skip-permissions'], {
-    input: prompt, encoding: 'utf8', cwd: path.join(REPO, '..'), timeout: 900000, shell: true,
-    env: { ...process.env, WEZBRIDGE_ACTOR: 'orchestrator-turn-headless' },
+  // T-0283: el hijo escribe su trabajo y a veces NO sale (medido 2026-08-26: 4
+  // turnos seguidos hicieron todo a los ~5 min y spawnSync los mato a los 15
+  // registrando FAILED). runHeadless vigila last-summary.txt: escrito y sin salir
+  // en 120 s => se lo mata y el turno es OK (completed-no-exit); nada escrito al
+  // timeout duro (que SIGUE siendo 15 min, AC2) => timeout-no-output.
+  const { runHeadless } = require(path.join(REPO, 'src', 'headless-run.cjs'));
+  const r = await runHeadless({
+    command: 'claude', args: ['-p', '--dangerously-skip-permissions'], input: prompt,
+    summaryFile: path.join(TURNS, 'last-summary.txt'),
+    timeoutMs: 900000, graceMs: 120000,
+    spawnOpts: { cwd: path.join(REPO, '..'), shell: true, env: { ...process.env, WEZBRIDGE_ACTOR: 'orchestrator-turn-headless' } },
   });
-  const ok = !r.error && r.status === 0;
-  writeTurn({ ...base, woke: true, action: 'headless', headless_exit: r.error ? null : r.status });
-  if (alog) alog.logAction('orchestrator_turn_end', {
-    extra: { ok, exit: r.error ? String(r.error.message) : r.status },
+  const ok = r.turnExitCode === 0;
+  writeTurn({
+    ...base, woke: true, action: 'headless',
+    headless_exit: r.status, headless_outcome: r.outcome, killed: r.killed,
+    summary_written_at: r.summaryWrittenAt ? new Date(r.summaryWrittenAt).toISOString() : null,
+    exited_at: new Date(r.exitedAt).toISOString(),
+    exit_after_summary_ms: r.summaryWrittenAt ? r.exitedAt - r.summaryWrittenAt : null,
   });
-  log(`headless turn ${ok ? 'completed' : `FAILED (${r.error ? r.error.message : r.status})`}`);
+  if (alog) alog.logAction('orchestrator_turn_end', { extra: { ok, exit: r.status, outcome: r.outcome, killed: r.killed } });
+  log(`headless turn ${ok ? `completed (${r.outcome}${r.killed ? ', child killed after grace' : ''})` : `FAILED (${r.outcome}, exit ${r.status})`}`);
   return ok ? 0 : 4;
 }
 
-if (require.main === module) process.exit(main());
-module.exports = { reviewWakeTargets, reviewTargetsIn, deferralIsLive, classifyWake, classifyEvent, shouldWake, turnWasProductive, raiseStall, STALL_LIMIT };
+if (require.main === module) main().then((code) => process.exit(code), (e) => { log(`turn crashed: ${firstLine(e)}`); process.exit(4); });
+module.exports = { reviewWakeTargets, reviewTargetsIn, deferralIsLive, classifyWake, classifyEvent, shouldWake, turnWasProductive, raiseStall, clearStall, STALL_LIMIT };
