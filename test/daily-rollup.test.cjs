@@ -279,3 +279,44 @@ test('renderRollup: census skipped se declara en vez de fingir 0 fallas', () => 
   assert.match(md, /CENSUS OMITIDO/);
   assert.ok(!md.includes('0 tasks en clase silent-failure'));
 });
+
+// ---------------------------------------------------------------------------
+// W6 (T31): cancelaciones por origen — de donde viene el trabajo que muere.
+// ---------------------------------------------------------------------------
+const { summarizeCancellations } = require('../scripts/daily-rollup.cjs');
+
+const SIX_CARDS = [
+  { id: 'T-0001', state: 'cancelled', origin_key: 'roadmap:mm:abc' },
+  { id: 'T-0002', state: 'done', origin_key: 'roadmap:mm:def' },
+  { id: 'T-0003', state: 'cancelled', origin_key: 'orchestrator:w0' },
+  { id: 'T-0004', state: 'cancelled' },
+  { id: 'T-0005', state: 'ready', origin_key: null },
+  { id: 'T-0006', state: 'cancelled', origin_key: 'codex-turn-end:x' },
+];
+
+test('summarizeCancellations: agrupa por prefijo de origin_key con tasa sobre el total del prefijo', () => {
+  const s = summarizeCancellations(SIX_CARDS);
+  assert.equal(s.cancelled, 4);
+  assert.deepEqual(s.byOrigin.roadmap, { cancelled: 1, total: 2, rate: 0.5 });
+  assert.deepEqual(s.byOrigin.orchestrator, { cancelled: 1, total: 1, rate: 1 });
+  assert.deepEqual(s.byOrigin['codex-turn-end'], { cancelled: 1, total: 1, rate: 1 });
+});
+
+test('summarizeCancellations: las tarjetas sin origin_key cuentan como manual', () => {
+  const s = summarizeCancellations(SIX_CARDS);
+  assert.deepEqual(s.byOrigin.manual, { cancelled: 1, total: 2, rate: 0.5 });
+});
+
+test('renderRollup: seccion "Cancelaciones por origen" con una linea por prefijo', () => {
+  const R = require('../scripts/daily-rollup.cjs');
+  const md = R.renderRollup({
+    date: '2026-09-01', generatedAt: '2026-09-01T03:00:00.000Z',
+    turns: R.summarizeTurns([]), actions: R.summarizeActions([]), results: R.summarizeResults([]),
+    rulings: R.summarizeRulings([]), gates: { steward: null, boardFresh: null },
+    census: R.summarizeCensus([]), queues: R.summarizeQueues([]),
+    ledger: { byState: {}, dashboardLine: null, cancellations: summarizeCancellations(SIX_CARDS) },
+  });
+  assert.match(md, /## Cancelaciones por origen/);
+  assert.ok(md.includes('- roadmap: 1/2 (50%)'), md);
+  assert.ok(md.includes('- manual: 1/2 (50%)'), md);
+});

@@ -316,6 +316,14 @@ function renderRollup(data) {
   if (ledger.dashboardLine) L.push(`- dashboard: ${trunc(ledger.dashboardLine, 200)}`);
   L.push('');
 
+  const canc = ledger.cancellations || { cancelled: 0, byOrigin: {} };
+  L.push('## Cancelaciones por origen (fuente origin_key de _intel/tasks/*.json)');
+  const origins = Object.entries(canc.byOrigin).sort((a, b) => b[1].cancelled - a[1].cancelled || a[0].localeCompare(b[0]));
+  if (!origins.length) L.push('- sin tarjetas');
+  for (const [k, v] of origins) L.push(`- ${k}: ${v.cancelled}/${v.total} (${Math.round(v.rate * 100)}%)`);
+  L.push(`- total canceladas: ${canc.cancelled}`);
+  L.push('');
+
   const a = actions.byAction;
   L.push('## Autoeval del orquestador');
   L.push(`- dispatches: ${(a.spawn_pane || 0) + (a.queue_deliver || 0)} (spawn_pane=${a.spawn_pane || 0}, queue_deliver=${a.queue_deliver || 0} — fuente actions.jsonl)`);
@@ -362,20 +370,43 @@ function collectQueues(dir, date) {
   });
 }
 
+/**
+ * W6 (T31): cancelaciones por origen. El prefijo de origin_key (antes del primer ':')
+ * dice de DONDE vino el trabajo que murio: roadmap:, orchestrator:, codex-turn-end:...
+ * Sin origin_key => 'manual'. La tasa se calcula sobre TODAS las tarjetas del prefijo,
+ * no solo las canceladas, para que "roadmap 3" signifique algo (3 de cuantas).
+ */
+function summarizeCancellations(tasks) {
+  const byOrigin = {};
+  let cancelled = 0;
+  for (const t of tasks || []) {
+    const key = t && typeof t.origin_key === 'string' && t.origin_key.trim()
+      ? t.origin_key.split(':')[0]
+      : 'manual';
+    const b = byOrigin[key] || (byOrigin[key] = { cancelled: 0, total: 0, rate: 0 });
+    b.total += 1;
+    if (t && t.state === 'cancelled') { b.cancelled += 1; cancelled += 1; }
+  }
+  for (const b of Object.values(byOrigin)) b.rate = b.total ? b.cancelled / b.total : 0;
+  return { cancelled, byOrigin };
+}
+
 function collectLedger(dir) {
   const byState = {};
+  const tasks = [];
   try {
     for (const f of fs.readdirSync(path.join(dir, 'tasks'))) {
       if (!f.endsWith('.json')) continue;
       try {
         const t = JSON.parse(fs.readFileSync(path.join(dir, 'tasks', f), 'utf8'));
+        tasks.push(t);
         byState[t.state || '?'] = (byState[t.state || '?'] || 0) + 1;
       } catch { /* tarea ilegible: no cuenta */ }
     }
   } catch { /* sin ledger */ }
   let dashboardLine = null;
   try { dashboardLine = fs.readFileSync(path.join(dir, 'dashboard.md'), 'utf8').split('\n')[1] || null; } catch { /* sin dashboard */ }
-  return { byState, dashboardLine };
+  return { byState, dashboardLine, cancellations: summarizeCancellations(tasks) };
 }
 
 function readFirstLine(file) {
@@ -456,7 +487,7 @@ function main() {
 if (require.main === module) process.exit(main());
 module.exports = {
   reportDateFor, localDateOf, isOnDate,
-  summarizeTurns, summarizeActions, summarizeResults, summarizeRulings, summarizeQueues,
+  summarizeTurns, summarizeActions, summarizeResults, summarizeRulings, summarizeQueues, summarizeCancellations,
   sortDecisions, parseSchtasksCsv, classifyCensusRow, summarizeCensus, CONTRACT_NONZERO,
   renderRollup, generateRollup,
 };
