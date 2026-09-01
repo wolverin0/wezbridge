@@ -534,8 +534,9 @@ async function runCheck(ctx, check) {
   }
 }
 
-async function runDrill({ mode = 'stub', only = null, keep = false, log = () => {} } = {}) {
-  if (mode !== 'stub') unknown('modo live: todavia no implementado en este harness (ver plan T31, paso 10)');
+async function runDrill({ mode = 'stub', only = null, keep = false, log = () => {}, flags = {} } = {}) {
+  if (mode === 'live') return require('./fleet-drill-live.cjs').runLive(flags, log);
+  if (mode !== 'stub') unknown(`modo desconocido: ${mode}`);
   let ctx;
   try { ctx = buildSandbox({ keep, log }); } catch (e) { return { mode, verdict: 'UNKNOWN', exit: 3, checks: [], error: String(e.message), measures: {} }; }
   const results = [];
@@ -566,7 +567,14 @@ async function main() {
   const only = flag('--only') ? flag('--only').split(',').map(Number) : null;
   const keep = argv.includes('--keep');
   const report = flag('--report');
-  const r = await runDrill({ mode, only, keep, log: (m) => console.error(m) });
+  const flags = {};
+  for (let i = 0; i < argv.length; i += 1) {
+    if (!argv[i].startsWith('--')) continue;
+    const k = argv[i].slice(2);
+    const v = argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : true;
+    flags[k] = v;
+  }
+  const r = await runDrill({ mode, only, keep, flags, log: (m) => console.error(m) });
   if (report) {
     fs.mkdirSync(path.dirname(report), { recursive: true });
     fs.writeFileSync(report, renderMd(r));
