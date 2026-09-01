@@ -254,6 +254,9 @@ function discoverPanes({ wez: wezOps = wez } = {}) {
       isClaude, isCodex, agent, status, project, projectName,
       title, tabTitle, workspace, lastLines, confidence, rawText: text, persona,
       ctx, sessionPct, weeklyPct, model,
+      // identidad estable entre sockets (dedupe): cursor y tamano del pane crudo
+      cursor: { x: pane.cursor_x ?? null, y: pane.cursor_y ?? null },
+      size: pane.size && typeof pane.size === 'object' ? { rows: pane.size.rows ?? null, cols: pane.size.cols ?? null } : { rows: null, cols: null },
     });
   }
 
@@ -271,8 +274,13 @@ function discoverPanes({ wez: wezOps = wez } = {}) {
 function paneFingerprint(p) {
   // El titulo lleva un glifo de actividad al frente (◐ ◑ ✳ en Claude, ⠋⠙… en
   // Codex) que cambia entre dos lecturas separadas por milisegundos: se descarta.
+  // Ctx%/sesion tambien cambian entre lecturas si el pane esta trabajando (medido
+  // 2026-09-01: 46 y 2 seguian doble para un MCP fresco). Lo que SI es identico en
+  // las dos vistas del mismo pane y raro entre panes distintos: cursor y tamano.
   const stripGlyph = (t) => String(t ?? '').replace(/^[^\p{L}\p{N}(/\\]+/u, '').trim();
-  return [p.project, stripGlyph(p.title), stripGlyph(p.tabTitle), p.agent, p.ctx, p.sessionPct, p.model].map((v) => String(v ?? '')).join('|');
+  const c = p.cursor || {};
+  const s = p.size || {};
+  return [p.project, stripGlyph(p.title), stripGlyph(p.tabTitle), p.agent, c.x, c.y, s.rows, s.cols].map((v) => String(v ?? '')).join('|');
 }
 
 function dedupeAcrossSockets(rows, wezOps) {

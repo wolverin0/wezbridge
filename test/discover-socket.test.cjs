@@ -159,3 +159,30 @@ test('T-0281 dedupe: la misma pane vista por dos sockets es UNA fila en el socke
   assert.equal(rec[0].also_on, undefined, 'una pane vista por un solo socket no lleva also_on');
   assert.equal(out.length, 2);
 });
+
+test('T-0281 dedupe control: misma cwd y titulo pero cursor distinto = DOS panes reales, no se fusionan; ctx% distinto entre lecturas NO separa la misma pane', () => {
+  const GUI = 'C:/Users/x/.local/share/wezterm/gui-sock-109544';
+  const MUX = 'C:/Users/x/.local/share/wezterm/sock';
+  const base = { title: '◐ orch', cwd: 'file://PC/G:/Py Apps/wezbridge', size: { rows: 50, cols: 200 } };
+  const panes = {
+    [GUI]: [
+      { pane_id: 46, cursor_x: 3, cursor_y: 60, ...base, text: claudeText('G:\Py Apps\wezbridge').replace('16.0%', '62.0%') },
+      { pane_id: 30, cursor_x: 0, cursor_y: 12, ...base, text: claudeText('G:\Py Apps\wezbridge') },
+    ],
+    [MUX]: [
+      { pane_id: 2, cursor_x: 3, cursor_y: 60, ...base, title: '◑ orch', text: claudeText('G:\Py Apps\wezbridge').replace('16.0%', '63.0%') },
+    ],
+  };
+  const wez = {
+    currentSocket: () => GUI,
+    listSockets: () => Object.keys(panes).map((socket) => ({ socket, panes: panes[socket].map(({ text, ...p }) => p) })),
+    listPanes: () => { throw new Error('no'); },
+    getFullText: (paneId, lines, opts = {}) => { const row = (panes[opts.socket] || []).find((p) => p.pane_id === paneId); if (!row) throw new Error('no pane'); return row.text; },
+  };
+  const out = discoverPanes({ wez });
+  assert.equal(out.length, 2, `esperaba 2 panes reales (46≡2, y 30), vinieron ${out.map((p) => p.paneId).join(',')}`);
+  const me = out.find((p) => p.paneId === 46);
+  assert.deepEqual(me.also_on, [{ socket: MUX, paneId: 2 }], 'ctx% 62 vs 63 entre lecturas no separa la misma pane');
+  const rec = out.find((p) => p.paneId === 30);
+  assert.equal(rec.also_on, undefined, 'cursor distinto = otra pane, aunque comparta cwd y titulo');
+});
