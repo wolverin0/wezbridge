@@ -1,4 +1,4 @@
-<!-- doc-head: updated 2026-08-24b (R2: criteria block on type=result now ENFORCED at sender, WEZBRIDGE_RESULT_SHAPE_ENFORCE=0 reverts; M1: dispatch on corr=T-NNNN takes the card lease for the executor; D3: spawn-vs-fork delegation semantics. Same-day earlier: T-0235 pane=transport/project=identity. Previo 2026-08-22: B1 to_project queue + auto-ack; decision ledger). Edit body => update this. -->
+<!-- doc-head: updated 2026-09-01 (W2: corr de Eve `<T-id>:<slug>:<yyyymmdd>`, UN parser `taskIdFromCorr` para gate/lease/linker, corrs con guion deliberadamente no matcheados; un type=result v2=ok mueve la tarjeta running -> review con evidencia a2a-results.jsonl#time=, FAILED/BLOCKED mapeados, NUNCA done; lo no ligable sale como result.unlinked y el steward lo levanta; el result ENCOLADO pasa por shape-check y registro igual). Previo 2026-08-24b (R2: criteria block on type=result now ENFORCED at sender, WEZBRIDGE_RESULT_SHAPE_ENFORCE=0 reverts; M1: dispatch on corr=T-NNNN takes the card lease for the executor; D3: spawn-vs-fork delegation semantics. Same-day earlier: T-0235 pane=transport/project=identity. Previo 2026-08-22: B1 to_project queue + auto-ack; decision ledger). Edit body => update this. -->
 Defines the A2A envelope protocol for peer-to-peer pane communication via wezbridge.
 Envelope syntax: [A2A from pane-N to pane-M | corr=<id> | type=request|ack|progress|result|error].
 Addressing (B1, 2026-08-22): PREFER a2a_send {to_project} — pane resolved via pane-identity at send time,
@@ -283,6 +283,83 @@ instrumento existía desde donde miraba.
 
 Corolario para el rescate: el handoff debe cubrir **las preguntas abiertas del operador**, no sólo
 el estado técnico. Un `/clear` que las pierde reinicia una conversación que el operador ya tuvo.
+
+## Corr de Eve, y el result que mueve la tarjeta (W2, 2026-09-01)
+
+<!-- section-head: convención de corr `<T-id>:<slug>:<yyyymmdd>` (Eve la muta a `:rN`);
+UN solo parser, `taskIdFromCorr` en src/a2a-intel.cjs, usado por el dispatch-gate, la
+lease y el linker; los corrs con GUION (`T-0121-foo`) NO matchean, deliberado;
+un `type=result` v2=ok sobre una tarjeta `running` la mueve a `review` con evidencia
+`a2a-results.jsonl#time=…`, FAILED→failed, BLOCKED→blocked, NUNCA `done`;
+lo que no liga sale como evento `result.unlinked` con razón (ambiguous|state=<s>|no-card|
+no-task-corr|ledger-error|v2=<x>) y el steward lo levanta como `result-unlinked`.
+Leer cuando: despachás a FinalOrchestra/Eve, o un result no movió la tarjeta que esperabas. -->
+
+### La convención de corr
+
+Un despacho a Eve setea el corr **ANTES** del submit:
+
+```
+<T-id>:<slug>:<yyyymmdd>        # T-0308:eve-consulta-graphjson:20260901
+<T-id>:<slug>:<yyyymmdd>:rN     # la revisión N, mutada por Eve
+```
+
+Por qué así y no el jobId: el jobId no existe todavía cuando se arma el payload, y
+`origin.correlationId` es el **único** string que sobrevive el viaje de ida y vuelta —
+vuelve como `corr` del envelope A2A. El prefijo `T-NNNN:` es inequívoco: hoy hay 25
+tarjetas vivas compartiendo corrs exactos, así que "el corr" a secas no identifica nada.
+`scripts/eve-dispatch.cjs` arma el payload entero desde la tarjeta y `--apply` setea el
+corr, mueve la tarjeta a `running` (por saltos legales: `queued → ready → running`) y
+toma la lease `eve:<jobId>`.
+
+`a2a_send` acepta `:` en el corr desde v3.5+W2 (charset `[a-zA-Z0-9._:-]{1,64}`). Un
+servidor MCP anterior lo rechaza — runtime ≠ repo: hasta reiniciar, ese pane no puede
+enviar con la convención.
+
+### Un solo parser, tres lectores
+
+`taskIdFromCorr(corr)` (`src/a2a-intel.cjs`) recorta un `:rN` final y matchea
+`^(T-\d{4})(?::|$)`. Lo usan `checkDispatchGate`, `takeDispatchLease` y el linker. Antes
+los dos primeros matcheaban `^T-\d{4}$` pelado, así que **toda tarjeta despachada con la
+convención salía sin gate y sin dueño** — el agujero que T-0238 y M1 existen para tapar,
+reabierto por un prefijo.
+
+Los corrs con **guion** (`T-0121-foo`) NO matchean, y es deliberado: nunca fueron
+gateados, así que matchearlos ahora gatearía retroactivamente hilos vivos que nadie
+declaró como tarjeta. Si querés que un hilo sea una tarjeta, usá los dos puntos.
+
+### El result mueve la tarjeta
+
+`src/result-linker.cjs`, llamado desde `a2a_send` (las dos ramas: entregada y encolada) y
+desde `scripts/result-link.cjs --once` (cursor de bytes sobre `a2a-results.jsonl`, arranca
+en EOF).
+
+| Entrada | Efecto en la tarjeta |
+|---|---|
+| `v2=ok`, tarjeta `running` | `review` + `--evidence "a2a-results.jsonl#time=<iso> corr=<corr> from=pane-N v2=ok"` |
+| cuerpo con `FinalOrchestra <job>: FAILED` | `failed` |
+| cuerpo con `FinalOrchestra <job>: BLOCKED` | `blocked`, `blocked_by: agent`, blocker = la primera línea después del veredicto |
+| cualquier otra cosa | evento `result.unlinked` con razón |
+
+**Nunca `done`.** `review` dice "hay algo que mirar"; `done` dice "lo miré y está bien", y
+eso no lo puede afirmar el que entregó el trabajo. El steward tampoco cierra nada: misma
+regla, mismo motivo.
+
+Razones de `result.unlinked`: `ambiguous` (dos tarjetas con el mismo corr exacto — falla
+cerrado), `state=<s>` (la tarjeta no estaba `running`), `no-card`, `no-task-corr`,
+`ledger-error`, `v2=<x>` (un result sin bloque `criteria:` no mueve nada). El steward las
+levanta como hallazgo `result-unlinked` (ventana 72 h, id `result:<corr>`).
+
+Ligar dos veces la misma línea es **no-op**: la evidencia de la tarjeta ya la cita. Por eso
+el cursor puede re-leer sin miedo, y por eso un re-link no genera hallazgo.
+
+### El result encolado pasa por los mismos controles
+
+Hasta W2, la rama `to_project` sin pane vivo retornaba **antes** del shape-check y del
+registro: un result que viajaba por la cola nunca llegaba a `a2a-results.jsonl` y ningún
+sobre malformado era rechazado por ese camino. Ahora los dos corren antes del early-return,
+exactamente una vez por envío, y la respuesta lo dice:
+`Ledger: T-0308 running → review` o `Ledger: result NOT linked (<razón>)`.
 
 ## Reference
 

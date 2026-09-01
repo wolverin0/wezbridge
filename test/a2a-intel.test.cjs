@@ -245,7 +245,13 @@ test('call-site gate: mcp-server persists bodies ONLY for type=result', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'mcp-server.cjs'), 'utf8');
   const calls = src.match(/recordResultBody\(/g) || [];
   assert.strictEqual(calls.length, 1, 'exactly one recordResultBody call site');
-  assert.match(src, /if \(msgType === 'result'\) a2aIntel\.recordResultBody\(/,
+  // W2 (2026-09-01): la llamada ahora CAPTURA el retorno (`{ time }`), que es lo
+  // que le permite al linker apuntar la evidencia a la línea exacta de
+  // a2a-results.jsonl. El guard que este test protege es el mismo — UN solo
+  // sitio, detrás de msgType === 'result' — así que el regex acepta la
+  // asignación y sigue rechazando una llamada sin guard o una segunda copia
+  // (que es como se llega a registrar el mismo result dos veces).
+  assert.match(src, /if \(msgType === 'result'\) (?:\w+ = )?a2aIntel\.recordResultBody\(/,
     'the call must be guarded by msgType === \'result\'');
 });
 

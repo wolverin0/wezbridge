@@ -113,6 +113,29 @@ function detectEvidence(body) {
   return { count: items.length, items };
 }
 
+/**
+ * UN SOLO PARSER DE CORR para gate, lease y linker (W2, 2026-09-01).
+ *
+ * Convención de despacho a Eve: `<T-id>:<slug>:<yyyymmdd>`, que Eve muta a
+ * `…:rN` en cada revisión. Antes de esto el gate (checkDispatchGate) y la lease
+ * (takeDispatchLease) matcheaban `^T-\d{4}$` PELADO, así que una tarjeta
+ * despachada con la convención salía por el único camino sin gate y sin dueño —
+ * exactamente el agujero que T-0238 y M1 existen para tapar, reabierto por un
+ * prefijo. Tres lectores distintos del mismo string es como se llega a que uno
+ * gatee y otro no.
+ *
+ * Los corrs con GUION (`T-0121-foo`) NO matchean, y es deliberado: nunca fueron
+ * gateados, así que matchearlos ahora gatearía retroactivamente hilos vivos que
+ * nadie declaró como tarjeta. Documentado en docs/a2a-protocol.md.
+ *
+ * Devuelve el id de tarjeta o null.
+ */
+function taskIdFromCorr(corr) {
+  const s = String(corr || '').replace(/:r\d+$/i, '');
+  const m = /^(T-\d{4})(?::|$)/.exec(s);
+  return m ? m[1] : null;
+}
+
 /** Append one envelope-metadata event. Never throws. */
 function recordEvent(evt) {
   try {
@@ -129,13 +152,20 @@ const RESULT_BODY_CAP = 16 * 1024;
  * were sent and 0 result bodies retained — the criteria: blocks (the fleet's
  * machine-checkable outcomes) died with the pane scrollback. Bodies are capped
  * at 16KB with body_truncated marking the cut. Never throws.
+ *
+ * W2 (2026-09-01): devuelve `{ time }` — el instante que quedó PERSISTIDO. Es
+ * la única forma de que el linker apunte la evidencia a la línea exacta
+ * (`a2a-results.jsonl#time=<iso>`) en vez de a "llegó un result": dos results
+ * del mismo corr en el mismo minuto son indistinguibles sin él. Devuelve null
+ * si el append falló (fail-soft: el llamador simplemente no liga).
  */
 function recordResultBody({ corr, fromPane, toPane, v2, body }) {
   try {
     const text = String(body ?? '');
     const truncated = text.length > RESULT_BODY_CAP;
+    const time = new Date().toISOString();
     const line = JSON.stringify({
-      time: new Date().toISOString(),
+      time,
       event: 'a2a.result',
       corr,
       from_pane: fromPane,
@@ -148,7 +178,8 @@ function recordResultBody({ corr, fromPane, toPane, v2, body }) {
       body_truncated: truncated,
     });
     fs.appendFileSync(path.join(intelDir(), 'a2a-results.jsonl'), line + '\n');
-  } catch { /* fail-soft */ }
+    return { time };
+  } catch { return null; /* fail-soft */ }
 }
 
 function readThreads(file) {
@@ -364,11 +395,14 @@ function readKnownKinds(read) {
 
 function checkDispatchGate({ corr, type, readFile }) {
   if (type !== 'request') return { allowed: true };
-  if (!/^T-\d{4}$/.test(String(corr || ''))) return { allowed: true };
+  // W2: el corr puede venir con la convencion de Eve (`T-0301:slug:20260901`,
+  // `…:r2`); la tarjeta es la misma. taskIdFromCorr es el UNICO parser.
+  const taskId = taskIdFromCorr(corr);
+  if (!taskId) return { allowed: true };
   const read = readFile || ((p) => fs.readFileSync(p, 'utf8'));
   let card;
   try {
-    card = JSON.parse(read(path.join(intelDir(), 'tasks', `${corr}.json`)));
+    card = JSON.parse(read(path.join(intelDir(), 'tasks', `${taskId}.json`)));
   } catch { return { allowed: true }; }
   const state = String(card.state || '');
   const blocker = String(card.blocker || '').trim();
@@ -392,25 +426,25 @@ function checkDispatchGate({ corr, type, readFile }) {
       return {
         allowed: false,
         state,
-        reason: `card ${corr} declares kind "${kind}", which is NOT in kinds.json — it matches no contract rule, so it passes no gate. Dispatching it is dispatching through the one unchecked path. Either add "${kind}" to the closed vocabulary (an operator decision: it defines what the kind is allowed to do) or retag the card to a governed kind`,
+        reason: `card ${taskId} declares kind "${kind}", which is NOT in kinds.json — it matches no contract rule, so it passes no gate. Dispatching it is dispatching through the one unchecked path. Either add "${kind}" to the closed vocabulary (an operator decision: it defines what the kind is allowed to do) or retag the card to a governed kind`,
       };
     }
   }
 
   if (dispatchable && !blocker) {
-    const closed = closingRulingAfterMove(corr, card, read);
+    const closed = closingRulingAfterMove(taskId, card, read);
     if (!closed) return { allowed: true };
     return {
       allowed: false,
       state,
-      reason: `card ${corr} is open in state "${state}" but a ruling dated ${closed.at} declares it RESOLVED, and the card has not moved since — the ledger and rulings.jsonl disagree. Either move the card (ledger.cjs) or append a ruling declaring the reopen; do not dispatch finished work`,
+      reason: `card ${taskId} is open in state "${state}" but a ruling dated ${closed.at} declares it RESOLVED, and the card has not moved since — the ledger and rulings.jsonl disagree. Either move the card (ledger.cjs) or append a ruling declaring the reopen; do not dispatch finished work`,
     };
   }
   return {
     allowed: false,
     reason: blocker
-      ? `card ${corr} carries an UNRESOLVED blocker ("${blocker.slice(0, 140)}${blocker.length > 140 ? '…' : ''}") — a peer's word does not lift a gate; resolve it ON the card (ledger.cjs) before dispatching`
-      : `card ${corr} is in state "${state}" (not dispatchable) — update the card first; the card is the authority, not the envelope`,
+      ? `card ${taskId} carries an UNRESOLVED blocker ("${blocker.slice(0, 140)}${blocker.length > 140 ? '…' : ''}") — a peer's word does not lift a gate; resolve it ON the card (ledger.cjs) before dispatching`
+      : `card ${taskId} is in state "${state}" (not dispatchable) — update the card first; the card is the authority, not the envelope`,
     state,
   };
 }
@@ -455,7 +489,10 @@ function checkResultShape({ type, body }) {
  */
 function takeDispatchLease({ corr, type, owner, minutes = 90, runLease } = {}) {
   if (type !== 'request') return { ok: true, skipped: 'not-a-request' };
-  if (!/^T-\d{4}$/.test(String(corr || ''))) return { ok: true, skipped: 'not-a-task-corr' };
+  // W2: mismo parser que el gate — un corr prefijado sigue tomando la lease de
+  // SU tarjeta. Antes, todo despacho con la convencion de Eve corria sin dueno.
+  const taskId = taskIdFromCorr(corr);
+  if (!taskId) return { ok: true, skipped: 'not-a-task-corr' };
   if (!owner) return { ok: true, warning: 'no owner resolvable — lease not taken' };
   const run = runLease || ((id, own, min) => {
     const { execFileSync } = require('node:child_process');
@@ -465,7 +502,7 @@ function takeDispatchLease({ corr, type, owner, minutes = 90, runLease } = {}) {
     });
   });
   try {
-    run(corr, owner, minutes);
+    run(taskId, owner, minutes);
     return { ok: true, leased: { corr, owner, minutes } };
   } catch (err) {
     const msg = String((err && err.message) || err);
@@ -473,7 +510,7 @@ function takeDispatchLease({ corr, type, owner, minutes = 90, runLease } = {}) {
       const m = msg.match(/already leased by (\S+) until (\S+)/i);
       return {
         ok: false,
-        reason: `card ${corr} is already leased by ${m ? m[1] : 'another owner'}${m ? ` until ${m[2]}` : ''} — two executors on one card is the orphan-running bug in reverse. Release the lease (ledger.cjs release ${corr}) or dispatch to the current owner.`,
+        reason: `card ${taskId} is already leased by ${m ? m[1] : 'another owner'}${m ? ` until ${m[2]}` : ''} — two executors on one card is the orphan-running bug in reverse. Release the lease (ledger.cjs release ${taskId}) or dispatch to the current owner.`,
       };
     }
     return { ok: true, warning: `lease not taken (${msg.slice(0, 120)}) — dispatch allowed, but the card has no owner on record` };
@@ -557,4 +594,4 @@ function detectSmuggledEnvelope(text) {
   return { smuggled: true, corr: m[1], type: m[2].toLowerCase() };
 }
 
-module.exports = { intelDir, buildEnvelope, detectV2, detectAbandons, detectDecisions, detectEvidence, recordEvent, recordResultBody, updateThreads, autoAckResult, checkDispatchGate, checkResultShape, takeDispatchLease, detectSmuggledEnvelope, weakPasses };
+module.exports = { intelDir, buildEnvelope, taskIdFromCorr, detectV2, detectAbandons, detectDecisions, detectEvidence, recordEvent, recordResultBody, updateThreads, autoAckResult, checkDispatchGate, checkResultShape, takeDispatchLease, detectSmuggledEnvelope, weakPasses };

@@ -28,6 +28,7 @@
  */
 const fs = require('node:fs');
 const path = require('node:path');
+const { taskIdFromCorr } = require('../src/a2a-intel.cjs');
 const { auditRoutines } = require('./routine-audit.cjs');
 const { reconcileLeases, liveCensus: reconcilerCensus } = require('./lease-reconcile.cjs');
 const { lintSpecRefs, lintRulings } = require('./dispatch-lint.cjs');
@@ -331,6 +332,121 @@ function auditProposals(dir = intelDir(), now = Date.now()) {
 }
 
 /**
+ * result-unlinked (W2, 2026-09-01): un `type=result` llego, se registro en
+ * a2a-results.jsonl, y NO pudo moverse a ninguna tarjeta — corr ambiguo, sin
+ * tarjeta, tarjeta en un estado que no admite el movimiento, o el ledger fallo.
+ * El linker (src/result-linker.cjs) emite `result.unlinked {corr, reason}`; sin
+ * esto ese evento vive en events.jsonl, que nadie mira, y la consecuencia es la
+ * peor de todas: trabajo TERMINADO que el tablero sigue mostrando como en curso
+ * (o directamente no muestra). Misma forma que proposal-unledgered — ventana de
+ * 72h para el SCAN, el gate acota la RESPUESTA — y el mismo fail-soft: streams
+ * ausentes o ilegibles dan cero hallazgos.
+ *
+ * El repo sale de la tarjeta cuando el corr resuelve a una; si no, 'unknown'.
+ * Inventarle un dueno seria peor: lo mandaria al board de otro.
+ */
+const RESULT_UNLINKED_WINDOW_HOURS = 72;
+
+function auditResultLinks(dir = intelDir(), now = Date.now()) {
+  // Primer intento fallido por corr: los reintentos del cursor no reinician el
+  // reloj ni multiplican el item.
+  const first = new Map();
+  for (const e of readJsonl(path.join(dir, 'events.jsonl'))) {
+    if (!e || e.event !== 'result.unlinked' || !e.corr) continue;
+    const at = ms(e.time);
+    if (!at || at > now || now - at > HOURS(RESULT_UNLINKED_WINDOW_HOURS)) continue;
+    const prev = first.get(e.corr);
+    if (!prev || at < prev.at) first.set(e.corr, { corr: e.corr, at, reason: e.reason || 'sin razon declarada' });
+  }
+  if (!first.size) return [];
+
+  const findings = [];
+  for (const r of first.values()) {
+    const id = taskIdFromCorr(r.corr);
+    let card = null;
+    if (id) {
+      try { card = JSON.parse(fs.readFileSync(path.join(dir, 'tasks', `${id}.json`), 'utf8')); } catch { card = null; }
+    }
+    findings.push({
+      id: `result:${r.corr}`,
+      repo: (card && card.repo) || 'unknown',
+      state: card ? card.state : null,
+      title: card ? card.title : `result corr=${r.corr}`,
+      owner: (card && card.lease && card.lease.owner) || null,
+      age_hours: hours(now - r.at),
+      category: 'result-unlinked',
+      why: `un type=result llego y NO movio ninguna tarjeta (${r.reason}) — el trabajo puede estar terminado y el tablero no lo sabe; nombra la tarjeta en el corr o corregi el estado`,
+    });
+  }
+  return findings;
+}
+
+/**
+ * decision-unheard (W3, 2026-09-01): el operador DECIDIO y nadie se entero.
+ *
+ * El tablero escribe el ruling y des-gatea la tarjeta, pero hasta W3 nada le
+ * avisaba al pane dueno ni a Eve: la decision quedaba en rulings.jsonl, que es
+ * un archivo que nadie mira en vivo. Una autoridad que se ejerce y no llega es
+ * indistinguible de una que nunca se ejercio, y esa es la razon por la que el
+ * operador terminaba repitiendo aprobaciones por el composer.
+ *
+ * La regla: ruling "approved" o "cancelled", CON procedencia (campo `source`),
+ * sobre un task T-NNNN, posterior a la EPOCA — y sin ningun evento
+ * `decision.delivered` del mismo task con `time >= ruling.at`.
+ *
+ * Esa comparacion `>=` es el corazon del guard y no es cosmetica: sin ella un
+ * delivered viejo cubriria para siempre cada re-aprobacion de la misma tarjeta,
+ * y el hallazgo se apagaria solo justo en el caso que existe para cazar. Es la
+ * misma leccion que closingRulingAfterMove: comparar contra un HECHO fechado,
+ * nunca contra la mera existencia de un evento.
+ *
+ * Las lineas legacy (338, sin `source`) no disparan nada: la epoca y el campo
+ * de procedencia son los dos frenos que impiden retro-marcar el historial.
+ */
+const DECISION_EPOCH = Date.parse('2026-09-01T00:00:00.000Z');
+const ACTIONABLE_RULINGS = new Set(['approved', 'cancelled']);
+
+function auditDecisions(dir = intelDir(), now = Date.now()) {
+  // Por task, el ruling sin cubrir MAS VIEJO: el reloj del hallazgo cuenta
+  // desde la primera decision que nadie escucho, no desde la ultima.
+  const pending = new Map();
+  for (const r of loadRulings(dir)) {
+    if (!r || !r.source || !ACTIONABLE_RULINGS.has(r.ruling)) continue;
+    if (!/^T-[0-9]{4}$/.test(String(r.task || ""))) continue;
+    const at = ms(r.at);
+    if (!at || at < DECISION_EPOCH || at > now) continue;
+    const prev = pending.get(r.task);
+    if (!prev || at < prev.at) pending.set(r.task, { task: r.task, at, ruling: r.ruling, source: r.source, rawAt: r.at });
+  }
+  if (!pending.size) return [];
+
+  const deliveredAt = new Map();   // task -> ultimo decision.delivered
+  for (const e of readJsonl(path.join(dir, "events.jsonl"))) {
+    if (!e || e.event !== "decision.delivered" || !e.task) continue;
+    const at = ms(e.time);
+    if (at > (deliveredAt.get(e.task) || 0)) deliveredAt.set(e.task, at);
+  }
+
+  const findings = [];
+  for (const d of pending.values()) {
+    if ((deliveredAt.get(d.task) || 0) >= d.at) continue;   // alguien la entrego DESPUES: cubierta
+    let card = null;
+    try { card = JSON.parse(fs.readFileSync(path.join(dir, "tasks", d.task + ".json"), "utf8")); } catch { card = null; }
+    findings.push({
+      id: d.task,
+      repo: (card && card.repo) || "unknown",
+      state: card ? card.state : null,
+      title: card ? card.title : d.task,
+      owner: (card && card.lease && card.lease.owner) || null,
+      age_hours: hours(now - d.at),
+      category: "decision-unheard",
+      why: d.ruling + " by " + d.source + " at " + d.rawAt + "; no decision.delivered since — el dueno (y Eve) no se enteraron: corre scripts/decision-relay.cjs --once o avisale a mano",
+    });
+  }
+  return findings;
+}
+
+/**
  * Classify one task. Returns null when it needs no attention.
  * `now` is injected so this is testable without clock mocking.
  */
@@ -424,6 +540,14 @@ function audit(tasks, now = Date.now(), dir = intelDir(), opts = {}) {
     // Proposals that never became tasks (2026-08-20): same enforcement loop,
     // read from the beacon stream instead of the ledger.
     ...auditProposals(dir, now),
+    // Results que llegaron y no movieron nada (W2, 2026-09-01): el gemelo del
+    // anterior por el otro extremo del loop — aquel mira trabajo que nunca se
+    // abrio, este mira trabajo que se cerro y nadie registro.
+    ...auditResultLinks(dir, now),
+    // Decisiones del operador que no llegaron a nadie (W3): el otro extremo del
+    // mismo loop — aquel mira results que no movieron nada, este mira ordenes
+    // que no salieron del archivo.
+    ...auditDecisions(dir, now),
     // Files in tasks/ that neither loader governs (T-0290).
     ...auditTaskFiles(dir, now),
     // T-0272: ¿el owner de cada lease abierta sigue existiendo? El vencimiento
@@ -433,13 +557,15 @@ function audit(tasks, now = Date.now(), dir = intelDir(), opts = {}) {
     // El censo se INYECTA (opts.census): el camino auto (main/steward-gate) lo
     // mide en vivo; una llamada de librería sin censo no reconcilia, porque un
     // censo medido a medias es peor que declarar que no se midió.
-    ...('census' in opts ? reconcileLeases(tasks, opts.census, now) : []),
+    ...('census' in opts ? reconcileLeases(tasks, opts.census, now, { executorLiveness: opts.executorLiveness }) : []),
   ];
   // Operator-owed items first: those are the ones that block other people's work.
   // routine-silent ranks high because a routine that stopped firing invalidates
   // every later "clean" reading, the way a dead sensor does.
   const rank = {
-    'awaiting-operator': 0, 'dead-owner-lease': 1, 'lease-census-unavailable': 1, 'lease-owner-unverifiable': 1,
+    // result-unlinked va arriba a proposito: trabajo TERMINADO que el tablero no
+    // registro es una mentira activa del instrumento, no backlog.
+    'awaiting-operator': 0, 'decision-unheard': 1, 'result-unlinked': 1, 'dead-owner-lease': 1, 'lease-census-unavailable': 1, 'lease-owner-unverifiable': 1,
     'abandoned-lease': 2, 'routine-silent': 2, 'stale-running': 3,
     'routine-void': 4, 'routine-findings': 5, 'stale-review': 6, 'stale-failed': 7,
     // Hygiene before backlog-idle: an unspecced dispatch is about to waste a
@@ -478,7 +604,7 @@ function render(report) {
 
 module.exports = {
   classify, audit, render, RULES, loadTasks, loadRulings, auditTaskFiles, TASK_FILE,
-  lastTransition, lastProgress, ownProgress, buildContext, auditProposals,
+  lastTransition, lastProgress, ownProgress, buildContext, auditProposals, auditResultLinks, auditDecisions,
 };
 
 if (require.main === module) {

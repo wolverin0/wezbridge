@@ -1487,8 +1487,14 @@ function handleToolCall(name, args) {
       const corr = args.corr === undefined || args.corr === null
         ? `a2a-${Date.now().toString(36)}`
         : String(args.corr);
-      if (!/^[a-zA-Z0-9._-]{1,64}$/.test(corr)) {
-        return { content: [{ type: 'text', text: 'Error: corr must be 1-64 chars of [a-zA-Z0-9._-]' }], isError: true };
+      // W2: `:` entra al vocabulario porque la convencion de despacho a Eve es
+      // `<T-id>:<slug>:<yyyymmdd>` (mutada a `:rN` en revisiones) y es el UNICO
+      // string que sobrevive el viaje de ida y vuelta a FinalOrchestra. El resto
+      // del charset sigue cerrado: `/`, `\` y espacios quedan afuera porque el
+      // corr llega a formar nombres de archivo (a2a-length-guard lo sanea igual,
+      // cinturon y tiradores).
+      if (!/^[a-zA-Z0-9._:-]{1,64}$/.test(corr)) {
+        return { content: [{ type: 'text', text: 'Error: corr must be 1-64 chars of [a-zA-Z0-9._:-]' }], isError: true };
       }
       // DERRAMAR ANTES QUE REFUSAR. La refusion tenia razon en el diagnostico y
       // se quedaba corta en el remedio: le devolvia el trabajo al llamador.
@@ -1519,6 +1525,55 @@ function handleToolCall(name, args) {
         }
       }
 
+      // R2: a type=result without a criteria: block (per-criterion pass|fail)
+      // is refused BEFORE transport — validate the draft, not the delivery
+      // (swarm-forge handoffd pattern). The error tells the sender exactly
+      // what to add; WEZBRIDGE_RESULT_SHAPE_ENFORCE=0 reverts to warn-only.
+      //
+      // W2 (2026-09-01): este bloque y el registro del cuerpo se MOVIERON aca,
+      // ANTES del early-return de la cola. La rama `to_project` sin pane vivo
+      // retornaba primero, asi que un result que viajaba encolado no pasaba por
+      // el shape-check y NUNCA llegaba a a2a-results.jsonl: el camino que menos
+      // se mira era, otra vez, el unico sin control.
+      const resultShape = a2aIntel.checkResultShape({ type: msgType, body });
+      if (!resultShape.allowed) {
+        a2aIntel.recordEvent({ event: 'a2a.result_shape_refused', from_pane: fromPane, to_pane: toPane === undefined ? null : toPane, corr, type: msgType, shape: resultShape.shape });
+        return { content: [{ type: 'text', text: `result-shape: BLOCKED a2a_send — ${resultShape.reason}` }], isError: true };
+      }
+      const v2 = msgType === 'result' ? a2aIntel.detectV2(body) : undefined;
+
+      // Registrar el cuerpo y LIGARLO a su tarjeta, UNA sola vez, tome el envio
+      // la rama entregada o la de cola. `recordedResult.time` es lo que hace que
+      // la evidencia apunte a la linea exacta y no a "llego un result".
+      // Fail-soft entero: el linker corre en el camino de respuesta del send y
+      // no puede demorarlo ni tumbarlo (por eso el try, y por eso el ledger va
+      // por CLI con timeout).
+      let recordedResult = null;
+      let ledgerNote = '';
+      const recordAndLinkResult = (resolvedPane) => {
+        if (msgType !== 'result' || recordedResult) return;
+        const pane = resolvedPane === undefined ? null : resolvedPane;
+        try {
+          // El guard se repite a proposito: `test/a2a-intel.test.cjs` lo
+          // verifica A NIVEL DE FUENTE (este archivo no exporta nada), y esa
+          // asercion es lo unico que impide que un cuerpo que no es result
+          // termine en a2a-results.jsonl. No lo "simplifiques".
+          if (msgType === 'result') recordedResult = a2aIntel.recordResultBody({ corr, fromPane, toPane: pane, v2, body });
+          if (!recordedResult) return;
+          const resultLinker = require('./result-linker.cjs');
+          const linked = resultLinker.link(
+            { time: recordedResult.time, corr, from_pane: fromPane, to_pane: pane, v2, body },
+            {
+              runLedger: resultLinker.defaultRunLedger,
+              readTasks: resultLinker.defaultReadTasks,
+              recordEvent: a2aIntel.recordEvent,
+            },
+          );
+          if (linked.linked) ledgerNote = ` Ledger: ${linked.id} ${linked.from} → ${linked.to}.`;
+          else if (!linked.noop) ledgerNote = ` Ledger: result NOT linked (${linked.reason}) — la tarjeta NO se movio; nombrala en el ledger o corregi el corr.`;
+        } catch { /* fail-soft: ligar una tarjeta nunca puede tumbar un envio */ }
+      };
+
       // to_project (B1, 2026-08-22): resolve the PROJECT to a live pane AT SEND
       // TIME via pane-identity — pane ids reset on WezTerm restart and stored
       // ids are the whole "pane-8/pane-24" misroute class. Whatever happens
@@ -1537,9 +1592,18 @@ function handleToolCall(name, args) {
         const hit = paneIdentity.resolve(toProject, mapped);
         resolutionWarning = hit.warning;
         if (hit.paneId === null || hit.ambiguous.length) {
+          // W2: un result encolado ya paso el shape-check; aca queda REGISTRADO
+          // y ligado a su tarjeta ANTES de encolar, para que la linea de la cola
+          // pueda declarar recorded:true. La entrega puede esperar al drain; el
+          // hecho de que el trabajo termino no.
+          recordAndLinkResult(null);
           const q = projectQueue.enqueue({
             project: toProject, corr, type: msgType, from_pane: fromPane,
             resolved_pane: null, submitted: null, delivered: null, ok: false, body,
+            // W4 handshake: el cuerpo YA quedo en a2a-results.jsonl, asi que
+            // deliverPending no vuelve a registrarlo al drenar. Sin la marca el
+            // mismo result se cuenta dos veces.
+            ...(recordedResult ? { recorded: true } : {}),
           });
           return {
             content: [{
@@ -1553,7 +1617,7 @@ function handleToolCall(name, args) {
                 type: msgType,
                 note: `${hit.warning || `no live pane for "${toProject}"`} — NOT delivered now. ${q.ok
                   ? `Durably queued in _intel/queues/: run \`node scripts/queue-drain.cjs\` (cron-able) to retry, or re-send once the pane exists.`
-                  : 'Queue append ALSO failed — this message is not persisted anywhere; re-send it.'}`,
+                  : 'Queue append ALSO failed — this message is not persisted anywhere; re-send it.'}${ledgerNote}`,
               }, null, 2),
             }],
             isError: false,
@@ -1600,16 +1664,6 @@ function handleToolCall(name, args) {
         return { content: [{ type: 'text', text: `dispatch-gate: BLOCKED a2a_send — ${gate.reason}` }], isError: true };
       }
 
-      // R2: a type=result without a criteria: block (per-criterion pass|fail)
-      // is refused BEFORE transport — validate the draft, not the delivery
-      // (swarm-forge handoffd pattern). The error tells the sender exactly
-      // what to add; WEZBRIDGE_RESULT_SHAPE_ENFORCE=0 reverts to warn-only.
-      const resultShape = a2aIntel.checkResultShape({ type: msgType, body });
-      if (!resultShape.allowed) {
-        a2aIntel.recordEvent({ event: 'a2a.result_shape_refused', from_pane: fromPane, to_pane: toPane, corr, type: msgType, shape: resultShape.shape });
-        return { content: [{ type: 'text', text: `result-shape: BLOCKED a2a_send — ${resultShape.reason}` }], isError: true };
-      }
-
       // M1: a dispatched request TAKES the card's lease for the executor, so
       // running-without-owner (T-0222's 15h orphan) can't happen via a2a_send.
       // Provable conflict refuses; lease plumbing failure fails open with a
@@ -1650,7 +1704,6 @@ function handleToolCall(name, args) {
         const truncated = delivered === 'truncated';
         // Control-plane enforcement (fail-soft, never blocks delivery):
         // v2 shape check on results, audit every envelope, track open threads.
-        const v2 = msgType === 'result' ? a2aIntel.detectV2(body) : undefined;
         // Decision ledger (A1, 2026-08-22): surface the optional decisions:
         // block + criteria evidence so the requester sees judgment calls
         // without re-reading the body. Counts only in the response; full items
@@ -1662,7 +1715,7 @@ function handleToolCall(name, args) {
         a2aIntel.recordEvent({ from_pane: fromPane, ...(selfRes.project ? { from_project: selfRes.project } : {}), ...(selfRes.source !== 'explicit' ? { from_source: selfRes.source } : {}), to_pane: toPane, ...(toProject ? { to_project: toProject } : {}), corr, type: msgType, submitted, delivered, ...(v2 ? { v2 } : {}) });
         // Result bodies (the criteria: blocks) persist to the sibling
         // a2a-results.jsonl — events.jsonl stays metadata-only. Fail-soft.
-        if (msgType === 'result') a2aIntel.recordResultBody({ corr, fromPane, toPane, v2, body });
+        recordAndLinkResult(toPane);
         const unackedInbound = a2aIntel.updateThreads({ fromPane, toPane, corr, type: msgType, body });
         const verified = submitted !== 'stuck' && !truncated;
         // Durable queue record for to_project sends — ALWAYS, whatever the
@@ -1671,6 +1724,7 @@ function handleToolCall(name, args) {
           ? projectQueue.enqueue({
             project: toProject, corr, type: msgType, from_pane: fromPane,
             resolved_pane: toPane, submitted, delivered, ok: verified, body,
+            ...(recordedResult ? { recorded: true } : {}),
           })
           : null;
         // Auto-ack (B1): a VERIFIED result delivery proves receipt, so the
@@ -1749,6 +1803,7 @@ function handleToolCall(name, args) {
             note += ` UNVERIFIABLE PASSES (${weak.length}): ${weak.join(', ')} — these say pass but cite no artifact. A green check counts only if you can NAME what it produced: the file, the row, the SHA, the count, the test that ran. If "finished without error" is the only evidence, nothing was verified.`;
           }
         }
+        if (ledgerNote) note += ledgerNote;
         if (autoAcked) {
           note += ' Auto-ack: delivery verified, so the receipt bookkeeping is done (thread closed in a2a-threads.json) — the requester needs NO ack turn, only its own validation of the result.';
         }

@@ -119,3 +119,51 @@ test('M1: non-requests and non-task corrs never touch the ledger', () => {
   assert.strictEqual(takeDispatchLease({ corr: 'T-0222', type: 'result', owner: 'x', runLease: boom }).ok, true);
   assert.strictEqual(takeDispatchLease({ corr: 'grill-rulings', type: 'request', owner: 'x', runLease: boom }).ok, true);
 });
+
+// ── W2 (2026-09-01): UN solo parser de corr para gate, lease y linker ──────
+//
+// Convención Eve: `<T-id>:<slug>:<yyyymmdd>`, mutada a `:rN` en revisiones. El
+// gate y la lease matcheaban `^T-\d{4}$` pelado, así que TODA tarjeta despachada
+// con la convención nueva salía sin gate y sin dueño — el agujero exacto que
+// T-0238 y M1 existen para tapar, reabierto por un prefijo.
+
+const { taskIdFromCorr } = require('../src/a2a-intel.cjs');
+
+test('W2: taskIdFromCorr recorta la revisión y acepta el prefijo; el guion NO matchea', () => {
+  assert.strictEqual(taskIdFromCorr('T-0301'), 'T-0301');
+  assert.strictEqual(taskIdFromCorr('T-0301:eve-graph-gate:20260901'), 'T-0301');
+  assert.strictEqual(taskIdFromCorr('T-0301:eve-graph-gate:20260901:r2'), 'T-0301', 'una revisión sigue siendo la misma tarjeta');
+  assert.strictEqual(taskIdFromCorr('T-0301:r12'), 'T-0301');
+  // DELIBERADO: los corrs con guion nunca fueron gateados y matchearlos ahora
+  // gatearía retroactivamente hilos vivos que nadie declaró como tarjeta.
+  assert.strictEqual(taskIdFromCorr('T-0121-foo'), null, 'corr con guion: NO es una tarjeta');
+  assert.strictEqual(taskIdFromCorr('traza-prod-live-20260823'), null);
+  assert.strictEqual(taskIdFromCorr(''), null);
+  assert.strictEqual(taskIdFromCorr(null), null);
+});
+
+test('W2: prefixed corr still hits the gate — una tarjeta bloqueada sigue bloqueada con corr de Eve', () => {
+  const read = cardReader({ 'T-0301': { state: 'blocked', blocker: 'operator gate: rotar la key' } });
+  const g = checkDispatchGate({ corr: 'T-0301:x:20260901', type: 'request', readFile: read });
+  assert.strictEqual(g.allowed, false, 'el prefijo no puede ser una puerta trasera al gate');
+  assert.match(g.reason, /UNRESOLVED blocker/);
+  assert.match(g.reason, /rotar la key/);
+});
+
+test('W2: prefixed corr still takes the lease — nadie despacha a Eve sin dueño', () => {
+  const calls = [];
+  const r = takeDispatchLease({
+    corr: 'T-0301:eve-graph-gate:20260901', type: 'request', owner: 'finalorchestra',
+    runLease: (id, own, min) => { calls.push([id, own, min]); return '{}'; },
+  });
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(calls, [['T-0301', 'finalorchestra', 90]],
+    'la lease se toma sobre el ID de la tarjeta, no sobre el corr crudo (ledger.cjs solo conoce T-NNNN)');
+});
+
+test('W2: un corr con guion no toca el ledger ni el gate (fail-open explícito)', () => {
+  const boom = () => { throw new Error('must not be called'); };
+  assert.strictEqual(takeDispatchLease({ corr: 'T-0121-foo', type: 'request', owner: 'x', runLease: boom }).ok, true);
+  const read = cardReader({ 'T-0121': { state: 'blocked', blocker: 'operator gate' } });
+  assert.strictEqual(checkDispatchGate({ corr: 'T-0121-foo', type: 'request', readFile: read }).allowed, true);
+});
