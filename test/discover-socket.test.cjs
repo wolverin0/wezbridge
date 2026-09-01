@@ -122,3 +122,40 @@ test('T-0281: wezterm.listSockets() devuelve grupos {socket, panes} y discoverPa
     for (const r of rows) assert.ok(typeof r.socket === 'string', `fila ${r.paneId} sin socket con enumeracion disponible`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Dedupe (medido 2026-09-01 tras la restauracion): la GUI 109544 y el `sock` del mux
+// sirven LOS MISMOS panes con ids distintos (30/46/53.. vs 2/9/11..): 19 filas para
+// ~10 panes, y un `to_project` con dos filas del mismo proyecto se vuelve ambiguo.
+// La misma pane (mismo cwd, titulo y texto) tiene que ser UNA fila, direccionada por
+// el socket que el bridge usa para hablar (currentSocket), con `also_on` para el otro.
+// ---------------------------------------------------------------------------
+function samePaneTwoSocketsDouble() {
+  const GUI = 'C:/Users/x/.local/share/wezterm/gui-sock-109544';
+  const MUX = 'C:/Users/x/.local/share/wezterm/sock';
+  const crm = { title: '✳ crm-disaster-recovery', cwd: 'file://PC/G:/Py Apps/crm', text: claudeText('G:\Py Apps\crm') };
+  const rec = { title: 'recovery', cwd: 'file://PC/G:/Py Apps/wezbridge', text: claudeText('G:\Py Apps\wezbridge') };
+  const panes = {
+    [GUI]: [{ pane_id: 60, ...crm }, { pane_id: 30, ...rec }],
+    [MUX]: [{ pane_id: 16, ...crm }],
+  };
+  return {
+    currentSocket: () => GUI,
+    listSockets: () => Object.keys(panes).map((socket) => ({ socket, panes: panes[socket].map(({ text, ...p }) => p) })),
+    listPanes: () => { throw new Error('no'); },
+    getFullText: (paneId, lines, opts = {}) => { const row = (panes[opts.socket] || []).find((p) => p.pane_id === paneId); if (!row) throw new Error('no pane'); return row.text; },
+  };
+}
+
+test('T-0281 dedupe: la misma pane vista por dos sockets es UNA fila en el socket del bridge, con also_on para el otro', () => {
+  const out = discoverPanes({ wez: samePaneTwoSocketsDouble() });
+  const crm = out.filter((p) => p.projectName === 'crm');
+  assert.equal(crm.length, 1, `crm debe ser una sola fila, vinieron ${crm.length}`);
+  assert.equal(crm[0].paneId, 60, 'se conserva el id del socket con el que el bridge habla (currentSocket)');
+  assert.ok(crm[0].socket.endsWith('gui-sock-109544'));
+  assert.deepEqual(crm[0].also_on, [{ socket: 'C:/Users/x/.local/share/wezterm/sock', paneId: 16 }]);
+  const rec = out.filter((p) => p.projectName === 'wezbridge');
+  assert.equal(rec.length, 1);
+  assert.equal(rec[0].also_on, undefined, 'una pane vista por un solo socket no lleva also_on');
+  assert.equal(out.length, 2);
+});

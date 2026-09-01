@@ -257,7 +257,42 @@ function discoverPanes({ wez: wezOps = wez } = {}) {
     });
   }
 
-  return discovered;
+  return groups.length > 1 ? dedupeAcrossSockets(discovered, wezOps) : discovered;
+}
+
+/**
+ * T-0281 dedupe (medido 2026-09-01 tras restaurar la flota): la GUI y el `sock` del
+ * mux sirven LOS MISMOS panes con ids distintos, asi que el censo traia 19 filas
+ * para ~10 panes y `to_project` se volvia ambiguo para TODOS los proyectos. La
+ * misma pane (mismo proyecto, titulo y barra de estado) es UNA fila: se conserva
+ * la del socket con el que el bridge habla (currentSocket, el que usan send-text y
+ * compania) y las otras quedan en `also_on` — direccion secundaria, no duplicado.
+ */
+function paneFingerprint(p) {
+  // El titulo lleva un glifo de actividad al frente (◐ ◑ ✳ en Claude, ⠋⠙… en
+  // Codex) que cambia entre dos lecturas separadas por milisegundos: se descarta.
+  const stripGlyph = (t) => String(t ?? '').replace(/^[^\p{L}\p{N}(/\\]+/u, '').trim();
+  return [p.project, stripGlyph(p.title), stripGlyph(p.tabTitle), p.agent, p.ctx, p.sessionPct, p.model].map((v) => String(v ?? '')).join('|');
+}
+
+function dedupeAcrossSockets(rows, wezOps) {
+  let canonical = null;
+  try { canonical = typeof wezOps.currentSocket === 'function' ? wezOps.currentSocket() : null; } catch { canonical = null; }
+  const byKey = new Map();
+  for (const r of rows) {
+    const k = paneFingerprint(r);
+    if (!byKey.has(k)) byKey.set(k, []);
+    byKey.get(k).push(r);
+  }
+  const out = [];
+  for (const group of byKey.values()) {
+    const sockets = new Set(group.map((r) => r.socket));
+    if (sockets.size < 2) { out.push(...group); continue; }
+    const keep = group.find((r) => r.socket === canonical) || group[0];
+    const others = group.filter((r) => r !== keep).map((r) => ({ socket: r.socket, paneId: r.paneId }));
+    out.push({ ...keep, also_on: others });
+  }
+  return out;
 }
 
 /**
