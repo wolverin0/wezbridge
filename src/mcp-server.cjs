@@ -23,6 +23,32 @@ require('./guard-bootstrap.cjs');
 const safetyPolicy = require('./safety-policy.cjs');
 const discovery = require('./pane-discovery.cjs');
 const wez = require('./wezterm.cjs');
+
+/**
+ * T-0281 AC4: ninguna tool que MUTA una pane (send_prompt, send_key, kill_session,
+ * set_tab_title) direcciona por pane_id sin verificarlo contra el mux vivo. Con dos
+ * muxes vivos los espacios de id se solapan y un id viejo no falla: llega a OTRA
+ * sesion. Regla mm-c03b: un censo que NO responde no condena a nadie (se deja pasar
+ * y se dice `unverified`); solo un censo que responde y no lo lista lo rechaza.
+ * read_output queda fail-open: leer una pane equivocada es ruido, no daño.
+ * Escape para diagnostico: WEZBRIDGE_TARGET_GUARD=off.
+ */
+function guardPaneTarget(paneId, tool) {
+  if (process.env.WEZBRIDGE_TARGET_GUARD === 'off') return null;
+  const id = Number(paneId);
+  let ids = null;
+  try { ids = wez.listPanes().map((p) => Number(p.pane_id ?? p.paneid ?? p.PANEID)); } catch { ids = null; }
+  if (!ids || !ids.length) return null; // censo mudo: no prueba ausencia
+  if (ids.includes(id)) return null;
+  return {
+    content: [{
+      type: 'text',
+      text: `target-guard: ${tool} rehusado — pane ${paneId} no existe en el mux vivo (ids: ${ids.join(', ')}). `
+        + 'Los pane_id se renumeran y con dos muxes vivos se solapan (T-0281): corre discover_sessions y direcciona por proyecto (a2a_send to_project) o usa un id del censo actual.',
+    }],
+    isError: true,
+  };
+}
 const a2aIntel = require('./a2a-intel.cjs');
 
 /**
@@ -543,6 +569,12 @@ function handleToolCall(name, args) {
       // Don't send huge lastLines in the listing
       const summary = filtered.map(p => ({
         pane_id: p.paneId,
+        // T-0281: contra que socket vale este pane_id, y si get-text contra ESE
+        // socket devolvio texto que nombra al proyecto atribuido. socket null =
+        // el wrapper no enumera sockets; verify dice por que no se verifico.
+        socket: p.socket ?? null,
+        verified: p.verified === true,
+        verify: p.verify || 'socket-unknown',
         is_claude: p.isClaude,
         is_codex: p.isCodex,
         agent: p.agent,
@@ -571,11 +603,20 @@ function handleToolCall(name, args) {
       // `total` now always means "rows returned"; when a filter dropped panes we
       // say so, and say how many there really are.
       const dropped = panes.length - filtered.length;
+      // T-0281: los sockets vivos con su conteo, y cuantas filas NO se verificaron.
+      // Un pane_id sin socket es una direccion sin ciudad: se publica igual, pero
+      // la respuesta lo dice, y el consumidor tiene que direccionar por proyecto.
+      const socketCounts = {};
+      for (const p of panes) { const k = p.socket ?? 'unknown'; socketCounts[k] = (socketCounts[k] || 0) + 1; }
+      const unverified = filtered.filter((p) => p.verified !== true).length;
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
             total: filtered.length,
+            sockets: socketCounts,
+            unverified,
+            ...(unverified > 0 ? { unverified_note: `${unverified} fila(s) sin verificar (ver campo verify por fila): su pane_id no se confirmo contra el mux con texto del proyecto — direcciona por proyecto, no por id.` } : {}),
             ...(dropped > 0 ? {
               filtered: true,
               total_unfiltered: panes.length,
@@ -637,6 +678,8 @@ function handleToolCall(name, args) {
     case 'send_prompt': {
       const paneId = args.pane_id;
       const text = args.text;
+      const _guard = guardPaneTarget(paneId, 'send_prompt');
+      if (_guard) return _guard;
       const promptLimitError = validateByteLength('prompt', text, INPUT_BYTE_LIMITS.prompt);
       if (promptLimitError) return promptLimitError;
 
@@ -800,6 +843,8 @@ function handleToolCall(name, args) {
     case 'send_key': {
       const paneId = args.pane_id;
       let key = args.key;
+      const _guard = guardPaneTarget(paneId, 'send_key');
+      if (_guard) return _guard;
       const keyLimitError = validateByteLength('key', key, INPUT_BYTE_LIMITS.key);
       if (keyLimitError) return keyLimitError;
 
@@ -1183,6 +1228,8 @@ function handleToolCall(name, args) {
 
     case 'kill_session': {
       const paneId = args.pane_id;
+      const _guard = guardPaneTarget(paneId, 'kill_session');
+      if (_guard) return _guard;
 
       const _safety = safetyPolicy.evaluate({ action: 'kill_session', paneId });
       if (!_safety.allowed) {
@@ -1251,6 +1298,8 @@ function handleToolCall(name, args) {
     }
 
     case 'set_tab_title': {
+      const _guard = guardPaneTarget(args.pane_id, 'set_tab_title');
+      if (_guard) return _guard;
       try {
         wez.setTabTitle(args.pane_id, String(args.title));
         return { content: [{ type: 'text', text: `Pane ${args.pane_id} tab title set to "${args.title}".` }] };

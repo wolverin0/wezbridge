@@ -108,11 +108,47 @@ const STATUS_PATTERNS = {
  * @property {number} confidence - 0-100 confidence that this is a Claude session
  * @property {string|null} persona - Detected persona name from tab title or system prompt file
  */
-function discoverPanes() {
-  const rawPanes = wez.listPanes();
-  const discovered = [];
+/**
+ * T-0281: ¿el texto que devuelve get-text IDENTIFICA al proyecto que el censo le
+ * atribuye a la pane? rc=0 a secas no distingue: 8 panes muertas con
+ * "claude didn't exit cleanly" dan rc=0 sin ser de nadie (medido 2026-08-29).
+ * Pura: recibe projectName (hoja del cwd) y el texto; devuelve {verified, verify}.
+ */
+const DEAD_PANE_RE = /didn.?t exit cleanly|no se cerr[oó] limpiamente/i;
+function verifyPaneText({ projectName, text }) {
+  const t = String(text || '');
+  if (!t.trim()) return { verified: false, verify: 'empty-text' };
+  if (DEAD_PANE_RE.test(t)) return { verified: false, verify: 'dead-pane-text' };
+  if (!projectName) return { verified: false, verify: 'no-project' };
+  // El nombre del proyecto aparece como segmento de path (cwd en la barra de
+  // estado de Claude/Codex) o como palabra aislada: "wezbridge" no matchea
+  // "wezbridge-old". Se compara en minusculas.
+  const escaped = String(projectName).toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`(^|[\\\\/\\s"'\`(\\[])${escaped}($|[\\\\/\\s"'\`)\\]:,])`, 'm');
+  if (re.test(t.toLowerCase())) return { verified: true, verify: 'project-in-text' };
+  return { verified: false, verify: 'text-mismatch' };
+}
 
-  for (const pane of rawPanes) {
+/**
+ * Enumera los sockets vivos con sus panes. Con un wezterm.cjs que expone
+ * listSockets() cada pane sale con SU socket; con uno viejo, la salida lo dice
+ * (socket null) en vez de inventar uno. Nunca se llama listPanes() a secas
+ * cuando hay enumeracion: un pane_id sin socket es justo el bug de T-0281.
+ */
+function enumerateSockets(wezOps) {
+  if (typeof wezOps.listSockets === 'function') {
+    const groups = wezOps.listSockets() || [];
+    if (groups.length) return groups.map((g) => ({ socket: g.socket || null, panes: g.panes || [] }));
+  }
+  return [{ socket: null, panes: wezOps.listPanes() }];
+}
+
+function discoverPanes({ wez: wezOps = wez } = {}) {
+  const discovered = [];
+  const groups = enumerateSockets(wezOps);
+
+  for (const group of groups) for (const pane of group.panes) {
+    const socket = group.socket;
     const paneId = parseInt(pane.pane_id || pane.paneid || pane.PANEID || '0', 10);
     const title = pane.title || pane.tab_title || '';
     const tabTitle = pane.tab_title || '';
@@ -125,13 +161,14 @@ function discoverPanes() {
     let status = 'unknown';
 
     try {
-      text = wez.getFullText(paneId, 80);
+      text = wezOps.getFullText(paneId, 80, { socket });
       const lines = text.split('\n').filter(l => l.trim());
       lastLines = lines.slice(-20).join('\n');
     } catch {
       // Pane may be dead or inaccessible
       discovered.push({
-        paneId, isClaude: false, isCodex: false, agent: null, status: 'error', project: null,
+        paneId, socket, verified: false, verify: 'get-text-failed',
+        isClaude: false, isCodex: false, agent: null, status: 'error', project: null,
         projectName: null, title, tabTitle, workspace, lastLines: '', confidence: 0,
         persona: null, ctx: null, sessionPct: null, weeklyPct: null, model: null,
       });
@@ -206,8 +243,15 @@ function discoverPanes() {
     // never trips the ❯/bypass-permissions Claude markers, but be explicit).
     const agent = isCodex ? 'codex' : (isClaude ? 'claude' : null);
 
+    // T-0281: el socket contra el que este pane_id es valido, y si el texto lo
+    // identifica. Sin enumeracion de sockets no se afirma verificacion alguna.
+    const verdict = socket === null
+      ? { verified: false, verify: 'socket-unknown' }
+      : verifyPaneText({ projectName, text });
+
     discovered.push({
-      paneId, isClaude, isCodex, agent, status, project, projectName,
+      paneId, socket, verified: verdict.verified, verify: verdict.verify,
+      isClaude, isCodex, agent, status, project, projectName,
       title, tabTitle, workspace, lastLines, confidence, rawText: text, persona,
       ctx, sessionPct, weeklyPct, model,
     });
@@ -258,6 +302,8 @@ function getSummary() {
 
 module.exports = {
   discoverPanes,
+  verifyPaneText,
+  enumerateSockets,
   discoverByProject,
   getSummary,
   CLAUDE_INDICATORS,
