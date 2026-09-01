@@ -611,7 +611,8 @@ if (require.main === module) {
   // El camino que corre solo (schtask + steward-gate) SIEMPRE reconcilia
   // leases contra el censo vivo. liveCensus() puede devolver null (mux caido):
   // eso se pasa igual, y el reconciliador lo convierte en hallazgo ruidoso.
-  const report = audit(loadTasks(), Date.now(), intelDir(), { census: reconcilerCensus() });
+  // T31 check 8: las leases eve:<job> se verifican contra el control plane; sin el, unverifiable.
+  const report = audit(loadTasks(), Date.now(), intelDir(), { census: reconcilerCensus(), executorLiveness: require('./lease-reconcile.cjs').eveLivenessFromControlPlane() });
   process.stdout.write(process.argv.includes('--json')
     ? JSON.stringify(report, null, 2) + '\n'
     : render(report) + '\n');

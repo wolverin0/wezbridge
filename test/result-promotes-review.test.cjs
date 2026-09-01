@@ -250,3 +250,25 @@ test('W2: un archivo truncado reinicia el cursor en vez de saltearse lineas para
     assert.equal(read(intel, 'T-0322').state, 'review');
   });
 });
+
+// ---------------------------------------------------------------------------
+// T31 check 8 (live 2026-09-01): el result movio T-0309 a blocked pero la lease
+// eve:JOB-c50da275 quedo puesta, y el steward la reporto dead-owner-lease ("el job
+// no vive": estaba BLOCKED en FinalOrchestra). Un result es el FIN del trabajo del
+// executor: al ligarlo, la lease se libera (ledger release), en todos los veredictos.
+// ---------------------------------------------------------------------------
+test('T31: al ligar un result la lease del executor se libera (release), en COMPLETED y en BLOCKED', () => {
+  sandbox((intel) => {
+    card(intel, 'T-0301', { corr: 'T-0301:x:20260901', lease: { owner: 'eve:JOB-1', expires_at: '2099-01-01T00:00:00.000Z' } });
+    const calls = [];
+    const r = linker.link(line(), { runLedger: ledgerRunner(intel, calls), readTasks: readTasksFrom(intel), recordEvent: () => {} });
+    assert.equal(r.linked, true);
+    assert.ok(calls.some((a) => a[0] === 'release' && a[1] === 'T-0301'), `falta release: ${JSON.stringify(calls.map((a) => a[0]))}`);
+    assert.equal(read(intel, 'T-0301').lease, null, 'la lease queda liberada en la tarjeta');
+    card(intel, 'T-0302', { corr: 'T-0302:x:20260901', lease: { owner: 'eve:JOB-2', expires_at: '2099-01-01T00:00:00.000Z' } });
+    const calls2 = [];
+    linker.link(line({ corr: 'T-0302:x:20260901', body: 'FinalOrchestra JOB-2: BLOCKED\nrompio\ncriteria:\n- a: fail — E=1\nnext_action: x' }), { runLedger: ledgerRunner(intel, calls2), readTasks: readTasksFrom(intel), recordEvent: () => {} });
+    assert.equal(read(intel, 'T-0302').state, 'blocked');
+    assert.equal(read(intel, 'T-0302').lease, null, 'tambien en BLOCKED: el executor ya no trabaja');
+  });
+});

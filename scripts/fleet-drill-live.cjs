@@ -164,7 +164,8 @@ const STEPS = [
   {
     id: 5, side: 'wezbridge', title: 'El dueño se entera: decision-relay --once → decision.queued|delivered para la tarjeta aprobada',
     async run(ctx) {
-      const { deploy } = ctx.state.cards || {}; must(deploy && ctx.state.rulingAt, 'sin ruling aprobado: corre el paso 4');
+      const { deploy } = ctx.state.cards || {}; must(deploy, 'sin tarjetas');
+      if (!ctx.state.rulingAt) unknown('todavia no hay ruling aprobado sobre la tarjeta de deploy (paso 4): se mide cuando el operador toque Aprobar');
       const before = ctx.events().filter((e) => /^decision\.(delivered|queued|undeliverable)$/.test(e.event) && e.task === deploy);
       let ev = before.find((e) => Date.parse(e.time) >= Date.parse(ctx.state.rulingAt));
       let relayOut = 'ya avisado por el tablero inline';
@@ -206,17 +207,22 @@ const STEPS = [
     id: 7, side: 'wezbridge', title: 'El result mueve la tarjeta: docs en review con evidencia a2a-results.jsonl (auto en el send, o result-link --once)',
     async run(ctx) {
       const { docs } = ctx.state.cards || {}; must(docs && ctx.state.resultLine, 'sin result: corre el paso 6');
+      // El estado esperado lo dicta el VEREDICTO del result, no el deseo del drill:
+      // COMPLETED -> review, BLOCKED -> blocked, FAILED -> failed (contrato del linker).
+      const verdictLine = String(ctx.state.resultLine.body || '').split('\n')[0];
+      const verdict = (verdictLine.match(/:\s*([A-Za-z]+)\s*$/) || [])[1] || 'COMPLETED';
+      const expected = { COMPLETED: 'review', BLOCKED: 'blocked', FAILED: 'failed' }[verdict.toUpperCase()] || 'review';
       let card = ctx.readCard(docs); let how = 'auto (linker dentro de a2a_send)';
-      if (card.state !== 'review') {
+      if (card.state !== expected) {
         const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'result-link.cjs'), '--once'], { encoding: 'utf8', timeout: 60000 });
         how = `result-link --once: ${(r.stdout || r.stderr || '').trim().slice(0, 200)}`;
         card = ctx.readCard(docs);
       }
-      must(card.state === 'review', `state=${card.state} (${how})`);
+      must(card.state === expected, `veredicto ${verdict} => esperado ${expected}, state=${card.state} (${how})`);
       const ev = JSON.stringify(card.evaluator_evidence || card.evidence || card.next_action || '');
       must(/a2a-results\.jsonl/.test(ev), `evidencia sin puntero: ${ev.slice(0, 200)}`);
       ctx.measures.hops['result->review'] = Date.parse(card.state_changed_at || card.updated_at) - Date.parse(ctx.state.resultLine.time); ctx.save();
-      return [`${docs} review via ${how}`, `evidencia ${ev.slice(0, 160)}`];
+      return [`${docs} ${card.state} (veredicto ${verdict}) via ${how}`, `evidencia ${ev.slice(0, 160)}`];
     },
   },
   {
@@ -271,7 +277,10 @@ async function runLive(flags = {}, log = () => {}) {
     ctx.state.steps[step.id] = r; ctx.measures.checks[step.id] = r.ms; ctx.save();
     results.push(r);
     log(`check ${r.id} ${r.verdict}${r.verdict === 'RED' ? ` — ${r.side_label} side` : ''}: ${r.evidence[0] || ''}`);
-    if (r.verdict !== 'GREEN' && [1, 2, 4].includes(step.id)) { log(`corto aca: el paso ${step.id} es precondicion de los siguientes`); break; }
+    // Solo 1 y 2 cortan la cadena: sin tarjetas o sin job no hay nada que medir.
+    // El 4 (tap del operador) NO corta: el result de Eve (6/7) y los gates (8) se
+    // miden igual, y el 5 dice UNKNOWN hasta que exista el ruling.
+    if (r.verdict !== 'GREEN' && [1, 2].includes(step.id)) { log(`corto aca: el paso ${step.id} es precondicion de los siguientes`); break; }
   }
   const anyUnknown = results.some((x) => x.verdict === 'UNKNOWN');
   const anyRed = results.some((x) => x.verdict === 'RED');

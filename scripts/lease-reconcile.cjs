@@ -191,4 +191,38 @@ function reconcileEveLease(t, common, jobId, executorLiveness) {
 // `reconcileLeases(tasks, opts.census, now)` y come el cuarto argumento, con lo
 // cual toda lease de Eve sale 'lease-owner-unverifiable'. Es una linea:
 // `reconcileLeases(tasks, opts.census, now, { executorLiveness: opts.executorLiveness })`.
-module.exports = { reconcileLeases, liveCensus, repoMatchesCwd, parseOwner };
+/**
+ * T31 check 8 (2026-09-01): vivacidad de un job de Eve leida del control plane
+ * (GET /api/jobs/<id>, sin auth, 200 con {job:{status}}). Vivo mientras el job
+ * esta en curso; muerto en estado terminal (la lease deberia haber caido con el
+ * result); undefined = no se pudo medir (control plane mudo, JSON roto, estado
+ * desconocido) y la lease queda lease-owner-unverifiable, nunca "sana".
+ */
+const EVE_ALIVE = new Set(['QUEUED', 'RUNNING', 'AWAITING_APPROVAL', 'AWAITING_INPUT', 'APPROVED']);
+const EVE_DEAD = new Set(['BLOCKED', 'FAILED', 'CANCELLED', 'SUCCEEDED', 'COMPLETED']);
+function classifyEveStatus(status) {
+  if (typeof status !== 'string') return undefined;
+  const s = status.toUpperCase();
+  if (EVE_ALIVE.has(s)) return true;
+  if (EVE_DEAD.has(s)) return false;
+  return undefined;
+}
+
+function curlFetcher(url) {
+  const r = spawnSync('curl', ['-s', '-m', '5', url], { encoding: 'utf8', windowsHide: true });
+  if (r.error || r.status !== 0) throw new Error(`curl ${r.status}: ${r.error ? r.error.message : ''}`);
+  return r.stdout;
+}
+
+function eveLivenessFromControlPlane({ baseUrl = process.env.FINALORCHESTRA_URL || process.env.V_CONTROL_PLANE_URL || 'http://127.0.0.1:3100', fetcher = curlFetcher } = {}) {
+  const base = String(baseUrl).endsWith('/') ? String(baseUrl).slice(0, -1) : String(baseUrl);
+  return (jobId) => {
+    try {
+      const body = fetcher(`${base}/api/jobs/${jobId}`);
+      const data = JSON.parse(body);
+      return classifyEveStatus(data && data.job && data.job.status);
+    } catch { return undefined; }
+  };
+}
+
+module.exports = { reconcileLeases, liveCensus, repoMatchesCwd, parseOwner, classifyEveStatus, eveLivenessFromControlPlane };

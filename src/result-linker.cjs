@@ -120,6 +120,14 @@ function link(line, { runLedger, readTasks, recordEvent, now = () => Date.now() 
   }
   try {
     runLedger(args);
+    // Un result es el FIN del trabajo del executor: la lease se libera en todos
+    // los veredictos (T31 check 8 en vivo: T-0309 quedo blocked con la lease
+    // eve:JOB puesta y el steward la reporto dead-owner-lease, con razon).
+    if (card.lease) {
+      try { runLedger(['release', card.id]); } catch (err) {
+        recordEvent({ event: 'result.lease_not_released', corr: String(corr), task_id: card.id, detail: String((err && err.message) || err).slice(0, 200) });
+      }
+    }
   } catch (err) {
     return unlinked('ledger-error', {
       task_id: card.id, detail: String((err && err.message) || err).slice(0, 200),

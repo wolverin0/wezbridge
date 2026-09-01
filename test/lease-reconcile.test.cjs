@@ -181,3 +181,28 @@ test('W5: el owner eve se reconcilia aunque el censo de WezTerm no exista', () =
   const out = reconcileLeases(tasks, CENSUS_OK, NOW, { executorLiveness: (job) => job === 'JOB-77' });
   assert.deepStrictEqual(out, []);
 });
+
+// ---------------------------------------------------------------------------
+// T31 check 8 (live, 2026-09-01): el steward en produccion no tenia forma de saber
+// si un job de Eve vive y clasificaba TODA lease eve:<job> como unverifiable. El
+// control plane expone GET /api/jobs/<id> sin auth: de ahi sale la vivacidad.
+// ---------------------------------------------------------------------------
+test('T31: classifyEveStatus — vivo mientras el job esta en curso; muerto en terminal; undefined si no se sabe', () => {
+  const { classifyEveStatus } = require('../scripts/lease-reconcile.cjs');
+  for (const s of ['QUEUED', 'RUNNING', 'AWAITING_APPROVAL', 'AWAITING_INPUT', 'APPROVED']) assert.equal(classifyEveStatus(s), true, s);
+  for (const s of ['BLOCKED', 'FAILED', 'CANCELLED', 'SUCCEEDED', 'COMPLETED']) assert.equal(classifyEveStatus(s), false, s);
+  assert.equal(classifyEveStatus(undefined), undefined);
+  assert.equal(classifyEveStatus('WHATEVER_NEW'), undefined, 'un estado desconocido no es vida ni muerte');
+});
+
+test('T31: eveLivenessFromControlPlane — usa el fetcher inyectado; control plane mudo o JSON roto => undefined (unverifiable), nunca "sano"', () => {
+  const { eveLivenessFromControlPlane } = require('../scripts/lease-reconcile.cjs');
+  const seen = [];
+  const fetcher = (url) => { seen.push(url); if (url.endsWith('JOB-live')) return JSON.stringify({ job: { status: 'RUNNING' } }); if (url.endsWith('JOB-dead')) return JSON.stringify({ job: { status: 'BLOCKED' } }); if (url.endsWith('JOB-garbage')) return '<html>'; throw new Error('ECONNREFUSED'); };
+  const liveness = eveLivenessFromControlPlane({ baseUrl: 'http://cp:3100', fetcher });
+  assert.equal(liveness('JOB-live'), true);
+  assert.equal(liveness('JOB-dead'), false);
+  assert.equal(liveness('JOB-garbage'), undefined);
+  assert.equal(liveness('JOB-down'), undefined);
+  assert.ok(seen.every((u) => u.startsWith('http://cp:3100/api/jobs/JOB-')), JSON.stringify(seen));
+});
