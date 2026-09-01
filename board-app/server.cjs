@@ -36,6 +36,7 @@ const DIST = path.join(HERE, 'dist');
 const PORT = Number(process.env.WEZBRIDGE_BOARD_PORT || 4272);
 const ENV_FILE = path.join(HERE, '.env.local');
 
+const { appendRuling } = require(path.join(HERE, '..', 'src', 'rulings.cjs'));
 const { audit, loadTasks } = require(path.join(HERE, '..', 'scripts', 'fleet-steward.cjs'));
 const { loadRuns, boardVerdict } = require(path.join(HERE, '..', 'scripts', 'routine-audit.cjs'));
 const { evaluate, rulingCovers } = require(path.join(HERE, '..', 'scripts', 'steward-gate.cjs'));
@@ -68,8 +69,14 @@ const OPEN_STATES = ['ready', 'queued', 'running', 'review', 'blocked', 'failed'
  *               only while the ruling still covers it (see buildState).
  */
 const TASK_TRANSITION = {
-  cancelled: { state: 'cancelled', ungate: false },
-  approved: { state: 'ready', ungate: true },
+  // `blocked_by` solo se toca donde la respuesta lo cambia. Aprobar CONTESTA al
+  // operador, asi que la tarjeta deja de esperarlo: sin esto quedaba `ready`
+  // con `blocked_by: operator` y seguia contando como deuda del operador en la
+  // unica metrica que mide si la orquestacion funciona. Cancelar no contesta
+  // nada — la tarea muere con la pregunta abierta — y ahi reescribir el campo
+  // seria inventar un dato sobre una tarjeta cerrada.
+  cancelled: { state: 'cancelled', ungate: false, blockedBy: null },
+  approved: { state: 'ready', ungate: true, blockedBy: 'agent' },
   deferred: null,
 };
 
@@ -403,11 +410,25 @@ async function kitchenHealth() {
 /**
  * Validate a ruling request. Returns {error} or {line} — the EXACT object that
  * will be appended, in the schema the gate and every reader already parse:
- * {task, category, ruling, why, at}. Verb maps 1:1 to `ruling`.
+ * {task, category, ruling, why, at, source} (+`by` cuando el cliente lo manda).
+ * Verb maps 1:1 to `ruling`.
+ *
+ * `source` es CONSTANTE aca y no viene del body a proposito: es procedencia, no
+ * un dato del cliente. Un campo que el que aprieta el boton puede elegir no
+ * prueba nada sobre quien escribio la linea. `by` SI viene del cliente porque
+ * responde otra pregunta — quien decidio, no que programa escribio — y se
+ * declara como lo que es: un dicho, no una prueba.
+ *
+ * La linea sale de aca y despues pasa por `appendRuling`, que es el unico
+ * escritor: este validador arma, el otro valida. Dos schemas sobre el mismo
+ * archivo es el defecto T-0294, y el test lo afirma cruzando los dos.
  */
 function validateRuling(body, findings, now = Date.now()) {
   if (!body || typeof body !== 'object') return { error: 'body must be a JSON object' };
-  const { task, verb, until, note } = body;
+  const { task, verb, until, note, by } = body;
+  if (by !== undefined && (typeof by !== 'string' || !by.trim() || by.length > 80)) {
+    return { error: '`by`, when present, must be a non-empty string (<=80 chars)' };
+  }
   if (typeof task !== 'string' || !/^[A-Za-z0-9_.-]{1,64}$/.test(task)) return { error: 'invalid task id' };
   if (!VERBS.includes(verb)) return { error: `verb must be one of ${VERBS.join('|')}` };
   if (typeof note !== 'string' || !note.trim() || note.length > 2000) return { error: 'note is required (≤2000 chars)' };
@@ -417,9 +438,15 @@ function validateRuling(body, findings, now = Date.now()) {
     ruling: verb,
     why: note.trim(),
     at: new Date(now).toISOString(),
+    source: 'board-app',
   };
+  if (by !== undefined) line.by = by.trim();
   const finding = findings.find((f) => f.id === task);
-  line.category = finding ? finding.category : 'awaiting-operator';
+  // Un approve responde LA PREGUNTA DEL OPERADOR, no el hallazgo bajo el que el
+  // steward archivo la tarjeta ese dia (medido 2026-09-01: un approve previo la
+  // deja en decision-unheard y el validador central rechaza approved con esa
+  // categoria). deferred/cancelled si siguen la categoria del hallazgo.
+  line.category = verb === 'approved' ? 'awaiting-operator' : (finding ? finding.category : 'awaiting-operator');
   if (verb === 'deferred') {
     const t = Date.parse(until);
     if (!Number.isFinite(t)) return { error: 'deferred requires a valid `until` ISO date' };
@@ -511,6 +538,7 @@ function applyTransition(taskId, line) {
     const task = JSON.parse(fs.readFileSync(file, 'utf8'));
     const from = task.state;
     let next = { ...task, state: rule.state, updated_at: line.at, next_action: transitionNote(line, rule) };
+    if (rule.blockedBy) next.blocked_by = rule.blockedBy;
     let ungated = false;
     let stillGated = false;
     if (rule.ungate) {
@@ -604,7 +632,14 @@ function log(line) {
  * `censusCache: null` turns the panel off entirely (it then reports `disabled`,
  * which is honest, rather than an empty table that reads as "no tasks").
  */
-function createServer(token, { rateLimiter = makeRateLimiter(), censusCache = makeCensusCache() } = {}) {
+/**
+ * T31 W3 (2026-09-01): tras una transicion terminal el tablero AVISA al dueño
+ * inline via el relay de decisiones (src/decision-relay.cjs). Es inyectable y
+ * por defecto NULL: los tests no descubren panes ni tocan el _intel vivo, y
+ * main() pasa el relay real. Un relay que explota nunca deshace el ruling —
+ * el aviso es un mejor esfuerzo; el steward (decision-unheard) es el que grita.
+ */
+function createServer(token, { rateLimiter = makeRateLimiter(), censusCache = makeCensusCache(), relay = null } = {}) {
   return http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x');
     try {
@@ -648,7 +683,15 @@ function createServer(token, { rateLimiter = makeRateLimiter(), censusCache = ma
         // ORDER IS THE CONTRACT: the ruling is the source of truth, so it lands
         // before anything else is attempted. Everything below may fail without
         // unwriting it.
-        appendLine(path.join(INTEL, 'rulings.jsonl'), line);
+        // UN solo escritor de rulings.jsonl (src/rulings.cjs): valida el
+        // vocabulario, exige `source` y nunca deja media linea. Si rechaza, la
+        // decision NO ocurrio y se dice — nada abajo llego a correr.
+        try {
+          appendRuling(INTEL, line);
+        } catch (e) {
+          log(`RULING REFUSED: ${String(e.message)}`);
+          return sendJson(res, 400, { error: String(e.message) });
+        }
         log(`ruling appended: ${JSON.stringify(line)}`);
 
         const transition = applyTransition(line.task, line);
@@ -672,7 +715,17 @@ function createServer(token, { rateLimiter = makeRateLimiter(), censusCache = ma
             task_transition: transition,
           });
         }
-        return sendJson(res, 200, { ok: true, line, transition });
+        let relayOut = null;
+        if (transition.applied && typeof relay === 'function') {
+          try {
+            relayOut = await relay({ intelDir: INTEL, log });
+            log(`relay: delivered=${(relayOut.delivered || []).length} queued=${(relayOut.queued || []).length} undeliverable=${(relayOut.undeliverable || []).length}`);
+          } catch (e) {
+            relayOut = { error: String(e && e.message || e) };
+            log(`relay FAILED (the ruling stands): ${relayOut.error}`);
+          }
+        }
+        return sendJson(res, 200, { ok: true, line, transition, relay: relayOut });
       }
 
       if (req.method === 'POST' && url.pathname === '/api/orchestrator-inbox') {
@@ -700,15 +753,33 @@ if (require.main === module) {
   let token = null;
   try { token = loadToken(); } catch (e) { log(`token unavailable (${e.message})`); }
   const bind = token ? '0.0.0.0' : '127.0.0.1';
-  const server = createServer(token || crypto.randomBytes(24).toString('base64url'));
+  const server = createServer(token || crypto.randomBytes(24).toString('base64url'), { relay: liveRelay });
   server.listen(PORT, bind, () => {
     log(`fleet-board-app listening on ${bind}:${PORT} (intel: ${INTEL})`);
     log(token ? `token file: ${ENV_FILE}` : 'NO TOKEN FILE — loopback only, API unusable until .env.local exists');
   });
 }
 
+/**
+ * El relay real: pane-discovery + verified-send + ledger CLI, mismas piezas que
+ * scripts/decision-relay.cjs --once. Se arma perezosamente para que requerir
+ * este modulo (tests) no cargue la discovery.
+ */
+async function liveRelay({ intelDir, log: relayLog = log }) {
+  const { relayOnceWith } = require(path.join(HERE, '..', 'src', 'decision-relay.cjs'));
+  const discovery = require(path.join(HERE, '..', 'src', 'pane-discovery.cjs'));
+  const send = require(path.join(HERE, '..', 'src', 'verified-send.cjs'));
+  const { execFileSync } = require('node:child_process');
+  const ledgerBin = path.join(process.env.WEZBRIDGE_LEDGER_DIR || path.join(intelDir, '..', '_docs-curation'), 'ledger.cjs');
+  const runLedger = (args) => {
+    const out = execFileSync(process.execPath, [ledgerBin, ...args], { encoding: 'utf8', timeout: 15_000, windowsHide: true });
+    try { return JSON.parse(out); } catch { return out; }
+  };
+  return relayOnceWith({ intelDir, discoverPanes: discovery.discoverPanes, send, runLedger, log: relayLog });
+}
+
 module.exports = {
-  createServer, loadToken, buildState, activityFeed, makeRateLimiter,
+  createServer, liveRelay, loadToken, buildState, activityFeed, makeRateLimiter,
   validateRuling, validateInboxNote, applyTransition, ungateTask, detailOf,
   VERBS, INBOX_KINDS, PAGE_SIZE, TASK_TRANSITION,
 };

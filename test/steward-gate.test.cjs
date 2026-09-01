@@ -271,28 +271,70 @@ test('proposal-unledgered is gated at 24h: unruled past deadline goes RED', () =
     'a ruling clears it through the existing vocabulary — no new machinery');
 });
 
-test('`approved` covers NOTHING, and that is deliberate — do not "fix" this', () => {
-  // READ THIS BEFORE CHANGING IT. The board app writes `approved` when the
-  // operator approves a gated decision, and it also clears the gate and sets
-  // the task to `ready`. Clearing the gate is what removes the card and the
-  // awaiting-operator finding — the ruling word does no covering work at all.
+test('approved covers awaiting-operator, and nothing else', () => {
+  // ESTE TEST CAMBIO DE SIGNO EL 2026-09-01 (W1). Leer entero antes de tocarlo.
   //
-  // The consequence is intended: approved work that nobody then picks up
-  // resurfaces as an ordinary `idle` finding after the normal deadline. The
-  // first person to see that WILL read it as a regression and will be tempted
-  // to give `approved` a permanent cover. That would be wrong — it would let
-  // "yes, do this" silence a task forever while the work never happens, which
-  // is the exact class of silence this whole gate exists to defeat.
+  // La version anterior afirmaba que `approved` no cubria NADA, con un
+  // argumento correcto: des-gatear es lo que saca la tarjeta del tablero, y
+  // darle cobertura permanente dejaria a "si, hacelo" silenciando una tarea
+  // para siempre mientras el trabajo no ocurre.
   //
-  // Flagged by the board-app builder on 2026-08-16 as a trap for whoever meets
-  // it next; encoded here rather than left in prose, because prose is hope.
+  // Lo que ese razonamiento no separaba son DOS preguntas. `awaiting-operator`
+  // es "el operador debe una respuesta": aprobar LA RESPONDE, y el hallazgo
+  // tiene que dejar de sonar. `idle` es "nadie tomo esto": aprobar NO lo
+  // responde, y una tarjeta aprobada que nadie levanta en 72h TIENE que volver
+  // a sonar. El match de categoria es exactamente esa separacion, asi que la
+  // consecuencia que preocupaba sigue viva y ahora esta afirmada abajo.
+  //
+  // Ademas `awaiting-operator` tiene deadline Infinity, o sea que hoy el gate
+  // ni siquiera lo evalua; la cobertura importa para los consumidores que
+  // preguntan "esta decision fue respondida?" sin pasar por el deadline.
   const now = Date.parse('2026-08-16T12:00:00Z');
   const at = '2026-08-16T11:00:00Z';
-  for (const category of ['awaiting-operator', 'idle', 'stale-review']) {
+  assert.strictEqual(
+    gate.rulingCovers(
+      { task: 'T-1', category: 'awaiting-operator', ruling: 'approved', at },
+      { id: 'T-1', category: 'awaiting-operator', age_hours: 999 }, now),
+    true,
+    'aprobar responde la pregunta del operador — eso es lo que `approved` cubre');
+  // Sin categoria (el escritor no vio ningun hallazgo) sigue cubriendo SOLO la
+  // pregunta del operador: la categoria que manda es la del HALLAZGO.
+  assert.strictEqual(
+    gate.rulingCovers(
+      { task: 'T-1', category: null, ruling: 'approved', at },
+      { id: 'T-1', category: 'awaiting-operator', age_hours: 999 }, now),
+    true,
+    'un ruling sin categoria cubre la pregunta que respondio');
+  for (const category of ['idle', 'stale-review', 'stale-running', 'dead-owner-lease']) {
     assert.strictEqual(
-      gate.rulingCovers({ task: 'T-1', category, ruling: 'approved', at }, { id: 'T-1', category, age_hours: 999 }, now),
+      gate.rulingCovers({ task: 'T-1', category, ruling: 'approved', at },
+        { id: 'T-1', category, age_hours: 999 }, now),
       false,
-      '`approved` must not cover a finding — un-gating is what closes the decision, not the word',
-    );
+      `approved NO puede cubrir ${category}: aprobar no es hacer, y a las 72h sin dueno tiene que volver a sonar`);
+    assert.strictEqual(
+      gate.rulingCovers({ task: 'T-1', category: null, ruling: 'approved', at },
+        { id: 'T-1', category, age_hours: 999 }, now),
+      false,
+      `approved sin categoria tampoco cubre ${category}`);
   }
+});
+
+test('los deadlines nuevos de W1 existen y son mas apretados que el resto', () => {
+  // Una decision que el dueno nunca escucho es un loop roto AHORA: 6h, igual de
+  // apretado que dead-owner-lease. Un result que no movio su tarjeta es una
+  // tarjeta que miente: 24h.
+  assert.strictEqual(gate.DEADLINES['decision-unheard'], 6);
+  assert.strictEqual(gate.DEADLINES['result-unlinked'], 24);
+  assert.strictEqual(
+    gate.evaluate({
+      findings: [finding({ id: 'T-0301', category: 'decision-unheard', age_hours: 7 })],
+      rulings: [], now: NOW,
+    }).verdict, 'RED',
+    'una decision sin entregar a las 7h no puede dejar el gate verde');
+  assert.strictEqual(
+    gate.evaluate({
+      findings: [finding({ id: 'result:corr-9', category: 'result-unlinked', age_hours: 25 })],
+      rulings: [], now: NOW,
+    }).verdict, 'RED',
+    'un result huerfano a las 25h tampoco');
 });

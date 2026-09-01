@@ -17,6 +17,8 @@
  *   cancelled      — the work is dead (permanent)
  *   operator-gated — waiting on the operator BY DESIGN (permanent)
  *   deferred       — parked on purpose, REQUIRES `until` (re-raises after)
+ *   resolved       — harvested and closed against its criteria (permanent)
+ *   approved       — el operador respondio; cubre SOLO awaiting-operator
  *
  * Deliberately NOT here: closing tasks, editing the ledger, deciding which
  * projects matter. The steward refuses to auto-close for good reason — silent
@@ -73,6 +75,12 @@ const DEADLINES = {
   // the proposing session is usually gone by then — the idea survives only if
   // someone files it or rules it dead while the context is still warm.
   'proposal-unledgered': 24,
+  // 2026-09-01 (W1). Una decision del operador que su dueno nunca escucho es el
+  // loop roto AHORA mismo: 6h, tan apretado como dead-owner-lease.
+  'decision-unheard': 6,
+  // Un result entregado que no movio su tarjeta deja el tablero mintiendo sobre
+  // trabajo YA hecho; 24h alcanza para el reintento del cursor.
+  'result-unlinked': 24,
 };
 
 /** A ruling stops covering a finding once this passes (dispatched only). */
@@ -118,6 +126,16 @@ function rulingCovers(ruling, finding, now) {
     // become unfinished.
     case 'resolved':
       return true;
+    // `approved` — el operador RESPONDIO la pregunta. Entra al vocabulario el
+    // 2026-09-01 (W1) porque el camino sin teclado (tablero -> ruling) genera
+    // esta palabra y el gate no la conocia. Cubre SOLO `awaiting-operator`, que
+    // es la pregunta que respondio: aprobar no es hacer, asi que una tarjeta
+    // aprobada que nadie levanta vuelve a sonar como `idle` a las 72h — eso es
+    // correcto y esta afirmado en el test. La version anterior de este archivo
+    // afirmaba que approved no cubria nada por miedo a ese silencio; el match
+    // de categoria da la cobertura sin el silencio.
+    case 'approved':
+      return finding.category === 'awaiting-operator';
     case 'deferred': {
       if (!ruling.until) return false;               // a deferral with no end is a shrug
       const until = Date.parse(ruling.until);
@@ -220,7 +238,12 @@ function main() {
     console.log(`  ${f.id} | ${f.repo} | ${f.category} | ${f.age_hours}h | ${String(f.title || '').slice(0, 46)}`);
   }
   if (unruled.length > 15) console.log(`  ... and ${unruled.length - 15} more`);
-  console.log(`Rule on each by appending to ${RULINGS}: {"task":"<id>","category":"<category>","ruling":"cancelled|dispatched|deferred|operator-gated","why":"...","at":"<iso>"}`);
+  // El `source` va en el ejemplo porque desde W1 es OBLIGATORIO: appendRuling()
+  // (src/rulings.cjs) rechaza la linea sin el, y este texto es de donde la gente
+  // copia. `approved` esta listado porque el tablero ya lo escribe.
+  console.log(`Rule on each by appending to ${RULINGS} (via appendRuling in src/rulings.cjs): `
+    + '{"task":"<id>","category":"<category>","ruling":"cancelled|dispatched|deferred|operator-gated|resolved|approved",'
+    + '"why":"...","source":"board-app|ledger-cli|telegram|orchestrator-pane|drill","at":"<iso>"}');
   process.exit(1);
 }
 

@@ -230,8 +230,9 @@ test('cancelled appends a schema-exact line the gate treats as permanent cover',
     .trim().split('\n').map(JSON.parse);
   const last = onDisk[onDisk.length - 1];
   assert.deepStrictEqual(last, line, 'response echoes exactly what was written');
-  assert.deepStrictEqual(Object.keys(last).sort(), ['at', 'category', 'ruling', 'task', 'why'],
-    'field set matches the existing rulings schema');
+  assert.deepStrictEqual(Object.keys(last).sort(), ['at', 'category', 'ruling', 'source', 'task', 'why'],
+    'field set matches the rulings schema, PROCEDENCIA incluida (W1)');
+  assert.strictEqual(last.source, 'board-app', 'quien escribio la linea queda en la linea');
 
   const finding = { id: 'T-9001', category: last.category, age_hours: 100 };
   assert.ok(rulingCovers(last, finding, Date.now()), 'gate covers the browser-written cancellation');
@@ -500,8 +501,11 @@ test('TASK_TRANSITION is the complete set of task-state writes', () => {
   assert.deepStrictEqual(Object.keys(srv.TASK_TRANSITION).sort(), [...srv.VERBS].sort(),
     'every verb is accounted for — no verb may fall through undeclared');
   assert.strictEqual(srv.TASK_TRANSITION.deferred, null);
-  assert.deepStrictEqual(srv.TASK_TRANSITION.cancelled, { state: 'cancelled', ungate: false });
-  assert.deepStrictEqual(srv.TASK_TRANSITION.approved, { state: 'ready', ungate: true });
+  // `blockedBy` es parte de la regla desde W1: aprobar contesta al operador y la
+  // tarjeta deja de esperarlo. Cancelar deja el campo como estaba (null aca
+  // significa "no lo escribas"), porque la pregunta murio sin respuesta.
+  assert.deepStrictEqual(srv.TASK_TRANSITION.cancelled, { state: 'cancelled', ungate: false, blockedBy: null });
+  assert.deepStrictEqual(srv.TASK_TRANSITION.approved, { state: 'ready', ungate: true, blockedBy: 'agent' });
 });
 
 test('applyTransition refuses a task id that escapes the tasks directory', () => {
@@ -628,4 +632,120 @@ test('activity is paginated 25 per pull', async () => {
   assert.strictEqual(act.page_size, 25);
   assert.ok(act.items.length <= 25);
   assert.ok(typeof act.total === 'number');
+});
+
+// --- W1: procedencia, blocked_by y el espejo del inbox ----------------------
+//
+// Tres cosas que el tablero hacia a medias. La linea no decia quien la escribio
+// (con tres escritores del mismo archivo, "quien decidio esto" no se podia
+// responder leyendolo). La tarjeta aprobada quedaba `ready` con
+// `blocked_by: operator`, o sea seguia contando como deuda del operador en la
+// UNICA metrica que mide si la orquestacion funciona. Y el espejo al inbox del
+// orquestador tiene que ser exactamente UNO por approve: el tablero NO pasa por
+// `ledger decide`, asi que si algun dia lo hiciera, la linea se duplicaria.
+
+test('approve deja la tarjeta con blocked_by agent: ya no espera al operador', async () => {
+  seedTask('T-9110', {
+    blocked_by: 'operator',
+    contract: { gate: 'operator', mode: 'scoped_write', allowed_paths: ['src/**'] },
+  });
+  const res = await api('/api/rulings', {
+    method: 'POST',
+    body: JSON.stringify({ task: 'T-9110', verb: 'approved', note: 'aprobado desde el telefono' }),
+  });
+  assert.strictEqual(res.status, 200);
+  const after = readTask('T-9110');
+  assert.strictEqual(after.state, 'ready');
+  assert.strictEqual(after.blocked_by, 'agent',
+    'aprobar contesta al operador: la tarjeta pasa a esperar a un agente');
+  assert.strictEqual(gateOf(after), null, 'y el gate se fue, medido con el lector');
+});
+
+test('cancelar NO toca blocked_by: la pregunta no fue contestada, la tarea murio', async () => {
+  seedTask('T-9111', { blocked_by: 'operator' });
+  const res = await api('/api/rulings', {
+    method: 'POST',
+    body: JSON.stringify({ task: 'T-9111', verb: 'cancelled', note: 'muerta' }),
+  });
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(readTask('T-9111').blocked_by, 'operator',
+    'reescribir esto seria inventar un dato sobre una tarjeta cerrada');
+});
+
+test('UN approve deja EXACTAMENTE UNA linea nueva en operator-actions.jsonl', async () => {
+  const actionsFile = path.join(TMP_INTEL, 'operator-actions.jsonl');
+  const count = () => (fs.existsSync(actionsFile)
+    ? fs.readFileSync(actionsFile, 'utf8').split('\n').filter(Boolean).length : 0);
+  seedTask('T-9112', { blocked_by: 'operator' });
+  const before = count();
+  const res = await api('/api/rulings', {
+    method: 'POST',
+    body: JSON.stringify({ task: 'T-9112', verb: 'approved', note: 'una sola vez' }),
+  });
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(count(), before + 1, 'ni cero (el orquestador no se entera) ni dos (el tablero shelleando a decide)');
+  const mine = fs.readFileSync(actionsFile, 'utf8').split('\n').filter(Boolean)
+    .map(JSON.parse).filter((a) => a.task === 'T-9112');
+  assert.strictEqual(mine.length, 1);
+  assert.strictEqual(mine[0].source, 'board-app');
+});
+
+test('validateRuling acepta un `by` opcional y rechaza uno vacio', () => {
+  const findings = [];
+  const ok = srv.validateRuling({ task: 'T-9113', verb: 'approved', note: 'dale', by: 'operator' }, findings);
+  assert.ok(!ok.error, ok.error);
+  assert.strictEqual(ok.line.by, 'operator');
+  assert.strictEqual(ok.line.source, 'board-app');
+  const bad = srv.validateRuling({ task: 'T-9113', verb: 'approved', note: 'dale', by: '   ' }, findings);
+  assert.ok(bad.error, 'un `by` vacio es peor que ausente: firma sin firmante');
+});
+
+test('la linea del tablero pasa por el MISMO validador que appendRuling', () => {
+  // El tablero es uno de los tres escritores; si armara su linea por su cuenta
+  // habria dos schemas sobre un archivo, que es el defecto T-0294 otra vez.
+  const { validateRulingLine } = require('../src/rulings.cjs');
+  const { line } = srv.validateRuling({ task: 'T-9114', verb: 'approved', note: 'x' }, []);
+  const verdict = validateRulingLine(line, Date.now());
+  assert.strictEqual(verdict.ok, true, `el validador central rechaza lo que el tablero escribe: ${verdict.error}`);
+});
+
+// ---------------------------------------------------------------------------
+// T31 (2026-09-01): un approve responde la pregunta del operador, no el hallazgo
+// bajo el que el steward archivo la tarjeta. Sin esto, la segunda aprobacion de
+// una tarjeta (archivada como decision-unheard) volvia 400 y el operador no
+// podia decidir desde el telefono.
+// ---------------------------------------------------------------------------
+test('T31: approved sobre una tarjeta archivada bajo OTRO hallazgo escribe category awaiting-operator y responde 200', () => {
+  const id = 'T-9310';
+  seedTask(id);
+  const { line } = srv.validateRuling({ task: id, verb: 'approved', note: 'dale' }, [{ id, category: 'decision-unheard' }]);
+  assert.equal(line.category, 'awaiting-operator');
+  const { line: deferred } = srv.validateRuling({ task: id, verb: 'deferred', note: 'despues', until: '2099-01-01T00:00:00.000Z' }, [{ id, category: 'idle' }]);
+  assert.equal(deferred.category, 'idle', 'deferred sigue la categoria del hallazgo');
+});
+
+// ---------------------------------------------------------------------------
+// T31 W3: el tablero avisa al dueño INLINE tras la transicion — relay inyectable
+// (los tests no descubren panes; main() pasa el relay real). Sin relay inyectado
+// el tablero no intenta nada: nunca toca el _intel vivo por accidente.
+// ---------------------------------------------------------------------------
+test('T31: un approve invoca el relay inyectado UNA vez con el intelDir del tablero; sin relay no explota', async () => {
+  const calls = [];
+  const relay = (opts) => { calls.push(opts); return Promise.resolve({ delivered: [], queued: ['T-9320'] }); };
+  const s2 = srv.createServer(TOKEN, { censusCache: null, relay });
+  await new Promise((r) => s2.listen(0, '127.0.0.1', r));
+  const b2 = `http://127.0.0.1:${s2.address().port}`;
+  try {
+    seedTask('T-9320');
+    const res = await fetch(`${b2}/api/rulings`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-board-token': TOKEN }, body: JSON.stringify({ task: 'T-9320', verb: 'approved', note: 'dale' }) });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(calls.length, 1, 'el relay corre exactamente una vez por approve');
+    assert.equal(calls[0].intelDir, TMP_INTEL, 'el relay recibe el intelDir del tablero, nunca el vivo por defecto');
+    assert.deepEqual(body.relay, { delivered: [], queued: ['T-9320'] }, 'la respuesta dice que paso con el aviso');
+    seedTask('T-9321');
+    const res2 = await fetch(`${b2}/api/rulings`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-board-token': TOKEN }, body: JSON.stringify({ task: 'T-9321', verb: 'deferred', until: '2099-01-01T00:00:00.000Z', note: 'despues' }) });
+    assert.equal(res2.status, 200);
+    assert.equal(calls.length, 1, 'deferred no avisa a nadie: no mueve la tarjeta');
+  } finally { await new Promise((r) => s2.close(r)); }
 });
