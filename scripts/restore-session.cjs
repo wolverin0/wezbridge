@@ -101,7 +101,7 @@ function resumeCommandFor(ai) {
  * `Process "<x>" didn't exit cleanly`.
  */
 function paneStillAlive(paneId) {
-  const res = spawnSync('wezterm', ['cli', 'list'], { encoding: 'utf8' });
+  const res = spawnSync('wezterm', ['cli', '--no-auto-start', 'list'], { encoding: 'utf8' });
   if (res.error || res.status !== 0) return null; // no se pudo medir: no afirmar nada
   const line = (res.stdout || '').split('\n').find((l) => new RegExp(`\\s${paneId}\\s`).test(l));
   if (!line) return false;                       // el pane desaparecio
@@ -121,7 +121,7 @@ function spawnPane(entry, opts = {}) {
 
   // Path A: a real captured cmdline → replay it verbatim (legacy snapshots).
   if (parts.length > 0 && !forceShellPath) {
-    const args = ['cli', 'spawn'];
+    const args = ['cli', '--no-auto-start', 'spawn'];
     if (cwd) args.push('--cwd', cwd);
     args.push('--', ...parts);
     if (opts.dryRun) { console.log(`[dry-run] wezterm ${args.join(' ')}`); return true; }
@@ -137,7 +137,7 @@ function spawnPane(entry, opts = {}) {
   // Path B: no cmdline → spawn a shell, then type the agent's resume command.
   const cmd = resumeCommandFor(entry.ai);
   if (opts.dryRun) { console.log(`[dry-run] spawn shell @ ${cwd} → "${cmd}"`); return true; }
-  const spawnArgs = ['cli', 'spawn'];
+  const spawnArgs = ['cli', '--no-auto-start', 'spawn'];
   if (cwd) spawnArgs.push('--cwd', cwd);
   const res = spawnSync('wezterm', spawnArgs, { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' });
   if (res.error || res.status !== 0) {
@@ -152,7 +152,7 @@ function spawnPane(entry, opts = {}) {
   // exito hasta que alguien lo mira.
   spawnSync(process.execPath, ['-e', 'setTimeout(()=>{},2500)'], { stdio: 'ignore' });
 
-  spawnSync('wezterm', ['cli', 'send-text', '--pane-id', newPaneId, '--no-paste'], { input: cmd + '\r', encoding: 'utf8' });
+  spawnSync('wezterm', ['cli', '--no-auto-start', 'send-text', '--pane-id', newPaneId, '--no-paste'], { input: cmd + '\r', encoding: 'utf8' });
 
   // VERIFICAR, no afirmar. Ver el comentario de paneStillAlive.
   spawnSync(process.execPath, ['-e', 'setTimeout(()=>{},4000)'], { stdio: 'ignore' });

@@ -95,7 +95,7 @@ function findGuiSocket() {
       if (sockFiles.includes(sockName)) {
         const sockPath = require('path').join(sockDir, sockName);
         try {
-          const out = execFileSync(WEZTERM, ['cli', 'list', '--format', 'json'], {
+          const out = execFileSync(WEZTERM, ['cli', '--no-auto-start', 'list', '--format', 'json'], {
             encoding: 'utf-8', timeout: 5000, windowsHide: true,
             env: { ...process.env, WEZTERM_UNIX_SOCKET: sockPath },
           });
@@ -174,7 +174,7 @@ function detectSocketDivergence() {
   if (!guiSocket || !envSocket || guiSocket === envSocket) return null;
   const listVia = (sock) => {
     try {
-      const out = execFileSync(WEZTERM, ['cli', 'list', '--format', 'json'], {
+      const out = execFileSync(WEZTERM, ['cli', '--no-auto-start', 'list', '--format', 'json'], {
         encoding: 'utf-8', timeout: 5000, windowsHide: true,
         env: { ...process.env, WEZTERM_UNIX_SOCKET: sock },
       });
@@ -202,7 +202,7 @@ function buildCliInvocation(args) {
 
   const guiSocket = findGuiSocket();
   return {
-    cliArgs: guiSocket ? ['cli', ...args] : ['cli', '--no-auto-start', ...args],
+    cliArgs: ['cli', '--no-auto-start', ...args],
     env: guiSocket
       ? { ...process.env, WEZTERM_UNIX_SOCKET: guiSocket }
       : process.env,

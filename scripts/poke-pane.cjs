@@ -81,7 +81,7 @@ let lastErr = '';
 for (const socketEnv of liveSocketEnvironments()) {
   for (let i = 0; i < 3; i += 1) {
     try {
-      const panes = JSON.parse(execFileSync(WEZTERM, ['cli', 'list', '--format', 'json'], {
+      const panes = JSON.parse(execFileSync(WEZTERM, ['cli', '--no-auto-start', 'list', '--format', 'json'], {
         encoding: 'utf8', timeout: 20000, env: socketEnv, windowsHide: true,
       }));
       list.push(...panes.map((pane) => ({ ...pane, _socketEnv: socketEnv })));
@@ -122,7 +122,7 @@ if (has('dry-run')) {
 }
 
 function sendViaStdin(paneId, payload, socketEnv, { noPaste = true } = {}) {
-  const args = ['cli', 'send-text', '--pane-id', String(paneId)];
+  const args = ['cli', '--no-auto-start', 'send-text', '--pane-id', String(paneId)];
   if (noPaste) args.push('--no-paste');
   execFileSync(WEZTERM, args, {
     input: payload,
@@ -167,7 +167,7 @@ const verified = 'VERIFIED (composer cleared)';
 try {
   const readTail = () => execFileSync(
     WEZTERM,
-    ['cli', 'get-text', '--pane-id', String(target.pane_id), '--start-line', '-40'],
+    ['cli', '--no-auto-start', 'get-text', '--pane-id', String(target.pane_id), '--start-line', '-40'],
     { encoding: 'utf8', timeout: 20000, env: target._socketEnv, windowsHide: true },
   );
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 700);
