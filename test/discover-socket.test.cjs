@@ -99,3 +99,26 @@ test('T-0281: sin enumeracion de sockets (wez viejo) la salida lo DICE — socke
   assert.equal(out[0].verified, false);
   assert.equal(out[0].verify, 'socket-unknown');
 });
+
+// ---------------------------------------------------------------------------
+// El wrapper real: wezterm.cjs enumera sockets y get-text acepta el socket.
+// Bajo el mock (test/setup.cjs) cada socket candidato responde con los panes del
+// mock; lo que se prueba es la FORMA (socket por grupo, panes array) y que la
+// discovery real ya no publica filas sin socket.
+// ---------------------------------------------------------------------------
+test('T-0281: wezterm.listSockets() devuelve grupos {socket, panes} y discoverPanes() real tagea cada fila', () => {
+  const wez = require('../src/wezterm.cjs');
+  assert.equal(typeof wez.listSockets, 'function');
+  assert.equal(typeof wez.currentSocket, 'function');
+  const groups = wez.listSockets();
+  assert.ok(Array.isArray(groups));
+  for (const g of groups) {
+    assert.ok(typeof g.socket === 'string' && g.socket.length > 0);
+    assert.ok(Array.isArray(g.panes));
+  }
+  if (groups.length) {
+    const rows = discoverPanes();
+    assert.ok(rows.length >= 1);
+    for (const r of rows) assert.ok(typeof r.socket === 'string', `fila ${r.paneId} sin socket con enumeracion disponible`);
+  }
+});

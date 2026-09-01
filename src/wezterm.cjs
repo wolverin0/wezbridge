@@ -222,9 +222,14 @@ function wezCmd(args, opts = {}) {
   let lastErr;
   for (let attempt = 0; attempt <= attempts; attempt++) {
     try {
-      const { cliArgs, env } = buildCliInvocation(args);
+      const invocation = buildCliInvocation(args);
+      // T-0281: un llamador que YA sabe contra que socket vale el pane_id lo fija
+      // aca; asi get-text va al mux correcto y no al "mejor" socket del momento.
+      const env = opts.socket
+        ? { ...invocation.env, WEZTERM_UNIX_SOCKET: opts.socket }
+        : invocation.env;
 
-      const result = execFileSync(WEZTERM, cliArgs, {
+      const result = execFileSync(WEZTERM, invocation.cliArgs, {
         encoding: 'utf-8',
         timeout: opts.timeout || 10000,
         windowsHide: true,
@@ -539,12 +544,12 @@ const _getTextCache = new Map(); // key = `${paneId}:${lines}` → { text, ts }
 const GET_TEXT_TTL_MS = 1500;
 const GET_TEXT_CACHE_MAX = 50; // prevent unbounded growth if many panes
 
-function _cachedGetText(paneId, lines) {
-  const key = `${paneId}:${lines}`;
+function _cachedGetText(paneId, lines, socket = null) {
+  const key = `${paneId}:${lines}${socket ? `@${socket}` : ''}`;
   const now = Date.now();
   const hit = _getTextCache.get(key);
   if (hit && (now - hit.ts) < GET_TEXT_TTL_MS) return hit.text;
-  const text = wezCmd(['get-text', '--pane-id', String(paneId), '--start-line', String(-lines)]);
+  const text = wezCmd(['get-text', '--pane-id', String(paneId), '--start-line', String(-lines)], socket ? { socket } : {});
   // Evict oldest entries if cache full
   if (_getTextCache.size >= GET_TEXT_CACHE_MAX) {
     const oldest = [..._getTextCache.keys()][0];
@@ -559,9 +564,87 @@ function getText(paneId) {
   return _cachedGetText(paneId, 500);
 }
 
-/** Read full scrollback from a pane (up to N lines back). */
-function getFullText(paneId, scrollbackLines = 500) {
-  return _cachedGetText(paneId, scrollbackLines);
+/**
+ * Read full scrollback from a pane (up to N lines back). `socket` (T-0281) fija
+ * el mux contra el que ese pane_id es valido; sin el se usa el socket elegido
+ * por findGuiSocket, que con dos muxes vivos puede ser el OTRO.
+ */
+function getFullText(paneId, scrollbackLines = 500, { socket = null } = {}) {
+  return _cachedGetText(paneId, scrollbackLines, socket);
+}
+
+/**
+ * T-0281: enumera los muxes vivos y que panes sirve CADA uno. Un pane_id es una
+ * direccion sin ciudad si no viene con su socket: con dos wezterm-gui vivos los
+ * espacios de id se solapan (medido 29-08 y 01-09). Devuelve
+ * [{ socket, panes }] solo para los sockets que RESPONDEN; el que no responde
+ * (GUI colgada) queda afuera y no prueba nada (mm-c03b). Fuera de win32 hay un
+ * unico endpoint y se reporta como tal.
+ */
+// Cache corto (rafagas de discovery) + silencio de 60 s para un socket que no
+// respondio: una GUI colgada costaba 5 s en CADA discover_sessions (medido
+// 2026-09-01: 5604 ms con gui-sock-29952 colgado).
+let _socketsCache = null;
+let _socketsCacheTime = 0;
+const SOCKETS_TTL_MS = 3000;
+const _mutedSockets = new Map(); // socket -> hasta cuando se lo saltea
+const MUTED_SOCKET_MS = 60000;
+function listSockets() {
+  if (process.platform !== 'win32') {
+    return [{ socket: process.env.WEZTERM_UNIX_SOCKET || 'default', panes: listPanes() }];
+  }
+  const nowMs = Date.now();
+  if (_socketsCache && (nowMs - _socketsCacheTime) < SOCKETS_TTL_MS) return _socketsCache;
+  const out = _listSocketsUncached(nowMs);
+  _socketsCache = out;
+  _socketsCacheTime = nowMs;
+  return out;
+}
+function _listSocketsUncached(nowMs) {
+  const fs = require('fs');
+  const path = require('path');
+  const sockDir = path.join(process.env.USERPROFILE || process.env.HOME || '', '.local', 'share', 'wezterm');
+  let candidates = [];
+  try {
+    const pids = [];
+    const tasks = execFileSync('tasklist', ['/fi', 'imagename eq wezterm-gui.exe', '/fo', 'csv', '/nh'], {
+      encoding: 'utf-8', timeout: 5000, windowsHide: true,
+    });
+    for (const line of tasks.split('\n')) {
+      const m = line.match(/"wezterm-gui\.exe","(\d+)"/i);
+      if (m) pids.push(m[1]);
+    }
+    const files = fs.readdirSync(sockDir);
+    candidates = pids.map((pid) => `gui-sock-${pid}`).filter((f) => files.includes(f));
+    if (files.includes('sock')) candidates.push('sock');
+  } catch { candidates = []; }
+  if (process.env.WEZTERM_UNIX_SOCKET && !candidates.includes(path.basename(process.env.WEZTERM_UNIX_SOCKET))) {
+    candidates.push(process.env.WEZTERM_UNIX_SOCKET);
+  }
+  const out = [];
+  for (const c of candidates) {
+    const sock = path.isAbsolute(c) ? c : path.join(sockDir, c);
+    const mutedUntil = _mutedSockets.get(sock) || 0;
+    if (mutedUntil > nowMs) continue;
+    try {
+      const raw = execFileSync(WEZTERM, ['cli', '--no-auto-start', 'list', '--format', 'json'], {
+        encoding: 'utf-8', timeout: 5000, windowsHide: true,
+        env: { ...process.env, WEZTERM_UNIX_SOCKET: sock },
+      });
+      const panes = JSON.parse(raw);
+      if (Array.isArray(panes)) { out.push({ socket: sock, panes }); _mutedSockets.delete(sock); }
+    } catch {
+      // socket mudo o JSON invalido: no prueba nada, no se lista, y no se
+      // vuelve a esperar por el durante un minuto
+      _mutedSockets.set(sock, nowMs + MUTED_SOCKET_MS);
+    }
+  }
+  return out;
+}
+
+/** T-0281: el socket que buildCliInvocation usaria ahora mismo ('default' si ninguno). */
+function currentSocket() {
+  return findGuiSocket() || 'default';
 }
 
 /** Invalidate getText cache for a specific pane — call on kill/clear. */
@@ -707,6 +790,8 @@ function spawnSshDomain(domainName, { cwd, program, args: spawnArgs } = {}) {
 module.exports = {
   compareSocketSpaces,
   detectSocketDivergence,
+  listSockets,
+  currentSocket,
   listPanes,
   spawnPane,
   sendText,
