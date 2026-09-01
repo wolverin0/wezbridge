@@ -83,7 +83,13 @@ prueba que el conteo de tabs coincide y recién entonces mata el colgado (así f
 cierra el reemplazo huérfano; dos intentos por PID y después queda para una persona. Log:
 `%LOCALAPPDATA%\WezTerm\gui-watchdog.log` (`hung_confirmed`, `recover_exit`, `mux_split`).
 `mux_split owners=…` con más de un dueño = el socket ya fue robado: sólo queda esperar a que
-las sesiones huérfanas queden ociosas, matar GUI + mux-servers y `npm run restore-session`.
+las sesiones huérfanas queden ociosas, matar GUI + mux-servers y
+`npm run restore-session -- --domain unix` (sin `--domain` los panes caen en el dominio local
+del GUI y mueren con el próximo cuelgue). **Nunca arranques `wezterm-mux-server` desde un pane
+de Claude/Codex:** cada pane del mux hereda el env del server, y con `CLAUDE_CODE_CHILD_SESSION`
+heredado las sesiones restauradas arrancan con "Transcript saving is off" (medido 2026-09-01
+18:35, hubo que reiniciar el mux con el env limpio y restaurar de nuevo). Arrancalo desde un
+shell limpio o dejá que el GUI lo levante solo al adjuntar el dominio.
 
 **Para la próxima vez, stack del thread que gira** (WinDbg instalado vía winget):
 ```

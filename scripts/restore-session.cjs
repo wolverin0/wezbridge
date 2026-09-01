@@ -4,7 +4,7 @@
  * restore-session.cjs — Re-spawn AI panes from the most recent session snapshot.
  *
  * Usage:
- *   node scripts/restore-session.cjs [--dry-run] [--stagger-ms N] [--filter regex]
+ *   node scripts/restore-session.cjs [--dry-run] [--stagger-ms N] [--filter regex] [--domain NAME]
  *
  * Options:
  *   --dry-run        Print what would be spawned, don't actually spawn.
@@ -12,6 +12,9 @@
  *                    telegram channel-plugin race in check when restoring
  *                    multiple --channels panes.
  *   --filter REGEX   Only restore entries whose cwd OR cmdline matches REGEX.
+ *   --domain NAME    Spawn into that wezterm domain (e.g. `unix`, the standalone mux)
+ *                    instead of the GUI's local domain — panes then survive a GUI hang
+ *                    (2026-09-01, artifacts/2026-09-01-wezterm-gui-hang-diagnosis.html).
  *
  * Read latest snapshot from vault/_wezbridge/session-snapshot.jsonl
  * (or path passed via WEZBRIDGE_SESSION_SNAPSHOT_LOG env var). For each
@@ -27,12 +30,13 @@ const { spawnSync } = require('node:child_process');
 const snap = require(path.resolve(__dirname, '..', 'src', 'session-snapshot.cjs'));
 
 function parseArgs(argv) {
-  const out = { dryRun: false, staggerMs: 2000, filter: null };
+  const out = { dryRun: false, staggerMs: 2000, filter: null, domain: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--dry-run') out.dryRun = true;
     else if (a === '--stagger-ms') out.staggerMs = parseInt(argv[++i], 10) || 2000;
     else if (a === '--filter') out.filter = new RegExp(argv[++i]);
+    else if (a === '--domain') out.domain = argv[++i] || null;
   }
   return out;
 }
@@ -123,6 +127,7 @@ function spawnPane(entry, opts = {}) {
   if (parts.length > 0 && !forceShellPath) {
     const args = ['cli', '--no-auto-start', 'spawn'];
     if (cwd) args.push('--cwd', cwd);
+    if (opts.domain) args.push('--domain-name', opts.domain);
     args.push('--', ...parts);
     if (opts.dryRun) { console.log(`[dry-run] wezterm ${args.join(' ')}`); return true; }
     const res = spawnSync('wezterm', args, { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' });
@@ -139,6 +144,7 @@ function spawnPane(entry, opts = {}) {
   if (opts.dryRun) { console.log(`[dry-run] spawn shell @ ${cwd} → "${cmd}"`); return true; }
   const spawnArgs = ['cli', '--no-auto-start', 'spawn'];
   if (cwd) spawnArgs.push('--cwd', cwd);
+  if (opts.domain) spawnArgs.push('--domain-name', opts.domain);
   const res = spawnSync('wezterm', spawnArgs, { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' });
   if (res.error || res.status !== 0) {
     console.error(`[restore] failed pane ${entry.pane_id}: ${res.error ? res.error.message : 'exit ' + res.status}`);
