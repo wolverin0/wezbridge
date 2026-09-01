@@ -86,10 +86,19 @@ foreach ($gui in $confirmed) {
   $guisBefore = @(Get-Process -Name 'wezterm-gui' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
   $exit = -1
   try {
+    # NO usar `Start-Process -Wait`: espera al arbol entero de procesos, y el
+    # GUI de reemplazo que lanza el recover es hijo suyo — el watchdog quedaba
+    # colgado mientras viviera ese GUI (medido en la primera corrida real,
+    # 2026-09-01 18:22, y por eso nunca cerro el reemplazo huerfano).
     $p = Start-Process -FilePath 'powershell' -ArgumentList @(
       '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $RecoverScript
-    ) -Wait -PassThru -WindowStyle Hidden
-    $exit = $p.ExitCode
+    ) -PassThru -WindowStyle Hidden
+    if (-not $p.WaitForExit(120000)) {
+      Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+      Write-Log "recover_timeout pid=$($p.Id)"
+    } else {
+      $exit = $p.ExitCode
+    }
   } catch { Write-Log ("recover_error " + $_.Exception.Message) }
   Write-Log "recover_exit code=$exit"
 
