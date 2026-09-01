@@ -206,3 +206,28 @@ solo reporta vivo/muerto deja pasar exactamente eso; el reporte tiene que nombra
 - Tocar `_intel/tasks/*.json` — el ledger se mueve por su FSM con `ledger.cjs`, nunca a mano.
 - Debilitar un test existente para que pase. Si un test viejo estorba, se dice por que y se
   para: bajar la barra para cerrar un track es el fraude que este contrato existe para evitar.
+
+---
+
+## T31 — [x] Drill e2e wezbridge <-> Eve <-> graph: nueve checks que pueden fallar
+
+**Cerrado 2026-09-01 (stub). Commits 67fc88a..a762176 + _docs-curation 9182620.** Result completo con
+linea base RED pegada, 17 mutaciones con asesino nombrado y conteos: `_intel/results/T31-drill-result.md`.
+
+**Archivos:** `scripts/fleet-drill.cjs`, `test/fleet-drill.test.cjs`, `test/mocks/eve-stub.cjs` (harness);
+cableado W1–W6 en `src/rulings.cjs`, `src/result-linker.cjs`, `src/decision-relay.cjs`, `src/a2a-intel.cjs`,
+`src/mcp-server.cjs` (a2a_send), `src/orchestrator-waker.cjs`, `src/project-queue.cjs`, `src/verified-send.cjs`,
+`board-app/server.cjs`, `scripts/{eve-dispatch,result-link,decision-relay,fleet-steward,steward-gate,lease-reconcile,waker-gate,daily-rollup}.cjs`,
+`../_docs-curation/ledger.cjs` (`decide`, validacion de owner).
+
+**Medido antes de tocar nada:** el tablero ya era el camino sin teclado pero nadie se enteraba de la decision;
+ningun result movia una tarjeta; un result por cola saltaba `checkResultShape` y `recordResultBody`; `a2a_send`
+rechazaba corrs con `:`; `'unknown'` contaba como entregado en tres sitios; el composer retenido no se
+persistia; la lease no validaba el owner. Linea base del drill contra main: **2/9**. Final: **9/9**.
+
+**Suite:** 1258 tests, 1253 pass, 4 fail (los 3 de datos vivos de T24 + `tasks-watcher` timeout que falla
+igual en un worktree limpio de HEAD), 1 skip. Aislada: 1069 pass, 1 fail (el mismo), 22 skips declarados.
+
+**Lo que queda (no es de este track):** `--mode live` del drill cuando finalorchestra entregue T-0308
+(Eve lee `graph.json`; hoy el check 3 solo se prueba contra el stub); diff del beacon propuesto al operador;
+`mcp-server.cjs:1667` (`unknown` como entregado en el send directo) queda NOMBRADO y sin tocar.
