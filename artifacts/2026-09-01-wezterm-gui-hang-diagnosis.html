@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WezTerm "not responding" — diagnóstico 2026-09-01</title>
+<style>
+:root{--bg:#0f1117;--fg:#e6e6e6;--mut:#9aa0a6;--acc:#f9e2af;--red:#f38ba8;--grn:#a6e3a1;--blu:#89b4fa;--card:#181b24;--bd:#2a2e3a}
+body{margin:auto;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,Segoe UI,sans-serif;padding:32px 24px;max-width:1100px}
+h1{font-size:26px;margin:0 0 4px}h2{font-size:19px;margin:36px 0 10px;border-bottom:1px solid var(--bd);padding-bottom:6px}
+.sub{color:var(--mut);margin-bottom:22px}
+.verdict{background:var(--card);border-left:4px solid var(--acc);padding:14px 18px;border-radius:6px}
+.verdict b{color:var(--acc)}
+table{border-collapse:collapse;width:100%;margin:10px 0;font-size:14px}th,td{border:1px solid var(--bd);padding:6px 10px;text-align:left;vertical-align:top}th{background:#1f2330}
+code,pre{font-family:Consolas,ui-monospace,monospace;font-size:13px}pre{background:#0b0d12;border:1px solid var(--bd);padding:10px 12px;border-radius:6px;overflow-x:auto}
+a{color:var(--blu)}.ok{color:var(--grn)}.bad{color:var(--red)}.warn{color:var(--acc)}.mut{color:var(--mut)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}@media(max-width:800px){.grid{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:6px;padding:12px 16px}
+.card h3{margin:0 0 6px;font-size:15px}
+ol li,ul li{margin:4px 0}
+.tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:12px;border:1px solid var(--bd);color:var(--mut)}
+</style></head><body>
+<h1>WezTerm "not responding": qué cuelga, por qué no se recupera, y cómo cortarlo</h1>
+<div class="sub">Medido en vivo 2026-09-01 17:45–18:05 ART sobre wezterm <code>20260731-083202-9554bdd0</code>, Windows 10 19045. GUI colgado: PID 29952 (11 tabs, "[2/11] Infrastructure hand…").</div>
+
+<div class="verdict">
+<b>Veredicto.</b> Cuelga el <b>proceso GUI</b> (<code>wezterm-gui.exe</code>), no el mux. Su thread principal entró en un bucle que nunca retorna: 100% de un core, stack idéntico en 5 muestras, y pierde ~2 MB/s de memoria (2.6 → 3.8 GB en 15 min). El código del bucle es de wezterm mismo (ningún frame en drivers de GPU ni en DLLs del sistema). Los <code>wezterm-mux-server</code> están al 0% de CPU y los 12 panes viven sanos bajo el mux 54196.<br><br>
+<b>Por qué no se recupera:</b> el path <code>~/.local/share/wezterm/sock</code> ya no apunta al mux que tiene los panes. Cada <code>wezterm cli</code> que no logra conectar <b>arranca un mux-server nuevo</b> que se apropia del socket (hay 5 mux-servers vivos; el quinto lo generó una sonda mía a las 17:51:50, reproducción en vivo). Un GUI nuevo se cuelga de ese mux vacío, no del que tiene tus sesiones.<br><br>
+<b>Fix permanente = dos cosas:</b> (1) en wezbridge, pasar <code>--no-auto-start</code> en <i>todas</i> las invocaciones de <code>wezterm cli</code> (hoy falta justo en el camino que más se usa) para que nunca más se robe el socket; (2) automatizar <code>Recover-WezTermGui.ps1</code> (ya existe, ya funcionó el 30-08, hoy nadie lo corre) para reemplazar el GUI colgado en &lt;1 min conservando los panes. El bucle en sí es un bug upstream (mejor coincidencia: <a href="https://github.com/wezterm/wezterm/issues/7388">#7388</a> / PR <a href="https://github.com/wezterm/wezterm/pull/8023">#8023</a>, abierto) — no hay commit para aplicar todavía; con (1)+(2) el cuelgue pasa a ser un blip de 30 s en vez de una pérdida de fleet.
+</div>
+
+<h2>1. Evidencia: quién está colgado</h2>
+<table><tr><th>PID</th><th>Proceso</th><th>Inicio</th><th>Responding</th><th>CPU</th><th>Memoria</th><th>Hijos (panes)</th></tr>
+<tr><td>29952</td><td>wezterm-gui</td><td>30-08 21:21</td><td class="bad">False</td><td class="bad">57 360 s; thread 0 = 14 h 07 m user, 100% de un core ahora</td><td class="bad">priv 2 624 → 3 340 → 3 833 MB en ~15 min</td><td>0 (cliente del mux)</td></tr>
+<tr><td>54196</td><td>wezterm-mux-server</td><td>30-08 21:21</td><td class="ok">True</td><td>0.0 s en 10 s</td><td>112 MB</td><td class="ok">12 bash + 12 OpenConsole — <b>acá están tus sesiones</b></td></tr>
+<tr><td>54424</td><td>wezterm-mux-server</td><td>30-08 15:02</td><td class="ok">True</td><td>0</td><td>8 MB</td><td class="mut">10 OpenConsole zombies, 0 bash</td></tr>
+<tr><td>63020</td><td>wezterm-mux-server</td><td>30-08 20:32</td><td class="ok">True</td><td>0</td><td>17 MB</td><td class="mut">1 bash</td></tr>
+<tr><td>118436</td><td>wezterm-mux-server</td><td>31-08 15:01</td><td class="ok">True</td><td>0</td><td>6 MB</td><td class="mut">0 — dueño de <code>sock</code> hasta hoy 17:51</td></tr>
+<tr><td>15008</td><td>wezterm-mux-server</td><td class="warn">01-09 17:51:50</td><td class="ok">True</td><td>0</td><td>30 MB</td><td class="mut">0 — lo arrancó mi <code>wezterm cli list</code> contra el socket colgado; <b>dueño actual de <code>sock</code></b></td></tr>
+<tr><td>109544</td><td>wezterm-gui</td><td>01-09 17:38</td><td class="ok">True</td><td>31 s</td><td>564 MB</td><td>1 (este pane)</td></tr></table>
+
+<div class="grid">
+<div class="card"><h3>Stack del thread que gira (cdb -pv, 5 muestras en 15 s, idénticas)</h3>
+<pre>VCRUNTIME140!memcmp+0x7
+wezterm_gui!&lt;export más cercano&gt;+0x4b2035   ← código de wezterm, sin símbolos
+wezterm_gui!…+0x40db8c
+wezterm_gui!…+0x4146bd
+wezterm_gui!…+0x157a91   (frame de 22 KB)
+wezterm_gui!…+0x264f7
+… 17 frames más, todos wezterm_gui …
+KERNEL32!BaseThreadInitThunk → ntdll!RtlUserThreadStart</pre>
+<p class="mut">Ningún frame en <code>igd12umd64</code>/<code>nvwgf2umx</code>/<code>d3d12</code>/<code>dxgi</code>: <b>no es el driver de GPU</b>. El pin a la iGPU Intel del 30-08 no ataca este bug (29952 arrancó después del pin y se colgó igual). Los nombres <code>git_odb_*</code>/<code>cairo_*</code> que muestra cdb son sólo el export más cercano; el build de winget no trae PDB y el tag no existe en GitHub Releases, así que no se puede simbolizar más.</p></div>
+<div class="card"><h3>Cuándo se colgó (hoy, no ayer)</h3>
+<ul>
+<li><b>20:22:41Z</b> (17:22 ART): último A2A entregado y verificado vía <code>gui-sock-29952</code> (<code>_intel/events.jsonl</code>).</li>
+<li><b>20:30:55Z</b>: último <code>wezterm cli list</code> exitoso del daemon (9 panes) — snapshot.jsonl.</li>
+<li><b>20:31–20:38Z</b>: el GUI deja de contestar el CLI; el daemon pasa a ver sólo el pane 30 a las 20:40Z.</li>
+<li><b>20:38:42Z</b>: abrís este GUI (109544).</li>
+<li>Aritmética de memoria: 3.3 GB a ~2 MB/s ≈ 25–30 min de bucle al momento de medir (17:55) → arranque ≈ 17:25–17:30. <b>Consistente.</b></li>
+</ul>
+<p class="mut">Los "failed to connect to gui-sock-29952" del 31-08 09:28–14:02 fueron timeouts transitorios (el mismo socket siguió entregando A2A hasta hoy), no el cuelgue.</p></div>
+</div>
+
+<h2>2. Recurrencia: 4 GUIs colgados en 3 días</h2>
+<table><tr><th>GUI (socket)</th><th>Primer fallo de conexión</th><th>Qué pasó</th></tr>
+<tr><td>gui-sock-328924</td><td>30-08 12:36</td><td>colgado; reemplazado</td></tr>
+<tr><td>gui-sock-27196</td><td>30-08 17:20</td><td>colgado; reemplazado</td></tr>
+<tr><td>PID 9188</td><td>30-08 21:07</td><td><code>Recover-WezTermGui.ps1</code> lo mató y reusó el GUI 32116 con 11 tabs — <span class="ok">recuperación limpia, panes intactos</span> (gui-recovery.log)</td></tr>
+<tr><td>gui-sock-29952</td><td>01-09 ~17:30</td><td>colgado ahora; <span class="bad">irrecuperable por el robo de socket</span></td></tr></table>
+<p>La serie empieza el 30-08. Esa madrugada (04:30–04:44) el System log tiene 7 resets del driver de display (Event 4101) y 3 errores <code>nvlddmkm</code> 153 — inestabilidad de GPU real, pero el bucle actual no pasa por el driver. Lo que sí cambió ese día y es precondición del bug upstream: <b>los panes viven en un mux-server externo y el GUI es un cliente</b> (<code>default_gui_startup_args = start --domain unix --attach</code>). El bug #7388 requiere exactamente eso.</p>
+
+<h2>3. El mecanismo que rompe la recuperación: robo de <code>sock</code></h2>
+<ol>
+<li><code>wezterm cli</code> sin <code>--no-auto-start</code>, al no poder conectar, ejecuta <code>wezterm-mux-server --daemonize</code>.</li>
+<li>El mux nuevo borra el archivo <code>sock</code> y lo re-crea apuntando a sí mismo. El mux viejo sigue vivo con sus panes pero <b>ya no hay path para llegarle</b> (AF_UNIX en Windows: el archivo es la única puerta).</li>
+<li>Cualquier GUI nuevo (<code>--attach</code>) o el script de recuperación se conectan al mux vacío. El script se niega correctamente a matar el GUI viejo porque no puede probar "11 tabs" (su guard funcionó; por eso hoy no recuperó).</li></ol>
+<p><b>Prueba:</b> <code>logs/recorder.log</code> registra cada <code>mux-startup</code>: 30-08 11:28:05, :15, :25 (tres en 20 s = un loop de sondas con timeout de 10 s), 12:14, 15:02, 20:32, 21:21:18, 21:21:31, 31-08 15:01, y <b>01-09 17:51:50 = mi sonda</b>. Hoy hay 5 mux-servers; 4 son basura.</p>
+<p><b>Dónde falta el flag en wezbridge</b> (<code>src/wezterm.cjs</code>):</p>
+<ul>
+<li><code>findGuiSocket()</code> L98: sondea <i>cada</i> <code>gui-sock-*</code> de cada GUI vivo con <code>cli list</code> (timeout 5 s) cada 30 s, <b>sin</b> <code>--no-auto-start</code>. Con un GUI colgado, esto fabrica mux-servers de forma continua desde el daemon, el MCP y el streamer.</li>
+<li><code>buildCliInvocation()</code>: sólo agrega <code>--no-auto-start</code> cuando <i>no</i> encontró socket; cuando sí lo encontró (<code>['cli', ...args]</code>) no lo agrega — que es el camino normal.</li>
+<li>Llamadas directas sin el flag: <code>scripts/poke-pane.cjs</code> (L84, L125, L170), <code>scripts/fleet-status.cjs</code> (L40, L53). Revisar también session-snapshot / restore-session / lease-reconcile / composer-state / command-guard.</li></ul>
+
+<h2>4. Upstream: ¿hay commit para aplicar?</h2>
+<ul>
+<li><b><a href="https://github.com/wezterm/wezterm/issues/7388">#7388</a> "Complete freeze when switching windows on a mux server"</b> — cliente Windows, muchos panes en un dominio mux, GUI congelado en un bucle infinito de <code>PaneFocused</code>/<code>SetFocusedPane</code>. <b>Es la firma más cercana</b> (GUI 95–100% de un core, mux sano, memoria creciendo por cola que nunca drena).</li>
+<li><b><a href="https://github.com/wezterm/wezterm/pull/8023">PR #8023</a> "Fix pane focus ping-ponging"</b> — corrige el reconcile de foco en el mux client; un tester confirmó el fix; <span class="warn">sigue ABIERTO</span> (reviewer @bew), etiquetado "Next Release 2026-?". No está en el nightly (60 commits desde tu build, ninguno de foco/mux; el changelog no lo menciona).</li>
+<li><a href="https://github.com/wezterm/wezterm/issues/7692">#7692</a> mux-server vivo que deja de contestar el CLI bajo carga (Linux) — explica los "mux lento" ya documentados en <code>docs/operations.md</code>; no es lo de hoy (los mux están al 0%).</li>
+<li>Nada de esto está confirmado con símbolos: es la mejor coincidencia por síntomas, no una prueba. Para la próxima: correr el GUI con <code>WEZTERM_LOG=debug</code> deja <code>wezterm-gui-log-&lt;pid&gt;.txt</code> en <code>~/.local/share/wezterm/</code>; #7388 se diagnosticó con ese log (150k líneas de PaneFocused en 20 s).</li></ul>
+
+<h2>5. Cómo cortarlo de forma permanente</h2>
+<div class="grid">
+<div class="card"><h3>A. wezbridge: nunca más auto-start <span class="tag">código, ~1 h, test incluido</span></h3>
+<ul><li><code>--no-auto-start</code> incondicional en <code>buildCliInvocation</code> y en la sonda de <code>findGuiSocket</code>.</li>
+<li>Mismo flag en poke-pane / fleet-status y cualquier <code>execFileSync('wezterm',['cli',…])</code> suelto.</li>
+<li>Test que falle si aparece una invocación <code>cli</code> sin el flag (grep-test, como ya hace el repo con otras reglas).</li>
+<li>Efecto: el mux que tiene los panes conserva <code>sock</code> para siempre → un GUI nuevo siempre re-adjunta los panes correctos.</li></ul></div>
+<div class="card"><h3>B. Recuperación automática del GUI <span class="tag">ops, 30 min</span></h3>
+<ul><li>Tarea programada cada 1 min (o dentro de <code>WezBridge-DaemonSentinel</code>, que corre cada 5): si hay <code>wezterm-gui</code> con <code>Responding=False</code> por &gt;30 s → <code>~/scripts/Recover-WezTermGui.ps1</code>. Ya tiene los guards correctos (no mata sin probar el conteo de tabs).</li>
+<li>Alarma si hay &gt;1 <code>wezterm-mux-server</code> con hijos o si <code>sock</code> cambió de dueño: es el síntoma temprano del robo.</li>
+<li>Con A en su lugar, el reemplazo tarda ~10 s y los panes siguen donde estaban (así funcionó el 30-08 21:07).</li></ul></div>
+<div class="card"><h3>C. Upstream <span class="tag">opcional</span></h3>
+<ul><li>Seguir PR #8023; cuando merguee, pasar al nightly (winget no lo trae: instalar el zip/setup del release <code>nightly</code>).</li>
+<li>Alternativa agresiva: compilar wezterm desde la rama del PR en Windows (Rust, ~20–30 min de build). Sólo si A+B no bastan.</li>
+<li>Reducir el disparador: nada en wezbridge llama a <code>activate-pane</code> (los exports existen sin callers), así que el churn de foco viene de spawn/kill de panes y del uso manual; no hay mucho que recortar.</li></ul></div>
+<div class="card"><h3>D. Logs y diagnóstico para la próxima <span class="tag">docs</span></h3>
+<ul><li>WezTerm no escribe log del GUI por defecto en Windows; sólo <code>wezterm.exe-log-&lt;pid&gt;.txt</code> por cada <code>wezterm cli</code> fallido (útiles como línea de tiempo, nada más).</li>
+<li>Receta de stack que usé (WinDbg quedó instalado vía winget, id <code>Microsoft.WinDbg</code>):<pre>cdb -pv -p &lt;PID&gt; -c "~~[&lt;TID hex&gt;]s; k 40; !runaway 7; q"</pre></li>
+<li>Agregar a <code>docs/operations.md</code> el tercer caso: "GUI colgado, mux sano" (hoy sólo cubre mux-lento vs mux-wedgeado).</li></ul></div>
+</div>
+
+<h2>6. Los 12 panes de ahora: decisión pendiente</h2>
+<p>Están vivos y <b>siguen trabajando a ciegas</b> (transcripts de Claude escritos a las 17:54 wezbridge, 17:51 wabot, 17:30 infra). No hay forma de volver a mostrarlos: el GUI está en bucle infinito y el socket del mux 54196 ya no existe. Opciones:</p>
+<ol>
+<li><b>Esperar a que cada sesión quede ociosa</b> (mtime de su transcript sin cambios ≥5 min), entonces matar GUI 29952 + los 5 mux-servers y correr <code>npm run restore-session</code> con el grupo de 20:30:55Z (9 panes AI: wezbridge-4, infra-1, yolo26-6 codex, wabot-9, memorymaster-10, finalorchestra-12 codex, …) con <code>claude --continue</code>/<code>codex resume</code>. Pierde sólo lo que esté a medio turno.</li>
+<li><b>Matar ya</b> y restaurar. Más rápido; corta a pane-4 (T-0281/T-0283) y pane-12 (T-0308) a mitad de trabajo.</li></ol>
+<p class="mut">No ejecuto ninguna de las dos sin tu OK: ambas matan procesos con sesiones activas.</p>
+</body></html>
