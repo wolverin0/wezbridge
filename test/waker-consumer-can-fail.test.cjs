@@ -145,3 +145,24 @@ test('TUBERIA: cola fresca NO alerta — un gate ruidoso entrena a ignorarlo', (
   assert.deepEqual(v.alerts, []);
   assert.equal(v.ok, true);
 });
+
+// ── W4: el motivo del flag se IMPRIME ──────────────────────────────────────
+//
+// Con el tercer estado de la entrega hay dos motivos distintos por los que un
+// intent muere: el cap de intentos fallidos, y "unverified twice" (composer
+// ilegible). Un gate que solo dice "attempt cap" manda al operador a mirar el
+// pane equivocado — el flag ya guarda `reason`, faltaba mostrarlo.
+
+test('W4: el gate imprime el motivo de cada intent flaggeado, no solo el conteo', () => {
+  const dir = mkIntel({ enabled: true, repos: ['x'] }, {
+    pending: {},
+    flags: {
+      dead1: { repo: 'walksim', flagged_at: minsAgo(5), reason: 'unverified twice: composer unreadable (pane 12)' },
+    },
+  });
+  const r = runGate(dir);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /unverified twice/,
+    'sin el motivo, dos fallas muy distintas se leen igual como "attempt cap"');
+  assert.match(r.out, /pane 12/);
+});

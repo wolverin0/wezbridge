@@ -121,3 +121,63 @@ test('owner sin forma pane-N se reporta como ilegible, no se salta en silencio',
   assert.strictEqual(out[0].category, 'dead-owner-lease');
   assert.match(out[0].why, /ilegible|sin pane/i);
 });
+
+// ── W5: owners de Eve (`eve:<jobId>`) ───────────────────────────────────────
+//
+// Un job de FinalOrchestra no tiene pane: su lease se escribe `eve:<jobId>` y
+// hasta hoy `parseOwner` la reportaba "ilegible" — un hallazgo falso por cada
+// tarjeta despachada a Eve, que es como se entrena a ignorar al steward. La
+// vivacidad no se adivina: se INYECTA (`executorLiveness`), y sin inyeccion se
+// dice "no se pudo verificar", nunca "sano".
+
+const { parseOwner } = require('../scripts/lease-reconcile.cjs');
+
+const eveCard = (id, expiresMs) => card(id, 'wezbridge', 'running', 'eve:JOB-77', expiresMs);
+
+test('W5: parseOwner entiende eve:<jobId>', () => {
+  assert.deepStrictEqual(parseOwner('eve:JOB-77'), { executor: 'eve', jobId: 'JOB-77' });
+  assert.deepStrictEqual(parseOwner('pane-33 (wezbridge)'), { paneId: 33 });
+  assert.strictEqual(parseOwner('quien sabe'), null);
+});
+
+test('W5: owner eve VIVO (liveness true) => cero hallazgos, aunque no exista pane', () => {
+  const tasks = [eveCard('T-0301', NOW + 20 * H)];
+  const out = reconcileLeases(tasks, CENSUS_OK, NOW, { executorLiveness: () => true });
+  assert.deepStrictEqual(out, [], 'un job sano no puede producir hallazgo por no tener pane');
+});
+
+test('W5: owner eve MUERTO (liveness false) => dead-owner-lease que nombra el job', () => {
+  const tasks = [eveCard('T-0302', NOW + 20 * H)];
+  const out = reconcileLeases(tasks, CENSUS_OK, NOW, { executorLiveness: () => false });
+  assert.strictEqual(out.length, 1);
+  assert.strictEqual(out[0].category, 'dead-owner-lease');
+  assert.strictEqual(out[0].id, 'T-0302');
+  assert.match(out[0].why, /JOB-77/, 'sin el jobId nadie puede ir a mirar el job');
+  assert.match(out[0].why, /no vive/);
+});
+
+test('W5: sin funcion de liveness => lease-owner-unverifiable, JAMAS "sano"', () => {
+  const tasks = [eveCard('T-0303', NOW + 20 * H)];
+  const out = reconcileLeases(tasks, CENSUS_OK, NOW);
+  assert.strictEqual(out.length, 1);
+  assert.strictEqual(out[0].category, 'lease-owner-unverifiable');
+  assert.match(out[0].why, /JOB-77/);
+});
+
+test('W5: liveness que devuelve undefined tampoco es vida', () => {
+  const tasks = [eveCard('T-0304', NOW + 20 * H)];
+  const out = reconcileLeases(tasks, CENSUS_OK, NOW, { executorLiveness: () => undefined });
+  assert.strictEqual(out[0].category, 'lease-owner-unverifiable');
+});
+
+test('W5: una liveness que EXPLOTA no puede tumbar el barrido — unverifiable', () => {
+  const tasks = [eveCard('T-0305', NOW + 20 * H)];
+  const out = reconcileLeases(tasks, CENSUS_OK, NOW, { executorLiveness: () => { throw new Error('FO caido'); } });
+  assert.strictEqual(out[0].category, 'lease-owner-unverifiable');
+});
+
+test('W5: el owner eve se reconcilia aunque el censo de WezTerm no exista', () => {
+  const tasks = [eveCard('T-0306', NOW + 20 * H)];
+  const out = reconcileLeases(tasks, CENSUS_OK, NOW, { executorLiveness: (job) => job === 'JOB-77' });
+  assert.deepStrictEqual(out, []);
+});

@@ -1,6 +1,11 @@
 'use strict';
 /**
  * lease-reconcile.cjs — ¿el owner de cada lease abierta sigue EXISTIENDO?
+ * Dos formas de owner: `pane-N` (se verifica contra el censo de WezTerm, con
+ * cwd coincidente) y `eve:<jobId>` (W5: se verifica con `executorLiveness`
+ * inyectado; sin funcion o sin respuesta => lease-owner-unverifiable, jamas
+ * "sano"). Categorias: dead-owner-lease · lease-owner-unverifiable ·
+ * lease-census-unavailable.
  *
  * T-0272. MEDIDO el 2026-08-25: T-0199 se despachó, pane-39 tomó una lease de
  * 1440 minutos y murió. 22 horas de "running" en el tablero, y el steward la
@@ -28,8 +33,19 @@ const { spawnSync } = require('node:child_process');
 
 const TERMINAL = new Set(['done', 'cancelled']);
 
-/** "pane-33 (wezbridge)" -> { paneId: 33 } ; sin forma pane-N -> null */
+/**
+ * Dos formas de owner, dos reconciliadores distintos:
+ *   "pane-33 (wezbridge)" -> { paneId: 33 }   (censo de WezTerm)
+ *   "eve:<jobId>"         -> { executor: 'eve', jobId }   (vivacidad inyectada)
+ * Cualquier otra cosa -> null (ilegible, y se dice).
+ *
+ * W5: un job de FinalOrchestra NO tiene pane. Hasta hoy su lease caia en
+ * "owner ilegible" y producia un hallazgo falso por cada tarjeta despachada a
+ * Eve — que es exactamente como se entrena a todo el mundo a ignorar al steward.
+ */
 function parseOwner(owner) {
+  const eve = /^eve:(\S+)$/.exec(String(owner || '').trim());
+  if (eve) return { executor: 'eve', jobId: eve[1] };
   const m = /pane-(\d+)/.exec(String(owner || ''));
   return m ? { paneId: Number(m[1]) } : null;
 }
@@ -73,19 +89,30 @@ function liveCensus() {
  * con lease vencida del despacho (T-0229, T-0232, T-0241, T-0253, T-0105) son
  * exactamente lo que un barrido de solo-'running' nunca limpia.
  */
-function reconcileLeases(tasks, census, now = Date.now()) {
+function reconcileLeases(tasks, census, now = Date.now(), opts = {}) {
   const open = (tasks || []).filter((t) => t && t.lease && t.lease.owner && !TERMINAL.has(t.state));
   if (open.length === 0) return [];
 
-  if (!Array.isArray(census)) {
+  // La vivacidad de un executor remoto no se adivina: se INYECTA (drill:
+  // stub.isAlive; vivo: task_get de FinalOrchestra). Sin funcion no hay
+  // veredicto, y el no-veredicto se REPORTA — nunca se traduce a "sano".
+  const executorLiveness = typeof opts.executorLiveness === 'function' ? opts.executorLiveness : null;
+  // Las leases de Eve no dependen del censo de WezTerm: se reconcilian aunque
+  // el censo no se haya podido obtener.
+  const needsCensus = open.filter((t) => {
+    const p = parseOwner(t.lease.owner);
+    return !(p && p.executor === 'eve');
+  });
+
+  if (needsCensus.length > 0 && !Array.isArray(census)) {
     return [{
       id: null, repo: null, state: null, title: null, owner: null, age_hours: 0,
       category: 'lease-census-unavailable',
-      why: `el censo de WezTerm no se pudo obtener: ${open.length} lease(s) abiertas quedaron SIN reconciliar este tick — esto no es "todo sano", es "no se pudo mirar"`,
+      why: `el censo de WezTerm no se pudo obtener: ${needsCensus.length} lease(s) abiertas quedaron SIN reconciliar este tick — esto no es "todo sano", es "no se pudo mirar"`,
     }];
   }
 
-  const byId = new Map(census.map((p) => [Number(p.pane_id), p]));
+  const byId = new Map((Array.isArray(census) ? census : []).map((p) => [Number(p.pane_id), p]));
   const findings = [];
   for (const t of open) {
     const ageH = Math.round((now - Date.parse(t.lease.expires_at || 0)) / 36e5) || 0;
@@ -95,6 +122,11 @@ function reconcileLeases(tasks, census, now = Date.now()) {
       category: 'dead-owner-lease',
     };
     const parsed = parseOwner(t.lease.owner);
+    if (parsed && parsed.executor === 'eve') {
+      const finding = reconcileEveLease(t, common, parsed.jobId, executorLiveness);
+      if (finding) findings.push(finding);
+      continue;
+    }
     if (!parsed) {
       findings.push({ ...common, why: `${t.id}: owner de lease ilegible ("${t.lease.owner}") — sin pane-N no hay a quien reconciliar; corregir el owner o liberar la lease` });
       continue;
@@ -123,4 +155,40 @@ function reconcileLeases(tasks, census, now = Date.now()) {
   return findings;
 }
 
+/**
+ * Owner `eve:<jobId>`: sano solo si la liveness inyectada dice EXPLICITAMENTE
+ * que si. `undefined`, ausencia de funcion o una funcion que explota son todas
+ * la misma cosa — no se pudo medir — y se reportan como tal.
+ */
+function reconcileEveLease(t, common, jobId, executorLiveness) {
+  if (!executorLiveness) {
+    return {
+      ...common,
+      category: 'lease-owner-unverifiable',
+      why: `${t.id}: la lease la sostiene eve:${jobId} y no se inyectó forma de verificar su vivacidad — no se puede confirmar ni descartar al owner este tick; cablear executorLiveness (task_get de FinalOrchestra) antes de creerle a esta lease`,
+    };
+  }
+  let alive;
+  try { alive = executorLiveness(jobId); } catch { alive = undefined; }
+  if (alive === true) return null; // job vivo: sano, aunque no exista ningún pane
+  if (alive === false) {
+    return {
+      ...common,
+      category: 'dead-owner-lease',
+      why: `${t.id}: eve:${jobId} no vive — FinalOrchestra no reconoce el job que sostiene la lease; la tarjeta figura ${t.state} y nadie la está trabajando. Liberar la lease o re-despachar`,
+    };
+  }
+  return {
+    ...common,
+    category: 'lease-owner-unverifiable',
+    why: `${t.id}: la vivacidad de eve:${jobId} no se pudo medir este tick (FinalOrchestra no respondió) — ni sano ni muerto; si persiste varios ticks, tratarlo como muerto`,
+  };
+}
+
+// NOTA PARA EL CABLEADO (scripts/fleet-steward.cjs, que es de otro dueño):
+// `audit(tasks, now, dir, { census, executorLiveness })` tiene que REENVIAR
+// executorLiveness a esta funcion — hoy su call site llama
+// `reconcileLeases(tasks, opts.census, now)` y come el cuarto argumento, con lo
+// cual toda lease de Eve sale 'lease-owner-unverifiable'. Es una linea:
+// `reconcileLeases(tasks, opts.census, now, { executorLiveness: opts.executorLiveness })`.
 module.exports = { reconcileLeases, liveCensus, repoMatchesCwd, parseOwner };

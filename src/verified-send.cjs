@@ -1,4 +1,6 @@
-// verified-send.cjs — verified prompt delivery to a pane's TUI composer.
+// verified-send.cjs — verified prompt delivery to a pane's TUI composer, plus
+// classifyDelivery(): the ONE verdict function (delivered | failed | unverified)
+// that the waker, the project queue and the decision relay all share.
 // Extracted verbatim from mcp-server.cjs (2026-08-05, walksim-pilot chunk B) so the
 // DAEMON can send with the same guarantees as the MCP path; mcp-server re-requires
 // from here. Behaviour is contract: three hard-won fixes live in these functions
@@ -52,6 +54,28 @@ function composerHoldsForeignText(tail) {
   const content = inputBoxContent(String(tail).split(/\r?\n/));
   if (!content) return false;
   return !COMPOSER_PLACEHOLDERS.includes(content);
+}
+
+// ── W4 — el tercer estado: "no se pudo verificar" no es "entregado" ─────────
+//
+// MEDIDO: waker, project-queue y mcp-server calculaban todos
+// `ok = submitted !== 'stuck' && delivered !== 'truncated'`, y eso cuenta
+// 'unknown' (pane ilegible, shell no-TUI, get-text que tiró) como ENTREGA
+// VERIFICADA. El intent salía de la cola y el sobre no había llegado a ninguna
+// parte. Un instrumento que informa éxito sobre algo que no pudo mirar es peor
+// que no tener instrumento.
+//
+// Los dos vocabularios son los de este módulo, no inventados:
+//   `delivered` viene de composerHoldsTail    -> 'ok' | 'truncated' | 'unknown'
+//   `submitted` viene de verifyPromptSubmission -> 'submitted' | 'stuck' | 'unknown'
+//
+// Pura a propósito: es la MISMA regla en los tres consumidores, y cada uno
+// decide qué hacer con 'unverified' (el waker reintenta y flaggea; la cola
+// difiere). Lo único que ninguno puede hacer es tratarlo como entrega.
+function classifyDelivery(delivered, submitted) {
+  if (submitted === 'submitted' && delivered === 'ok') return 'delivered';
+  if (submitted === 'stuck' || delivered === 'truncated') return 'failed';
+  return 'unverified';
 }
 
 function createVerifiedSend({ wez, sleep }) {
@@ -142,6 +166,7 @@ const bound = createVerifiedSend({ wez: require('./wezterm.cjs'), sleep: default
 module.exports = {
   inputBoxContent,
   composerHoldsForeignText,
+  classifyDelivery,
   COMPOSER_PLACEHOLDERS,
   createVerifiedSend,
   verifyPromptSubmission: bound.verifyPromptSubmission,

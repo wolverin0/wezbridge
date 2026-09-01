@@ -2,6 +2,9 @@
 'use strict';
 /**
  * waker-gate.cjs — the CONSUMER THAT CAN FAIL for the orchestrator waker.
+ * RED si hay intents viejos o flaggeados; imprime el `reason` de cada flag
+ * (desde W4 hay dos motivos distintos: cap de intentos, o "unverified twice:
+ * composer unreadable"). Exit 0 GREEN / 1 RED / 3 UNKNOWN.
  *
  * Why this exists: the waker was disarmed on 2026-08-13 with an explicit re-arm
  * condition written into _intel/orch-waker.json — "only when something
@@ -72,6 +75,10 @@ function main() {
     for (const id of flaggedIds.slice(0, 5)) {
       const f = flags[id];
       console.log(`  ${id}  repo=${f.repo || '?'}  flagged_at=${f.flagged_at || '?'}`);
+      // El MOTIVO, no solo el conteo: desde W4 un intent muere por dos razones
+      // muy distintas — el cap de intentos fallidos, o "unverified twice"
+      // (composer ilegible). Sin el motivo el operador mira el pane equivocado.
+      if (f.reason) console.log(`      reason: ${f.reason}`);
     }
     console.log('These never resolve themselves. Someone must look, then clear flags.json.');
     process.exit(1);

@@ -379,3 +379,90 @@ test('T-0233: rescuing the same envelope twice dedupes at ingest — one deliver
   assert.strictEqual(out.delivered, 1, 'sha1 id (corr+type+from+body) dedupes the duplicate line');
   assert.strictEqual(calls.length, 1);
 });
+
+// ── W4 gemelo: el tercer estado de la entrega en la cola ─────────────────────
+//
+// MEDIDO: `ok = submitted !== 'stuck' && delivered !== 'truncated'` contaba un
+// pane ILEGIBLE ('unknown') como entrega verificada. La entrada salia de la
+// cola sin que nadie pudiera afirmar que el sobre llego. Es el mismo defecto
+// que W4 arregla en el waker, y aca vale mas: esta cola es el ultimo respaldo
+// durable de un a2a_send fallido.
+
+function unverifiableSend(calls = []) {
+  return {
+    sendPromptDeferredEnter: async (paneId, text) => { calls.push({ paneId, text }); return 'ok'; },
+    verifyPromptSubmission: async () => 'unknown', // pane ilegible / shell no-TUI
+  };
+}
+
+test('W4 gemelo: una entrega NO verificable no cuenta como entregada y la entrada sigue pendiente', async () => {
+  const base = freshBase();
+  pq.enqueue({ project: 'wezbridge', corr: 'T-unv', type: 'request', from_pane: 0, ok: false, body: 'hacelo' }, { base });
+  const calls = [];
+  const c = makeConsumer(base, { send: unverifiableSend(calls) });
+  const out = await c.drain();
+
+  assert.strictEqual(calls.length, 1, 'precondicion: se intento la entrega');
+  assert.strictEqual(out.delivered, 0, "'unknown' NO es una entrega: nadie pudo leer el composer");
+  assert.strictEqual(Object.keys(c._state.pending).length, 1, 'la entrada tiene que quedar para el proximo drain');
+});
+
+test('W4 gemelo: una entrega verificada sigue entregando (el otro sentido)', async () => {
+  const base = freshBase();
+  pq.enqueue({ project: 'wezbridge', corr: 'T-ver', type: 'request', from_pane: 0, ok: false, body: 'hacelo' }, { base });
+  const c = makeConsumer(base, { send: goodSend() });
+  assert.strictEqual((await c.drain()).delivered, 1);
+});
+
+// ── W2/W4: un result DRENADO tambien aterriza en a2a-results.jsonl ───────────
+//
+// La rama `to_project` sin pane vivo retornaba antes de recordResultBody: un
+// result que viajaba por la cola NUNCA llegaba al archivo de resultados. Se
+// registra al entregar, salvo que el emisor ya lo haya registrado al encolar
+// (mcp-server marca `recorded: true`) — nunca dos veces.
+
+const resultsLines = (dir) => {
+  try {
+    return fs.readFileSync(path.join(dir, 'a2a-results.jsonl'), 'utf8')
+      .trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  } catch { return []; }
+};
+
+test('W2: un type=result entregado por la cola queda registrado en a2a-results.jsonl', async () => {
+  const base = freshBase();
+  const prior = process.env.WEZBRIDGE_INTEL_DIR;
+  process.env.WEZBRIDGE_INTEL_DIR = base;
+  try {
+    pq.enqueue({ project: 'wezbridge', corr: 'T-0301:drain:20260901', type: 'result', from_pane: 3, ok: false, body: 'criteria:\n- a: pass — evidencia' }, { base });
+    const c = makeConsumer(base);
+    assert.strictEqual((await c.drain()).delivered, 1);
+    const lines = resultsLines(base);
+    assert.strictEqual(lines.length, 1, 'el result drenado tiene que aterrizar en a2a-results.jsonl');
+    assert.strictEqual(lines[0].corr, 'T-0301:drain:20260901');
+    assert.match(lines[0].body, /criteria:/);
+  } finally { process.env.WEZBRIDGE_INTEL_DIR = prior; }
+});
+
+test('W2: si el emisor ya lo registro (recorded:true) la cola NO lo duplica', async () => {
+  const base = freshBase();
+  const prior = process.env.WEZBRIDGE_INTEL_DIR;
+  process.env.WEZBRIDGE_INTEL_DIR = base;
+  try {
+    pq.enqueue({ project: 'wezbridge', corr: 'T-0302:dup:20260901', type: 'result', from_pane: 3, ok: false, recorded: true, body: 'criteria:\n- a: pass — evidencia' }, { base });
+    const c = makeConsumer(base);
+    assert.strictEqual((await c.drain()).delivered, 1);
+    assert.strictEqual(resultsLines(base).length, 0, 'doble registro = el mismo result contado dos veces por el linker');
+  } finally { process.env.WEZBRIDGE_INTEL_DIR = prior; }
+});
+
+test('W2: un type=request drenado NO se registra como result', async () => {
+  const base = freshBase();
+  const prior = process.env.WEZBRIDGE_INTEL_DIR;
+  process.env.WEZBRIDGE_INTEL_DIR = base;
+  try {
+    pq.enqueue({ project: 'wezbridge', corr: 'T-0303', type: 'request', from_pane: 3, ok: false, body: 'hacelo' }, { base });
+    const c = makeConsumer(base);
+    assert.strictEqual((await c.drain()).delivered, 1);
+    assert.strictEqual(resultsLines(base).length, 0);
+  } finally { process.env.WEZBRIDGE_INTEL_DIR = prior; }
+});

@@ -1,10 +1,17 @@
 'use strict';
 /**
  * orchestrator-waker.cjs — daemon-side "poke pane-0 when a watched repo's pane
- * finishes a turn". The operator's design point, verbatim from the 2026-08-05
- * postmortem review: an in-session Monitor dies silently with the session, so
- * the watcher must live OUT HERE and wake the orchestrator the same way the
- * orchestrator wakes worker panes — by typing into its pane, verified.
+ * finishes a turn", con entrega HONESTA (W4): classifyDelivery da tres estados
+ * (delivered|failed|unverified), un poke no verificable se reintenta una vez y
+ * a la segunda se flaggea con motivo; el texto retenido del composer se
+ * persiste en _intel/held-composer.jsonl con dedupe; el beacon puede aportar
+ * pistas {pane, cwd} que los riders VERIFICAN contra el censo antes de usar.
+ * Exporta paneRunsBypass / paneContextPct / paneHeldComposer(Detail) / panesForRepo.
+ *
+ * The operator's design point, verbatim from the 2026-08-05 postmortem review:
+ * an in-session Monitor dies silently with the session, so the watcher must
+ * live OUT HERE and wake the orchestrator the same way the orchestrator wakes
+ * worker panes — by typing into its pane, verified.
  *
  * Composition of three proven patterns, gaps closed:
  *   - tail a durable JSONL from a byte cursor        (clawtrol-bridge readDelta)
@@ -25,7 +32,7 @@
  */
 
 const fs = require('node:fs');
-const { composerHoldsForeignText, inputBoxContent } = require('./verified-send.cjs');
+const { composerHoldsForeignText, inputBoxContent, classifyDelivery } = require('./verified-send.cjs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
@@ -63,21 +70,57 @@ function isNoiseEvent(evt, bypass) {
 
 const BYPASS_RE = /bypass permissions/i;
 
+// fromCharCode(92) es la barra invertida. Escrita asi a proposito: un literal
+// escapado se rompe al pasar por capas de edicion, y ya paso dos veces.
+const BS = String.fromCharCode(92);
+const normPath = (v) => String(v || '').split(BS).join('/').replace(/\/+$/, '').toLowerCase();
+
+/** ¿El cwd/proyecto normalizado de un pane es (o termina en) el repo pedido? */
+function repoSuffixMatch(proj, repo) {
+  const want = `/${normPath(repo)}`;
+  if (want === '/' || !proj) return false;
+  return proj === want.slice(1) || proj.endsWith(want);
+}
+
+/**
+ * Panes CANDIDATOS para un repo, en orden de confianza. `hint` es lo que trae
+ * la línea del beacon ({pane, cwd}) cuando el hook los emite.
+ *
+ * VERIFY-THEN-TRUST, y no es paranoia decorativa: esta máquina corre DOS mux
+ * sockets que sirven los MISMOS panes con ids DISTINTOS (medido 2026-08-25,
+ * ver pane-identity.cjs:166-180) — y los espacios se SOLAPAN, así que un id
+ * ajeno no falla, acierta el pane equivocado. Por eso:
+ *   1. cwd exacto normalizado de la pista  (el dato más fuerte que hay)
+ *   2. el pane id de la pista SOLO si el censo lo pone en ese repo
+ *   3. el match por sufijo de siempre      (comportamiento previo, fail-open)
+ *
+ * Un pane id es una PISTA, nunca una dirección.
+ */
+function panesForRepo(panes, repo, hint = {}) {
+  const list = (panes || []).filter((p) => normPath(p.project || p.cwd));
+  const suffix = list.filter((p) => repoSuffixMatch(normPath(p.project || p.cwd), repo));
+  const out = [];
+  const hintCwd = hint && typeof hint.cwd === 'string' && hint.cwd.trim() ? normPath(hint.cwd) : null;
+  if (hintCwd) out.push(...list.filter((p) => normPath(p.project || p.cwd) === hintCwd));
+  if (hint && Number.isInteger(hint.pane)) {
+    const byId = list.find((p) => (p.paneId ?? p.pane_id) === hint.pane);
+    if (byId && repoSuffixMatch(normPath(byId.project || byId.cwd), repo)) out.push(byId);
+  }
+  out.push(...suffix);
+  return [...new Set(out)];
+}
+
 /**
  * Does the pane working in `repo` currently show bypass-permissions mode?
  * Matches the pane whose project/cwd path ends with the repo path (repos can
- * be nested, e.g. "whatsappbot-prod - Copy - Copy/whatsappbot-final") and
- * reads the mode straight off its status bar ("⏵⏵ bypass permissions on") in
- * lastLines. No pane visible, or no marker: NOT bypass — fail open, because a
- * filter confident enough to swallow a real gate would tell nobody.
+ * be nested, e.g. "whatsappbot-prod - Copy - Copy/whatsappbot-final") — or the
+ * one the beacon hint names, once verified — and reads the mode straight off
+ * its status bar ("⏵⏵ bypass permissions on") in lastLines. No pane visible, or
+ * no marker: NOT bypass — fail open, because a filter confident enough to
+ * swallow a real gate would tell nobody.
  */
-function paneRunsBypass(panes, repo) {
-  const want = `/${String(repo || '').replace(/\\/g, '/').replace(/\/$/, '').toLowerCase()}`;
-  if (want === '/') return false;
-  for (const p of panes || []) {
-    const proj = String(p.project || p.cwd || '').replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
-    if (!proj) continue;
-    if (proj !== want.slice(1) && !proj.endsWith(want)) continue;
+function paneRunsBypass(panes, repo, hint) {
+  for (const p of panesForRepo(panes, repo, hint)) {
     if (BYPASS_RE.test(String(p.lastLines || p.text || ''))) return true;
   }
   return false;
@@ -92,13 +135,8 @@ const CTX_RE = /Ctx Used:\s*(\d+(?:\.\d+)?)%/;
  * watched repo's pane context %, or null when no pane/no marker (fail open:
  * a missing number must never fake an alert).
  */
-function paneContextPct(panes, repo) {
-  const want = `/${String(repo || '').replace(/\\/g, '/').replace(/\/$/, '').toLowerCase()}`;
-  if (want === '/') return null;
-  for (const p of panes || []) {
-    const proj = String(p.project || p.cwd || '').replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
-    if (!proj) continue;
-    if (proj !== want.slice(1) && !proj.endsWith(want)) continue;
+function paneContextPct(panes, repo, hint) {
+  for (const p of panesForRepo(panes, repo, hint)) {
     const m = CTX_RE.exec(String(p.lastLines || p.text || ''));
     if (m) return Number(m[1]);
   }
@@ -121,23 +159,24 @@ function paneContextPct(panes, repo) {
  * un rider que se cuelga siempre se aprende a ignorar, y eso es peor que
  * no tenerlo.
  */
-function paneHeldComposer(panes, repo) {
-  // fromCharCode(92) es la barra invertida. Escrita asi a proposito: un literal
-  // escapado se rompe al pasar por capas de edicion, y ya paso dos veces hoy.
-  const BS = String.fromCharCode(92);
-  const norm = (v) => String(v || '').split(BS).join('/').replace(/\/+$/, '').toLowerCase();
-  const want = `/${norm(repo)}`;
-  if (want === '/') return null;
-  for (const p of panes || []) {
-    const proj = norm(p.project || p.cwd);
-    if (!proj) continue;
-    if (proj !== want.slice(1) && !proj.endsWith(want)) continue;
+function paneHeldComposerDetail(panes, repo, hint) {
+  for (const p of panesForRepo(panes, repo, hint)) {
     const tail = String(p.lastLines || p.text || '');
     if (!tail) continue;
     if (!composerHoldsForeignText(tail)) continue;
-    return inputBoxContent(tail.split(/\r?\n/));
+    return { paneId: p.paneId ?? p.pane_id ?? null, text: inputBoxContent(tail.split(/\r?\n/)) };
   }
   return null;
+}
+
+/**
+ * Wrapper historico: solo el TEXTO retenido. Se conserva porque es contrato de
+ * los llamadores y tests existentes; lo nuevo (persistir la retencion) necesita
+ * ademas el pane, y por eso existe paneHeldComposerDetail.
+ */
+function paneHeldComposer(panes, repo, hint) {
+  const detail = paneHeldComposerDetail(panes, repo, hint);
+  return detail ? detail.text : null;
 }
 
 function atomicWriteJson(file, value) {
@@ -170,7 +209,11 @@ function createWaker(opts) {
     delivered: path.join(stateDir, 'delivered.json'),
     flags: path.join(stateDir, 'flags.json'),
     resultsSeen: path.join(stateDir, 'results-seen.json'),
+    heldSeen: path.join(stateDir, 'held-seen.json'),
   };
+  // Donde vive held-composer.jsonl: junto a pane-events.jsonl (ambos son _intel),
+  // salvo que el llamador diga otra cosa.
+  const heldLogDir = cfg.intelDir || path.dirname(eventsPath);
 
   // Durable state — sessions and daemon restarts are survivable because
   // everything below is re-read from disk at construction.
@@ -194,8 +237,16 @@ function createWaker(opts) {
     idleStreak: 0,
     lastAttemptAt: {}, // repo -> ms (in-memory: a restart re-attempting early is safe)
     resultsSeen: readJson(FILES.resultsSeen, {}), // repo -> true once its results dir has been seeded
+    heldSeen: readJson(FILES.heldSeen, {}), // sha1(pane|held) -> true, dedupe de held-composer.jsonl
     lastTickAt: null, // ISO — proves the loop is running, not merely constructed
     lastPokeAt: null, // ISO — proves delivery, not merely ticking
+    // W4: intentos de entrega que NO se pudieron verificar, ACUMULADOS desde el
+    // arranque. Acumulado y no "los que siguen pendientes" a proposito: un
+    // intent flaggeado por "unverified twice" sale de pending, y si el contador
+    // viviera solo ahi el numero volveria a 0 justo cuando el problema se
+    // confirmo. Medida de proceso, como lastTickAt/lastPokeAt: se reinicia con
+    // el daemon.
+    unverifiedAttempts: 0,
   };
   const deliveredSet = new Set(state.delivered);
 
@@ -207,10 +258,43 @@ function createWaker(opts) {
     state.delivered = state.delivered.slice(-cfg.deliveredKeep);
     atomicWriteJson(FILES.delivered, state.delivered);
   }
-  function flagCapExhausted(id, intent) {
+  // `reason` es parametro desde W4: ahora hay DOS motivos por los que un intent
+  // muere (cap de intentos fallidos, y composer ilegible dos veces seguidas) y
+  // waker-gate los imprime. Un flag que solo dice "attempt cap" manda al
+  // operador a mirar el pane equivocado.
+  const CAP_REASON = 'attempt cap reached — poke undeliverable, needs a human look';
+  function flagCapExhausted(id, intent, reason = CAP_REASON) {
     const flags = readJson(FILES.flags, {});
-    flags[id] = { ...intent, flagged_at: new Date(now()).toISOString(), reason: 'attempt cap reached — poke undeliverable, needs a human look' };
+    flags[id] = { ...intent, flagged_at: new Date(now()).toISOString(), reason };
     atomicWriteJson(FILES.flags, flags);
+  }
+
+  /**
+   * Persiste el texto que un composer retiene, UNA vez por (pane, texto).
+   *
+   * MEDIDO: hasta hoy la retencion se leia en vivo para colgarla del poke y
+   * despues se perdia — la cita falsa del 2026-08-31 salio de reconstruir de
+   * memoria algo que nunca se habia escrito. El dedupe es lo que lo hace
+   * legible: sin el, un composer trabado tres horas escribe una linea por tick.
+   *
+   * Fail-soft entera: un log que no puede escribir no puede frenar el loop.
+   */
+  function recordHeldComposer(repo, detail) {
+    try {
+      const held = String(detail.text || '').slice(0, 200);
+      if (!held) return;
+      const key = crypto.createHash('sha1')
+        .update(`${detail.paneId}|${held}`).digest('hex').slice(0, 16);
+      if (state.heldSeen[key]) return;
+      const line = JSON.stringify({
+        time: new Date(now()).toISOString(), repo, pane: detail.paneId, held,
+      });
+      fs.appendFileSync(path.join(heldLogDir, 'held-composer.jsonl'), `${line}\n`);
+      // Marcar DESPUES del append: si el append falla, la proxima pasada
+      // reintenta en vez de tragarse el hecho para siempre.
+      state.heldSeen[key] = true;
+      atomicWriteJson(FILES.heldSeen, state.heldSeen);
+    } catch { /* fail-soft */ }
   }
 
   // ── 1. ingest: new beacon lines since cursor -> pending intents ──────────
@@ -261,13 +345,22 @@ function createWaker(opts) {
       if (evt.event === 'permission-wait') {
         let bypass = false;
         try {
-          bypass = cfg.isBypassPane ? !!cfg.isBypassPane(evt) : paneRunsBypass(panes, evt.repo);
+          bypass = cfg.isBypassPane
+            ? !!cfg.isBypassPane(evt)
+            : paneRunsBypass(panes, evt.repo, { pane: evt.pane, cwd: evt.cwd });
         } catch { bypass = false; }
         if (isNoiseEvent(evt, bypass)) { noiseDropped += 1; continue; }
       }
       const id = intentId(evt);
       if (deliveredSet.has(id) || state.pending[id]) continue;
-      state.pending[id] = { repo: evt.repo, event: evt.event, time: evt.time, attempts: 0 };
+      // pane/cwd son OPCIONALES: el hook global los emite recien con el diff
+      // propuesto de W4, y las lineas viejas (sin ellos) tienen que seguir
+      // produciendo intents identicos. Se guardan solo si son del tipo correcto
+      // — un `pane: null` es "no se supo", no un pane.
+      const intent = { repo: evt.repo, event: evt.event, time: evt.time, attempts: 0 };
+      if (Number.isInteger(evt.pane)) intent.pane = evt.pane;
+      if (typeof evt.cwd === 'string' && evt.cwd.trim()) intent.cwd = evt.cwd;
+      state.pending[id] = intent;
       added += 1;
     }
     // Order matters: intents first, cursor second. A crash in between re-reads
@@ -437,8 +530,17 @@ function createWaker(opts) {
       // with the live pane list in hand, instead of waking the orchestrator on
       // a turn boundary. Dropped intents join the delivered ring so a restart
       // never resurrects them. A wholly-noise group consumes no cooldown.
+      // Pista del beacon para los tres riders: la del intent MAS NUEVO que la
+      // traiga (los eventos vienen en orden de archivo). Sigue siendo una
+      // pista: panesForRepo la verifica contra el censo antes de usarla.
+      const hint = {};
+      for (const id of groupAll) {
+        const it = state.pending[id];
+        if (it && it.pane !== undefined) hint.pane = it.pane;
+        if (it && it.cwd !== undefined) hint.cwd = it.cwd;
+      }
       let group = groupAll;
-      if (paneRunsBypass(panes, repo)) {
+      if (paneRunsBypass(panes, repo, hint)) {
         const noiseIds = groupAll.filter((id) => isNoiseEvent(state.pending[id], true));
         if (noiseIds.length) {
           for (const id of noiseIds) {
@@ -478,26 +580,53 @@ function createWaker(opts) {
       // M2: context watermark — the number was always on the pane's status
       // bar; wabot hit 97% before anyone looked. ≥ threshold rides the poke
       // so the orchestrator can arm handoff→/clear BEFORE the cliff.
-      const ctxPct = paneContextPct(panes, repo);
+      const ctxPct = paneContextPct(panes, repo, hint);
       if (ctxPct !== null && ctxPct >= cfg.ctxAlertPct) {
         text += ` CONTEXT ${ctxPct}% — arm the handoff→/clear recycle for this pane before it hits the wall.`;
       }
       // T-0242: "finished work" es FALSO si el composer retiene texto que el
       // pane nunca envio. Medido el 2026-08-29 en tres panes a la vez. Se cita
       // el texto porque sin el, el operador sabe que algo se trabo pero no QUE.
-      const held = paneHeldComposer(panes, repo);
-      if (held) {
-        text += ` OJO: su composer RETIENE texto sin enviar (${JSON.stringify(held.slice(0, 80))}) — no proceso eso; una tecla del operador lo destraba.`;
+      const heldDetail = paneHeldComposerDetail(panes, repo, hint);
+      if (heldDetail) {
+        text += ` OJO: su composer RETIENE texto sin enviar (${JSON.stringify(heldDetail.text.slice(0, 80))}) — no proceso eso; una tecla del operador lo destraba.`;
+        // El poke es efimero; el archivo no. Sin esto, el unico registro de lo
+        // que se perdio vive en el scrollback de un pane.
+        recordHeldComposer(repo, heldDetail);
       }
-      let ok = false;
+      // Tres estados, no dos (W4): un send que no se pudo VERIFICAR no es una
+      // entrega. Ver classifyDelivery en verified-send.cjs.
+      let verdict = 'unverified';
       try {
         const delivered = await send.sendPromptDeferredEnter(targetId, text);
         const submitted = await send.verifyPromptSubmission(targetId, text);
-        ok = submitted !== 'stuck' && delivered !== 'truncated';
+        verdict = classifyDelivery(delivered, submitted);
       } catch (err) {
+        verdict = 'failed'; // un send que TIRA es un fallo medido, no una duda
         log(`orch-waker: poke send failed: ${err.message}`);
       }
-      if (ok) {
+      if (verdict === 'unverified') {
+        // Ni entregado ni fallado: el pane no se pudo leer. Se reintenta una
+        // vez tras el cooldown; a la segunda se flaggea con un motivo que
+        // nombra el pane, porque reintentar para siempre contra un pane
+        // ilegible es exactamente el poke-storm silencioso de 2026-08-13.
+        let capped = 0;
+        for (const id of group) {
+          const intent = state.pending[id];
+          intent.unverified = (intent.unverified || 0) + 1;
+          state.unverifiedAttempts += 1;
+          if (intent.unverified >= 2) {
+            flagCapExhausted(id, intent, `unverified twice: composer unreadable (pane ${targetId})`);
+            delete state.pending[id];
+            capped += 1;
+          }
+        }
+        persistPending();
+        log(`orch-waker: poke to pane ${targetId} for ${repo} could NOT be verified`
+          + `${capped ? ` — ${capped} intent(s) FLAGGED (unverified twice)` : ' — will retry once after cooldown'}`);
+        continue;
+      }
+      if (verdict === 'delivered') {
         for (const id of group) {
           delete state.pending[id];
           deliveredSet.add(id);
@@ -578,6 +707,9 @@ function createWaker(opts) {
       repos: cfg.watchRepos,
       pending: Object.keys(state.pending).length,
       pendingOldestMinutes,
+      // La perilla de fine-tuning del loop: cada 'unverified' es un lugar donde
+      // el sistema no se ve a si mismo. Sin numero no hay como fallar sobre eso.
+      unverified: state.unverifiedAttempts,
       flagged,
       lastTickAt: state.lastTickAt || null,
       lastPokeAt: state.lastPokeAt || null,
@@ -668,4 +800,4 @@ function resolveWakerConfig({ env = process.env, intelDir, readFile } = {}) {
   };
 }
 
-module.exports = { createWaker, intentId, DEFAULTS, resolveWakerConfig, isNoiseEvent, paneRunsBypass, paneContextPct, paneHeldComposer };
+module.exports = { createWaker, intentId, DEFAULTS, resolveWakerConfig, isNoiseEvent, paneRunsBypass, paneContextPct, paneHeldComposer, paneHeldComposerDetail, panesForRepo };

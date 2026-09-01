@@ -1,6 +1,10 @@
 'use strict';
 /**
  * project-queue.cjs — durable per-PROJECT A2A queue: _intel/queues/<project>.jsonl.
+ * Encola, tailea por cursor y DRENA con entrega verificada: desde W4 el
+ * veredicto es classifyDelivery (verified-send.cjs) y 'unverified' NO cuenta
+ * como entrega. Desde W2 un type=result drenado se registra en
+ * a2a-results.jsonl, salvo que el emisor ya lo haya marcado `recorded: true`.
  *
  * B1 (2026-08-22): `a2a_send {to_project}` resolves the pane via pane-identity
  * AT SEND TIME and ALWAYS appends a durable record here — delivery failure means
@@ -27,8 +31,9 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { intelDir, updateThreads, autoAckResult } = require('./a2a-intel.cjs');
+const { intelDir, updateThreads, autoAckResult, recordResultBody } = require('./a2a-intel.cjs');
 const { logAction } = require('./action-log.cjs');
+const { classifyDelivery } = require('./verified-send.cjs');
 
 const DEFAULTS = {
   maxAttempts: 3, // per entry; cap reached -> flagged and dropped, never retried
@@ -97,6 +102,10 @@ function enqueue(entry, { base } = {}) {
       submitted: entry.submitted ?? null,
       delivered: entry.delivered ?? null,
       ok: !!entry.ok,
+      // W2: el emisor (mcp-server) ya escribio este result en a2a-results.jsonl
+      // al encolar. La marca viaja con la linea para que el drenaje NO lo
+      // registre otra vez — el linker leeria el mismo result dos veces.
+      ...(entry.recorded ? { recorded: true } : {}),
       body: String(entry.body || ''),
     });
     fs.appendFileSync(file, line + '\n');
@@ -257,6 +266,7 @@ function createConsumer(opts) {
       state.pending[id] = {
         corr: entry.corr, type: entry.type, from_pane: entry.from_pane,
         body: entry.body, time: entry.time, attempts: 0,
+        ...(entry.recorded ? { recorded: true } : {}),
       };
       added += 1;
     }
@@ -363,7 +373,11 @@ function createConsumer(opts) {
       try {
         integrity = await send.sendPromptDeferredEnter(targetId, envelope);
         submitted = await send.verifyPromptSubmission(targetId, envelope);
-        ok = submitted !== 'stuck' && integrity !== 'truncated';
+        // W4, gemelo del waker: un send que NO se pudo verificar no es una
+        // entrega. La regla vive una sola vez, en verified-send.cjs. Aca
+        // 'unverified' se trata como fallo (reintento con cooldown y cap), que
+        // es la postura correcta para la ULTIMA copia durable de un sobre.
+        ok = classifyDelivery(integrity, submitted) === 'delivered';
       } catch (err) {
         log(`project-queue[${project}]: send failed: ${err.message}`);
       }
@@ -382,6 +396,15 @@ function createConsumer(opts) {
         // the pane, then automate the bookkeeping acuse for verified results —
         // same rule as the live a2a_send path (judgement ack stays human).
         try {
+          // W2: un result que viaja por la cola tambien tiene que aterrizar en
+          // a2a-results.jsonl. La rama `to_project` sin pane vivo retornaba
+          // ANTES de recordResultBody, asi que el sobre drenado no dejaba
+          // rastro: el linker no podia mover la tarjeta de un result que, para
+          // el archivo de resultados, nunca existio. `recorded` es la marca del
+          // emisor: si ya lo escribio al encolar, aca no se duplica.
+          if (entry.type === 'result' && entry.recorded !== true) {
+            recordResultBody({ corr: entry.corr, fromPane: entry.from_pane, toPane: targetId, v2: require('./a2a-intel.cjs').detectV2(entry.body), body: entry.body });
+          }
           updateThreads({ fromPane: entry.from_pane, toPane: targetId, corr: entry.corr, type: entry.type, body: entry.body });
           if (entry.type === 'result' && submitted === 'submitted' && autoAckResult({ corr: entry.corr, byPane: entry.from_pane })) {
             logActionFn('auto_ack', { target: `corr=${entry.corr}`, why: 'verified queue redelivery of type=result — bookkeeping acuse automated (B1)' });
