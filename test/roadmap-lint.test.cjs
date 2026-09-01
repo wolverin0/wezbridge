@@ -1,4 +1,8 @@
 'use strict';
+// T30: este archivo depende de companions fuera del repo — en checkout aislado se declara y corta.
+const { guardCompanions } = require('./helpers/companions.cjs');
+if (!guardCompanions(module, ['_docs-curation', '_intel'])) return;
+
 // R.4 exit criteria. Hermetic on purpose: an earlier steward test coupled to
 // live fleet state failed the moment an unrelated log was appended. Each drift
 // direction gets a synthetic repo whose git history we control completely.

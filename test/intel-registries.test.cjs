@@ -1,4 +1,8 @@
 'use strict';
+// T30: este archivo depende de companions fuera del repo — en checkout aislado se declara y corta.
+const { guardCompanions } = require('./helpers/companions.cjs');
+if (!guardCompanions(module, ['_docs-curation', '_intel'])) return;
+
 // R.1/R.2 exit criteria as executable checks (PLAN-control-plane Phase R).
 // These registries exist so dispatch never globs for repos and the gate never
 // meets an unknown kind. If this suite fails, the importer must refuse to run.

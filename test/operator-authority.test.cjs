@@ -1,4 +1,8 @@
 'use strict';
+// T30: este archivo depende de companions fuera del repo — en checkout aislado se declara y corta.
+const { guardCompanions } = require('./helpers/companions.cjs');
+if (!guardCompanions(module, ['_docs-curation', '_intel'])) return;
+
 /**
  * Una tarjeta del ledger es la unica autoridad que un gate acepta, asi que su
  * origen tiene que ser comprobable sin creerle a quien la escribio.

@@ -1,4 +1,8 @@
 'use strict';
+// T30: este archivo depende de companions fuera del repo — en checkout aislado se declara y corta.
+const { guardCompanions } = require('./helpers/companions.cjs');
+if (!guardCompanions(module, ['_docs-curation', '_intel'])) return;
+
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

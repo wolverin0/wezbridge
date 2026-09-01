@@ -1,4 +1,8 @@
 'use strict';
+// T30: este archivo depende de companions fuera del repo — en checkout aislado se declara y corta.
+const { guardCompanions } = require('./helpers/companions.cjs');
+if (!guardCompanions(module, ['_docs-curation', '_intel'])) return;
+
 /**
  * The closed kind vocabulary has to hold at the WRITE path, not only in an audit.
  *

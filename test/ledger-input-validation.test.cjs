@@ -1,4 +1,8 @@
 'use strict';
+// T30: este archivo depende de companions fuera del repo — en checkout aislado se declara y corta.
+const { guardCompanions } = require('./helpers/companions.cjs');
+if (!guardCompanions(module, ['_docs-curation', '_intel'])) return;
+
 /**
  * T-0282 — el ledger acepta y descarta EN SILENCIO, y por eso el backlog roto
  * no se puede reparar con la herramienta.

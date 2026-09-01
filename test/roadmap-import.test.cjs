@@ -1,4 +1,8 @@
 'use strict';
+// T30: este archivo depende de companions fuera del repo — en checkout aislado se declara y corta.
+const { guardCompanions } = require('./helpers/companions.cjs');
+if (!guardCompanions(module, ['_docs-curation', '_intel'])) return;
+
 // R.3 exit criteria, hermetic. WEZBRIDGE_INTEL_DIR must be set BEFORE the
 // requires — both ledger.cjs and roadmap-import.cjs freeze it at module load.
 // node --test runs each file in its own process, so this cannot leak into the
