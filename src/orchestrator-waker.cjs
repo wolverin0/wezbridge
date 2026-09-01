@@ -44,6 +44,9 @@ const DEFAULTS = {
   maxAttempts: 3, // per intent; cap reached -> flagged and dropped, never retried
   cooldownMs: 5 * 60 * 1000, // between poke attempts per repo
   deliveredKeep: 500, // delivered-id ring buffer size
+  // 2026-09-01: un evento mas viejo que esto no se ingesta nunca. Un turn-end de
+  // hace dias no es "trabajo terminado", es historia; poke-ar por el es ruido.
+  staleEventMs: 6 * 60 * 60 * 1000,
   ctxAlertPct: 80, // M2: pane context % at/above which the poke carries a handoff→/clear warning
 };
 
@@ -247,6 +250,12 @@ function createWaker(opts) {
     // confirmo. Medida de proceso, como lastTickAt/lastPokeAt: se reinicia con
     // el daemon.
     unverifiedAttempts: 0,
+    // 2026-09-01: cuantas veces el cursor tuvo que saltar a EOF (rotacion o
+    // reescritura del archivo) y cuantos eventos se descartaron por viejos.
+    // Ambos contados: un salto silencioso es como se pierde un evento sin que
+    // nadie lo sepa, y un descarte silencioso es como se ignora uno real.
+    cursorResets: 0,
+    staleDropped: 0,
   };
   const deliveredSet = new Set(state.delivered);
 
@@ -309,16 +318,23 @@ function createWaker(opts) {
   function ingestEvents(panes = []) {
     let stat;
     try { stat = fs.statSync(eventsPath); } catch { return; } // no beacon file yet
-    if (stat.size < state.cursorBytes) { state.cursorBytes = 0; state.cursorTail = null; }
     const fd = fs.openSync(eventsPath, 'r');
     let chunk;
     try {
       // Truncate-and-rewrite to a size >= the cursor is invisible to a size
       // check alone — verify the bytes we already consumed are still there.
-      if (state.cursorBytes > 0 && !tailMatches(fd)) {
-        log('orch-waker: events file rotated (tail mismatch) — cursor reset');
+      // 2026-09-01: el reinicio del cursor a 0 REPLAYO la historia entera
+      // (18.697 lineas desde el 25-08: pokes de panes que ya no existen). El
+      // cursor SI vuelve a 0 — un archivo rotado puede traer eventos recientes
+      // y quedar ciego a ellos es peor — pero la re-lectura pasa por el filtro
+      // de antiguedad (staleEventMs) y el dedupe de entregados, asi que la
+      // historia no se convierte en pokes. El reinicio queda contado.
+      const shrank = stat.size < state.cursorBytes;
+      if (shrank || (state.cursorBytes > 0 && !tailMatches(fd))) {
+        log(`orch-waker: events file ${shrank ? 'shrank' : 'rotated (tail mismatch)'} — cursor reset; re-read filtered by age (${cfg.staleEventMs} ms)`);
         state.cursorBytes = 0;
         state.cursorTail = null;
+        state.cursorResets += 1;
       }
       if (stat.size === state.cursorBytes) return;
       const len = stat.size - state.cursorBytes;
@@ -338,6 +354,12 @@ function createWaker(opts) {
       try { evt = JSON.parse(line); } catch { continue; } // corrupt line: skip, never crash
       if (!cfg.watchRepos.includes(evt.repo)) continue;
       if (!['turn-end', 'permission-wait'].includes(evt.event)) continue;
+      // Evento viejo: se descarta y se cuenta. Nunca se poke-a por historia.
+      const evtMs = Date.parse(evt.time || '');
+      if (cfg.staleEventMs > 0 && Number.isFinite(evtMs) && (now() - evtMs) > cfg.staleEventMs) {
+        state.staleDropped += 1;
+        continue;
+      }
       // mm-d216 twin filter, ingest side: when the SOURCE pane is visible and
       // runs bypass-permissions, its permission-wait never becomes an intent.
       // cfg.isBypassPane overrides for tests/wiring; a throwing predicate or an
@@ -710,6 +732,8 @@ function createWaker(opts) {
       // La perilla de fine-tuning del loop: cada 'unverified' es un lugar donde
       // el sistema no se ve a si mismo. Sin numero no hay como fallar sobre eso.
       unverified: state.unverifiedAttempts,
+      cursorResets: state.cursorResets,
+      staleDropped: state.staleDropped,
       flagged,
       lastTickAt: state.lastTickAt || null,
       lastPokeAt: state.lastPokeAt || null,

@@ -332,3 +332,46 @@ test('fresh state starts at END of an existing events file — history is not re
   assert.equal(send.calls.length, 1, 'events after arming are ingested normally');
   assert.match(send.calls[0].text, /1 turn-end event\(s\)/);
 });
+
+// ---------------------------------------------------------------------------
+// 2026-09-01 20:0x ART, medido en vivo: el archivo de eventos cambio "por debajo"
+// del cursor (hash de la cola distinto), el waker reinicio el cursor a 0 y
+// REPLAYO 18.697 lineas desde el 25-08 — pokes de yolo26, axion y memorymaster,
+// panes que ya no existen. Un reinicio de cursor salta a EOF, nunca replaya; y
+// un evento mas viejo que STALE_EVENT_MS no se ingesta nunca.
+// ---------------------------------------------------------------------------
+test('rotacion/mismatch del archivo: el cursor se reinicia y queda CONTADO; la re-lectura no vuelve a poke-ar lo entregado ni lo viejo', async () => {
+  const env = makeEnv();
+  const send = fakeSend();
+  const NOW = 10_000_000_000;
+  const w = makeWaker(env, { send, now: () => NOW, watchRepos: ['walksim'] });
+  beacon(env, { time: new Date(NOW - 60000).toISOString(), repo: 'walksim', session: 'a', event: 'turn-end' });
+  await w.tick(); await w.tick();
+  assert.equal(send.calls.length, 1, 'el primer evento se entrega normal');
+  // Reescritura in-place por debajo del cursor: el mismo evento ya entregado (dedupe),
+  // uno de hace 2 dias (stale) y uno reciente nuevo (ese SI debe entrar).
+  const rewritten = [
+    { time: new Date(NOW - 60000).toISOString(), repo: 'walksim', session: 'a', event: 'turn-end' },
+    { time: new Date(NOW - 2 * 24 * 3600000).toISOString(), repo: 'walksim', session: 'viejo', event: 'turn-end' },
+    { time: new Date(NOW - 30000).toISOString(), repo: 'walksim', session: 'nuevo', event: 'turn-end' },
+  ].map((e) => JSON.stringify(e)).join('\n') + '\n';
+  fs.writeFileSync(env.eventsPath, ' '.repeat(8) + rewritten); // bytes distintos antes del cursor
+  await w.tick(); await w.tick();
+  assert.equal(w.status().cursorResets, 1, 'el reinicio queda contado en status()');
+  assert.equal(w.status().staleDropped, 1, 'el evento de hace 2 dias se descarto');
+  assert.equal(send.calls.length, 2, 'solo el evento reciente nuevo produjo un poke: ni el ya entregado ni el viejo');
+});
+
+test('un evento mas viejo que STALE_EVENT_MS no se ingesta: se cuenta como stale, no se poke-a', async () => {
+  const env = makeEnv();
+  const send = fakeSend();
+  const NOW = 10_000_000_000;
+  const w = makeWaker(env, { send, now: () => NOW, watchRepos: ['walksim'] });
+  beacon(env, { time: new Date(NOW - 8 * 3600000).toISOString(), repo: 'walksim', session: 'old', event: 'turn-end' });
+  beacon(env, { time: new Date(NOW - 60000).toISOString(), repo: 'walksim', session: 'new', event: 'turn-end' });
+  await w.tick(); await w.tick();
+  assert.equal(send.calls.length, 1);
+  assert.match(send.calls[0].text, /walksim/);
+  assert.equal(w.status().staleDropped, 1, 'el evento de hace 8 h se descarto y quedo contado');
+  assert.equal(Object.keys(w._state.pending).length, 0);
+});
