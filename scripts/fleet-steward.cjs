@@ -29,6 +29,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { auditRoutines } = require('./routine-audit.cjs');
+const { reconcileLeases, liveCensus: reconcilerCensus } = require('./lease-reconcile.cjs');
 const { lintSpecRefs, lintRulings } = require('./dispatch-lint.cjs');
 
 const HOURS = (h) => h * 3600 * 1000;
@@ -405,7 +406,7 @@ function classify(task, now, dir = intelDir(), ctx = null) {
   }
 }
 
-function audit(tasks, now = Date.now(), dir = intelDir()) {
+function audit(tasks, now = Date.now(), dir = intelDir(), opts = {}) {
   // Two sources, one findings stream. Scheduled routines write evidence files
   // that nothing used to read; merging them here means they inherit the gate
   // rather than needing a second enforcement chain that could rot separately.
@@ -425,12 +426,21 @@ function audit(tasks, now = Date.now(), dir = intelDir()) {
     ...auditProposals(dir, now),
     // Files in tasks/ that neither loader governs (T-0290).
     ...auditTaskFiles(dir, now),
+    // T-0272: ¿el owner de cada lease abierta sigue existiendo? El vencimiento
+    // (abandoned-lease, arriba) pregunta "¿tardó demasiado?"; esto pregunta
+    // "¿el pane que la sostiene existe y es la misma sesión?" — pane-39 murió
+    // con la lease de T-0199 viva y el tablero mintió "running" 22 horas.
+    // El censo se INYECTA (opts.census): el camino auto (main/steward-gate) lo
+    // mide en vivo; una llamada de librería sin censo no reconcilia, porque un
+    // censo medido a medias es peor que declarar que no se midió.
+    ...('census' in opts ? reconcileLeases(tasks, opts.census, now) : []),
   ];
   // Operator-owed items first: those are the ones that block other people's work.
   // routine-silent ranks high because a routine that stopped firing invalidates
   // every later "clean" reading, the way a dead sensor does.
   const rank = {
-    'awaiting-operator': 0, 'abandoned-lease': 1, 'routine-silent': 2, 'stale-running': 3,
+    'awaiting-operator': 0, 'dead-owner-lease': 1, 'lease-census-unavailable': 1, 'lease-owner-unverifiable': 1,
+    'abandoned-lease': 2, 'routine-silent': 2, 'stale-running': 3,
     'routine-void': 4, 'routine-findings': 5, 'stale-review': 6, 'stale-failed': 7,
     // Hygiene before backlog-idle: an unspecced dispatch is about to waste a
     // builder session; an unlanded value is a live near-miss. Both outrank
@@ -472,7 +482,10 @@ module.exports = {
 };
 
 if (require.main === module) {
-  const report = audit(loadTasks());
+  // El camino que corre solo (schtask + steward-gate) SIEMPRE reconcilia
+  // leases contra el censo vivo. liveCensus() puede devolver null (mux caido):
+  // eso se pasa igual, y el reconciliador lo convierte en hallazgo ruidoso.
+  const report = audit(loadTasks(), Date.now(), intelDir(), { census: reconcilerCensus() });
   process.stdout.write(process.argv.includes('--json')
     ? JSON.stringify(report, null, 2) + '\n'
     : render(report) + '\n');

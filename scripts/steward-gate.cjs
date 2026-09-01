@@ -43,6 +43,13 @@ const RULINGS = path.join(INTEL, 'rulings.jsonl');
  * behaviour is worse than none.
  */
 const DEADLINES = {
+  // T-0272: un owner muerto con lease escrita es un tablero MINTIENDO ahora
+  // mismo — mas urgente que el vencimiento, porque el orquestador despacha
+  // contra ese estado. census-unavailable igual de apretado: es el detector
+  // ciego, y ciego que calla se vuelve "todo sano".
+  'dead-owner-lease': 6,
+  'lease-census-unavailable': 6,
+  'lease-owner-unverifiable': 24,
   'abandoned-lease': 6,
   'blocked-not-gated': 48,
   'stale-running': 24,
