@@ -22,7 +22,13 @@
  * Exit codes:  0 submitted · 2 bad usage · 3 wezterm unreachable · 4 no match ·
  *              5 ambiguous · 6 send failed · 7 submit remained stuck ·
  *              8 composer unreadable · 9 paste did not land as ONE prompt (Enter NOT sent) ·
- *              10 composer already held someone else's unsent text (nothing written)
+ *              10 composer already held someone else's unsent text (nothing written) ·
+ *              11 --role: no valid registry for that role (missing, pane dead, cwd changed, pid dead, ambiguous)
+ *
+ * --role <r> (T-0322): resolve by the per-session registry a SessionStart hook
+ * writes (~/.local/share/wezterm/panes/<mux pane id>.json, src/pane-registry.cjs),
+ * validated against the mux listing (pane exists, cwd matches, pid alive).
+ * Fails closed with the cause; stale registries of dead panes are cleaned up.
  *
  * DELIVERY (T-0303, 2026-09-02): the payload goes in as a BRACKETED PASTE and the
  * Enter is a SEPARATE write. The previous `--no-paste` typed the payload as raw
@@ -59,9 +65,12 @@ const project = arg('project');
 // is his, stable, and survives pane renumbering. Six panes currently share the
 // cwd basename "whatsappbot-final"; exactly one is named "wabot".
 const tabTitle = arg('tab-title');
+// --role is the selector for machines (T-0322): the SESSION declared it at start
+// (pane-register-hook.cjs), it does not depend on cwd nor on tab titles.
+const role = arg('role');
 const text = arg('file') ? fs.readFileSync(arg('file'), 'utf8') : arg('text');
-if (require.main === module && ((!project && !tabTitle) || !text)) {
-  die(2, 'usage: (--project <name> | --tab-title <exact-name> | both) (--text "..." | --file <path>) [--dry-run]');
+if (require.main === module && ((!project && !tabTitle && !role) || !text)) {
+  die(2, 'usage: (--role <r> | --project <name> | --tab-title <exact-name> | combinations) (--text "..." | --file <path>) [--dry-run]');
 }
 
 // T-0260 (2026-09-02): UN solo espacio de pane_id, el del mux. Medido: el mismo
@@ -155,7 +164,20 @@ for (const socketEnv of liveSocketEnvironments()) {
 }
 if (!list.length) die(3, `wezterm unreachable after 3 attempts: ${lastErr}`);
 
-const { matches, space } = selectPane(list, { project, tabTitle });
+let { matches, space } = selectPane(list, { project, tabTitle });
+if (role) {
+  // Registry first, mux second: the role names a pane id; the mux confirms the
+  // pane exists, its cwd matches and the session's pid is alive. Anything else
+  // is a refusal with the cause — never a guess. --project / --tab-title, when
+  // also given, stay as extra constraints on the resolved pane.
+  const { resolveRole } = require('../src/pane-registry.cjs');
+  const mux = list.filter((p) => ((p._socketEnv && p._socketEnv._space) || 'mux') === 'mux');
+  const res = resolveRole(role, { list: mux.map((p) => ({ pane_id: p.pane_id, cwd: p.cwd })) });
+  if (!res.ok) die(11, `--role ${role}: ${res.reason} — ${res.detail}`);
+  matches = matches.filter((m) => Number(m.pane_id) === Number(res.paneId) && m._space === 'mux');
+  if (!matches.length) die(11, `--role ${role}: registry says pane ${res.paneId} but it does not match ${project || tabTitle ? 'the extra --project/--tab-title constraint' : 'the mux listing'}`);
+  space = 'mux';
+}
 
 const criteria = [project && `project "${project}"`, tabTitle && `tab-title "${tabTitle}" (exact)`].filter(Boolean).join(' + ');
 if (!matches.length) die(4, `no pane matching ${criteria}`);
