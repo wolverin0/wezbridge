@@ -43,6 +43,16 @@ const DEFAULTS = {
   settleTicks: 2, // consecutive idle observations of the target before poking
   maxAttempts: 3, // per intent; cap reached -> flagged and dropped, never retried
   cooldownMs: 5 * 60 * 1000, // between poke attempts per repo
+  // T-0268: debounce TRAILING por repo para turn-end. Un pane en dialogo con el
+  // operador emite un turn-end por turno; poke-ar cada uno convierte al
+  // orquestador en mensajero (14 despertares por whatsappbot-final entre 00:15Z
+  // y 16:10Z del 2026-09-02, todos trabajo directo del operador). La senal util
+  // es el HUECO (mm-133244: un pane que se quedo quieto), no la rafaga: los
+  // turn-end de un repo se poke-an cuando el repo lleva debounceMs en silencio,
+  // y el poke lleva TODOS los intents acumulados. Solo turn-end: permission-wait,
+  // result-file y sobres a2a nunca se retienen. Fail-open: tiempo ilegible o
+  // ventana invalida => poke. Override: WEZBRIDGE_ORCH_WAKER_DEBOUNCE_MS.
+  debounceMs: 10 * 60 * 1000,
   deliveredKeep: 500, // delivered-id ring buffer size
   // 2026-09-01: un evento mas viejo que esto no se ingesta nunca. Un turn-end de
   // hace dias no es "trabajo terminado", es historia; poke-ar por el es ruido.
@@ -69,6 +79,41 @@ function intentId(evt) {
 /** Pure mm-d216 predicate: is this event noise given the pane's bypass mode? */
 function isNoiseEvent(evt, bypass) {
   return !!evt && evt.event === 'permission-wait' && !!bypass;
+}
+
+// ── T-0268: debounce trailing por repo, SOLO para turn-end, fail-OPEN ────────
+//
+// El modo de falla de este componente es dejar CIEGO al orquestador, asi que
+// toda supresion tiene que fallar abierto: ante cualquier duda, poke-ar. Esta
+// funcion es pura (intents + reloj + ventana) y devuelve por que decide lo que
+// decide, para que el test pueda ejercer cada rama y no solo leer un comentario.
+const DEBOUNCED_EVENTS = new Set(['turn-end']);
+
+/**
+ * @param intents  los intents pendientes de UN repo
+ * @param nowMs    reloj inyectado
+ * @param debounceMs ventana de silencio requerida
+ * @returns { hold, reason, quietMs }  hold=true => no poke-ar TODAVIA (se acumula)
+ */
+function debounceHold(intents, nowMs, debounceMs) {
+  const list = Array.isArray(intents) ? intents.filter(Boolean) : null;
+  if (!list || !list.length) return { hold: false, reason: 'fail-open: no intents' };
+  if (!Number.isFinite(debounceMs) || debounceMs <= 0) return { hold: false, reason: 'fail-open: no debounce window' };
+  if (!Number.isFinite(nowMs)) return { hold: false, reason: 'fail-open: no clock' };
+  // Cualquier cosa que no sea turn-end (permission-wait, result-file, un sobre
+  // a2a) es senal, no rafaga: el grupo entero sale ya, con los turn-end adentro.
+  const other = list.find((it) => !DEBOUNCED_EVENTS.has(it.event));
+  if (other) return { hold: false, reason: `not debounced: ${other.event}` };
+  let newest = -Infinity;
+  for (const it of list) {
+    const t = Date.parse(it.time || '');
+    if (!Number.isFinite(t)) return { hold: false, reason: 'fail-open: unparsable intent time' };
+    if (t > newest) newest = t;
+  }
+  const quietMs = nowMs - newest;
+  if (quietMs < 0) return { hold: false, reason: 'fail-open: intent time in the future' };
+  if (quietMs < debounceMs) return { hold: true, reason: `quiet ${Math.round(quietMs / 1000)}s < ${Math.round(debounceMs / 1000)}s`, quietMs };
+  return { hold: false, reason: `quiet ${Math.round(quietMs / 1000)}s >= window`, quietMs };
 }
 
 const BYPASS_RE = /bypass permissions/i;
@@ -256,8 +301,17 @@ function createWaker(opts) {
     // nadie lo sepa, y un descarte silencioso es como se ignora uno real.
     cursorResets: 0,
     staleDropped: 0,
+    // T-0268: repos con turn-end retenidos por el debounce (para loguear una
+    // vez por espera) y cuantos pokes se AHORRARON al colapsar rafagas.
+    debounceHeld: {},
+    debounceCollapsed: 0,
   };
   const deliveredSet = new Set(state.delivered);
+  // T-0268: override por env solo cuando el llamador no fijo la ventana.
+  if (opts.debounceMs === undefined && process.env.WEZBRIDGE_ORCH_WAKER_DEBOUNCE_MS !== undefined) {
+    const v = Number(process.env.WEZBRIDGE_ORCH_WAKER_DEBOUNCE_MS);
+    if (Number.isFinite(v) && v >= 0) cfg.debounceMs = v;
+  }
 
   function persistPending() { atomicWriteJson(FILES.pending, state.pending); }
   function persistCursor() {
@@ -353,7 +407,9 @@ function createWaker(opts) {
       let evt;
       try { evt = JSON.parse(line); } catch { continue; } // corrupt line: skip, never crash
       if (!cfg.watchRepos.includes(evt.repo)) continue;
-      if (!['turn-end', 'permission-wait'].includes(evt.event)) continue;
+      // 'a2a' (T-0268): un sobre dirigido al orquestador que el beacon reporte
+      // es la senal (a) de mm-133244 — nunca es ruido y nunca se debounce-a.
+      if (!['turn-end', 'permission-wait', 'a2a'].includes(evt.event)) continue;
       // Evento viejo: se descarta y se cuenta. Nunca se poke-a por historia.
       const evtMs = Date.parse(evt.time || '');
       if (cfg.staleEventMs > 0 && Number.isFinite(evtMs) && (now() - evtMs) > cfg.staleEventMs) {
@@ -581,6 +637,22 @@ function createWaker(opts) {
           if (!group.length) continue;
         }
       }
+      // T-0268: rafaga de turn-end de un repo => UN poke cuando el repo lleva
+      // debounceMs quieto, con todos los intents acumulados. Cualquier otra
+      // clase de intent en el grupo lo libera ya. Fail-open adentro de
+      // debounceHold. Se loguea una vez por espera, no por tick.
+      const held = debounceHold(group.map((id) => state.pending[id]), now(), cfg.debounceMs);
+      if (held.hold) {
+        if (!state.debounceHeld[repo]) {
+          state.debounceHeld[repo] = true;
+          log(`orch-waker: ${repo}: ${group.length} turn-end intent(s) held — ${held.reason}; one poke when the pane goes quiet`);
+        }
+        continue;
+      }
+      if (state.debounceHeld[repo]) {
+        delete state.debounceHeld[repo];
+        state.debounceCollapsed += Math.max(0, group.length - 1);
+      }
       // undefined = never attempted — a first attempt is never cooldown-blocked
       const last = state.lastAttemptAt[repo];
       if (last !== undefined && now() - last < cfg.cooldownMs) continue;
@@ -747,6 +819,12 @@ function createWaker(opts) {
       unverified: state.unverifiedAttempts,
       cursorResets: state.cursorResets,
       staleDropped: state.staleDropped,
+      // T-0268: la ventana en vigor y cuantos pokes se ahorraron colapsando
+      // rafagas de turn-end. Si debounceCollapsed no crece con el operador
+      // dialogando en un pane, el debounce no esta haciendo nada.
+      debounceMs: cfg.debounceMs,
+      debounceCollapsed: state.debounceCollapsed,
+      debounceHeldRepos: Object.keys(state.debounceHeld),
       flagged,
       lastTickAt: state.lastTickAt || null,
       lastPokeAt: state.lastPokeAt || null,
@@ -837,4 +915,4 @@ function resolveWakerConfig({ env = process.env, intelDir, readFile } = {}) {
   };
 }
 
-module.exports = { createWaker, intentId, DEFAULTS, resolveWakerConfig, isNoiseEvent, paneRunsBypass, paneContextPct, paneHeldComposer, paneHeldComposerDetail, panesForRepo };
+module.exports = { createWaker, intentId, DEFAULTS, resolveWakerConfig, isNoiseEvent, debounceHold, DEBOUNCED_EVENTS, paneRunsBypass, paneContextPct, paneHeldComposer, paneHeldComposerDetail, panesForRepo };

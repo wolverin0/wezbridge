@@ -49,6 +49,9 @@ function makeWaker(env, over = {}) {
     send: over.send || fakeSend(),
     settleTicks: over.settleTicks ?? 2,
     cooldownMs: over.cooldownMs ?? 0,
+    // T-0268: la suite historica corre SIN debounce (0) — cada test de debounce
+    // fija su ventana explicitamente. El default real del modulo es 10 min.
+    debounceMs: over.debounceMs ?? 0,
     maxAttempts: over.maxAttempts ?? 3,
     now: over.now || (() => 1_000_000),
     log: over.log || (() => {}),
@@ -374,4 +377,117 @@ test('un evento mas viejo que STALE_EVENT_MS no se ingesta: se cuenta como stale
   assert.match(send.calls[0].text, /walksim/);
   assert.equal(w.status().staleDropped, 1, 'el evento de hace 8 h se descarto y quedo contado');
   assert.equal(Object.keys(w._state.pending).length, 0);
+});
+
+// ── T-0268: debounce TRAILING por repo para turn-end, fail-OPEN ──────────────
+// Entre 00:15Z y 16:10Z del 2026-09-02 el waker desperto al orquestador 14 veces
+// por turn-end de whatsappbot-final: todos turnos de un dialogo directo del
+// operador, que ya los estaba leyendo. La senal util (mm-133244) es el HUECO —
+// un pane que se quedo quieto — no la rafaga. Fail-open porque el modo de falla
+// de este componente es dejar CIEGO al orquestador.
+const { debounceHold } = require('../src/orchestrator-waker.cjs');
+const MIN = 60_000;
+
+test('T-0268 AC1 RAFAGA COLAPSA: 3 turn-end del mismo repo dentro de la ventana => EXACTAMENTE UN poke, con los 3 intents (ninguno se pierde)', async () => {
+  const env = makeEnv();
+  const send = fakeSend();
+  const NOW = 10_000_000_000;
+  let t = NOW;
+  const w = makeWaker(env, { send, now: () => t, settleTicks: 1, debounceMs: 10 * MIN });
+  for (const m of [3, 2, 1]) beacon(env, { time: new Date(NOW - m * MIN).toISOString(), repo: 'walksim', session: `s${m}`, event: 'turn-end' });
+  await w.tick(); await w.tick();
+  assert.equal(send.calls.length, 0, 'dentro de la ventana no se poke-a: el dialogo sigue');
+  assert.equal(Object.keys(w._state.pending).length, 3, 'los 3 intents se ACUMULAN, no se descartan');
+  assert.deepEqual(w.status().debounceHeldRepos, ['walksim']);
+  t = NOW + 8 * MIN; await w.tick(); // el ultimo turn-end fue en NOW-1min: 9 min quieto
+  assert.equal(send.calls.length, 0, 'a los 9 min del ultimo turn-end sigue retenido');
+  t = NOW + 9 * MIN; await w.tick(); // 10 min quieto = la ventana
+  assert.equal(send.calls.length, 1, 'al cumplirse la ventana de silencio: UN poke');
+  assert.match(send.calls[0].text, /3 turn-end event\(s\)/, 'el poke lleva los 3 intents');
+  assert.equal(Object.keys(w._state.pending).length, 0);
+  assert.equal(w.status().debounceCollapsed, 2, 'dos pokes ahorrados, medidos en status()');
+  await w.tick();
+  assert.equal(send.calls.length, 1);
+});
+
+test('T-0268 AC2 EL HUECO SIEMPRE POQUEA: un turn-end cuyo repo lleva mas que la ventana en silencio poke-a en el primer settle (y un hueco enorme tambien)', async () => {
+  for (const gapMin of [11, 5 * 60]) {
+    const env = makeEnv();
+    const send = fakeSend();
+    const NOW = 10_000_000_000;
+    const w = makeWaker(env, { send, now: () => NOW, settleTicks: 1, debounceMs: 10 * MIN });
+    beacon(env, { time: new Date(NOW - gapMin * MIN).toISOString(), repo: 'walksim', session: 'g', event: 'turn-end' });
+    await w.tick();
+    assert.equal(send.calls.length, 1, `hueco de ${gapMin} min: la senal util no se puede comer`);
+    assert.equal(w.status().debounceCollapsed, 0);
+  }
+  // y un turn-end fresco se entrega cuando el pane lleva la ventana quieto: ni antes ni nunca
+  const env = makeEnv();
+  const send = fakeSend();
+  const NOW = 10_000_000_000;
+  let t = NOW;
+  const w = makeWaker(env, { send, now: () => t, settleTicks: 1, debounceMs: 10 * MIN });
+  beacon(env, { time: new Date(NOW - MIN).toISOString(), repo: 'walksim', session: 'f', event: 'turn-end' });
+  await w.tick();
+  assert.equal(send.calls.length, 0);
+  t = NOW + 9 * MIN; await w.tick();
+  assert.equal(send.calls.length, 1, 'a los 10 min del turn-end (9 + 1) el pane esta quieto: se poke-a');
+});
+
+test('T-0268 AC3 EL SOBRE A2A NUNCA SE SUPRIME: un evento a2a al orquestador libera el grupo YA aunque la ventana de debounce este activa', async () => {
+  const env = makeEnv();
+  const send = fakeSend();
+  const NOW = 10_000_000_000;
+  const w = makeWaker(env, { send, now: () => NOW, settleTicks: 1, debounceMs: 10 * MIN });
+  beacon(env, { time: new Date(NOW - 2 * MIN).toISOString(), repo: 'walksim', session: 'a', event: 'turn-end' });
+  beacon(env, { time: new Date(NOW - MIN).toISOString(), repo: 'walksim', session: 'b', event: 'turn-end' });
+  await w.tick();
+  assert.equal(send.calls.length, 0, 'ventana activa: los turn-end esperan');
+  beacon(env, { time: new Date(NOW - 10_000).toISOString(), repo: 'walksim', session: 'env', event: 'a2a', corr: 'X-1' });
+  await w.tick();
+  assert.equal(send.calls.length, 1, 'el sobre atraviesa el filtro intacto');
+  assert.match(send.calls[0].text, /a2a/, 'y el poke lo nombra');
+  assert.match(send.calls[0].text, /3 .*event\(s\)/, 'los turn-end retenidos viajan con el');
+  // pura: permission-wait y result-file tampoco se retienen
+  for (const ev of ['permission-wait', 'result-file', 'a2a']) {
+    assert.equal(debounceHold([{ event: 'turn-end', time: new Date(NOW - MIN).toISOString() }, { event: ev, time: new Date(NOW).toISOString() }], NOW, 10 * MIN).hold, false, ev);
+  }
+});
+
+test('T-0268 AC4 FAIL-OPEN PROBADO: tiempo ilegible, ventana invalida, reloj invalido, evento inclasificable y estado viejo sin campos de debounce => se POKE-A', async () => {
+  // pura
+  assert.equal(debounceHold(null, 1, 10 * MIN).hold, false);
+  assert.equal(debounceHold([], 1, 10 * MIN).hold, false);
+  assert.equal(debounceHold([{ event: 'turn-end', time: 'garbage' }], 1, 10 * MIN).hold, false, 'tiempo ilegible => poke');
+  assert.equal(debounceHold([{ event: 'turn-end', time: new Date(1).toISOString() }], 1, NaN).hold, false, 'ventana NaN => poke');
+  assert.equal(debounceHold([{ event: 'turn-end', time: new Date(1).toISOString() }], 1, 0).hold, false, 'ventana 0 => sin debounce');
+  assert.equal(debounceHold([{ event: 'turn-end', time: new Date(1).toISOString() }], NaN, 10 * MIN).hold, false, 'reloj invalido => poke');
+  assert.equal(debounceHold([{ event: 'quien-sabe', time: new Date(1).toISOString() }], 1, 10 * MIN).hold, false, 'evento inclasificable => poke');
+  assert.equal(debounceHold([{ event: 'turn-end', time: new Date(5 * MIN).toISOString() }], 1, 10 * MIN).hold, false, 'tiempo en el futuro => poke');
+  // en vivo: un turn-end con time corrupto se ingesta y se poke-a (no queda retenido para siempre)
+  const env = makeEnv();
+  const send = fakeSend();
+  const NOW = 10_000_000_000;
+  const w = makeWaker(env, { send, now: () => NOW, settleTicks: 1, debounceMs: 10 * MIN });
+  beacon(env, { time: 'no-es-fecha', repo: 'walksim', session: 'c', event: 'turn-end' });
+  await w.tick();
+  assert.equal(send.calls.length, 1, 'un intent que no se puede clasificar en el tiempo se entrega, no se retiene');
+  // estado persistido por una version anterior (pending.json sin nada de debounce): se carga y se aplica la regla
+  const env2 = makeEnv();
+  fs.mkdirSync(env2.stateDir, { recursive: true });
+  fs.writeFileSync(path.join(env2.stateDir, 'pending.json'), JSON.stringify({ old1: { repo: 'walksim', event: 'turn-end', time: new Date(NOW - MIN).toISOString(), attempts: 0 } }));
+  const send2 = fakeSend();
+  let t2 = NOW;
+  const w2 = makeWaker(env2, { send: send2, now: () => t2, settleTicks: 1, debounceMs: 10 * MIN });
+  await w2.tick();
+  assert.equal(send2.calls.length, 0, 'estado viejo: el intent fresco se retiene como cualquier otro');
+  t2 = NOW + 10 * MIN; await w2.tick();
+  assert.equal(send2.calls.length, 1, 'y se entrega al cumplirse la ventana');
+  // ventana explicita 0 en el waker = comportamiento anterior (sin debounce)
+  const env3 = makeEnv();
+  const send3 = fakeSend();
+  const w3 = makeWaker(env3, { send: send3, now: () => NOW, settleTicks: 1, debounceMs: 0 });
+  beacon(env3, { time: new Date(NOW - MIN).toISOString(), repo: 'walksim', session: 'z', event: 'turn-end' });
+  await w3.tick();
+  assert.equal(send3.calls.length, 1);
 });
