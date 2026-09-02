@@ -240,8 +240,13 @@ function createRelay(opts = {}) {
     // Orden (regla del waker): pending primero, cursor despues. Un crash entre
     // los dos re-lee las mismas lineas y el dedupe por id las absorbe.
     if (added) persistPending();
-    state.cursorBytes += consumed;
+    // T-0314 (tercer sitio, 2026-09-02 20:3xZ): el cursor es una posicion en BYTES;
+    // `consumed` cuenta caracteres. Con los acentos de los `why` el fingerprint
+    // fallaba, el cursor volvia a 0 y TODOS los rulings del dia se relayaban de
+    // nuevo al pane dueno como decisiones frescas (el operador recibio ~10 sobres
+    // [decision] repetidos). Se avanza en bytes.
     const bytes = Buffer.from(chunk.slice(0, consumed), 'utf8');
+    state.cursorBytes += bytes.length;
     const fpLen = Math.min(bytes.length, 256);
     state.cursorTail = { len: fpLen, hash: sha1(bytes.subarray(bytes.length - fpLen)) };
     persistCursor();

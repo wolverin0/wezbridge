@@ -119,3 +119,32 @@ test('T-0314 project-queue: un sobre ya entregado NO vuelve a pending tras otra 
   assert.equal(q.consumer._state.pending[id], undefined, 'con el cursor en bytes, el sobre entregado no se re-ingesta; con el bug, el reset lo resucitaba');
   fs.rmSync(q.base, { recursive: true, force: true });
 });
+
+// ------------------------------------------------------- decision-relay ----
+// Tercer sitio del mismo defecto (2026-09-02 20:3xZ): el relay de decisiones
+// releyo TODO rulings.jsonl tras un reset falso y el operador recibio ~10 sobres
+// [decision] repetidos (T-0310 x2, T-0302, T-0318, T-0252, ...).
+const { createRelay } = require('../src/decision-relay.cjs');
+test('T-0314 decision-relay: dos ingestas con rulings multibyte => sin "cursor reseteado" y cursor == bytes del archivo', () => {
+  const intel = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-bytes-'));
+  fs.mkdirSync(path.join(intel, 'tasks'), { recursive: true });
+  const rulings = path.join(intel, 'rulings.jsonl');
+  fs.writeFileSync(rulings, '');
+  const logs = [];
+  const relay = createRelay({
+    intelDir: intel, discoverPanes: () => [],
+    send: { sendPromptDeferredEnter: async () => 'ok', verifyPromptSubmission: async () => 'submitted' },
+    runLedger: () => ({}), log: (m) => logs.push(String(m)), now: () => Date.parse('2026-09-02T20:00:00Z'),
+  });
+  const line = (task) => JSON.stringify({ task, ruling: 'approved', why: MULTIBYTE, at: '2026-09-02T19:00:00.000Z', source: 'board-app', by: 'operator' }) + '\n';
+  fs.appendFileSync(rulings, line('T-9001') + line('T-9002'));
+  relay.ingest();
+  fs.appendFileSync(rulings, line('T-9003'));
+  relay.ingest();
+  relay.ingest();
+  const resets = logs.filter((l) => /cursor reseteado/.test(l));
+  assert.deepEqual(resets, [], `reset falso en el relay: ${resets.join(' | ')}`);
+  const cursor = JSON.parse(fs.readFileSync(path.join(intel, '.decision-relay', 'cursor.json'), 'utf8'));
+  assert.equal(cursor.bytes, fs.statSync(rulings).size, 'el cursor del relay tiene que quedar al final del archivo en bytes');
+  fs.rmSync(intel, { recursive: true, force: true });
+});
