@@ -30,7 +30,7 @@
  *              3 UNKNOWN (could not read the inputs — NEVER reported as 0)
  */
 const fs = require('node:fs');
-const { latestRulingWhere } = require('../src/rulings.cjs');
+const { latestRulingWhere, rulingMatchesCategory } = require('../src/rulings.cjs');
 
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
@@ -109,7 +109,8 @@ function rulingCovers(ruling, finding, now) {
   // later shows up stale-failed was reopened or regressed, so the judgement
   // must be made again) — a dead card has no worker left to fail.
   if (ruling.ruling === 'cancelled') return true;
-  if (ruling.category && ruling.category !== finding.category) return false;
+  // Mismo predicado que el waker (src/rulings.cjs, T-0316): una sola palabra.
+  if (!rulingMatchesCategory(ruling, finding.category)) return false;
 
   switch (ruling.ruling) {
     case 'cancelled':

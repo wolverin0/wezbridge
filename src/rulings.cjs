@@ -106,6 +106,31 @@ const RULING_SOURCES = ['board-app', 'ledger-cli', 'telegram', 'orchestrator-pan
 const RULING_FIELDS = ['task', 'category', 'ruling', 'why', 'at', 'until', 'source', 'by', 'corr'];
 
 /**
+ * Categorias de hallazgo que el steward EMITE y que un ruling puede citar.
+ * UNICA fuente de la palabra (T-0316): fleet-steward la emite, steward-gate y
+ * el waker del orquestador la comparan. Hasta hoy el waker comparaba contra
+ * 'review' —una palabra que el steward nunca escribio— y su test la fijaba en
+ * la fixture, asi que una deferral que el gate honraba no callaba al waker
+ * (turnos 02:00Z y 04:00Z del 2026-09-02 despertados por T-0312 diferida).
+ */
+const FINDING_CATEGORY = Object.freeze({
+  staleReview: 'stale-review',
+});
+
+/**
+ * "Esta linea de ruling aplica a un hallazgo de ESTA categoria?" Predicado
+ * compartido por steward-gate.cjs (rulingCovers) y orchestrator-turn.cjs
+ * (deferralIsLive), para que la palabra no se copie a mano por tercera vez.
+ * Sin categoria en la linea = cubre cualquiera (laxitud historica del gate,
+ * deliberada: el escritor que no vio hallazgo). Palabra distinta = no cubre.
+ */
+function rulingMatchesCategory(ruling, category) {
+  if (!ruling) return false;
+  if (!ruling.category) return true;
+  return ruling.category === category;
+}
+
+/**
  * `approved` responde UNA pregunta: la que el operador tenia pendiente. Por eso
  * solo se acepta sobre `awaiting-operator` (o sin categoria, que es el caso del
  * escritor que no vio ningun hallazgo). Aprobar no es "esta tarea ya no
@@ -215,5 +240,6 @@ function appendRuling(intelDir, line, { now } = {}) {
 module.exports = {
   rulingsFor, latestRuling, latestRulingWhere, taskIds,
   RULING_VOCAB, RULING_SOURCES, RULING_FIELDS, APPROVED_CATEGORIES,
+  FINDING_CATEGORY, rulingMatchesCategory,
   validateRulingLine, appendRuling,
 };

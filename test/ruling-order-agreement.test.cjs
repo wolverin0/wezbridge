@@ -42,8 +42,46 @@ const assert = require('node:assert/strict');
 const { evaluate } = require('../scripts/steward-gate.cjs');
 const { lintRulings } = require('../scripts/dispatch-lint.cjs');
 const { reviewWakeTargets } = require('../scripts/orchestrator-turn.cjs');
+const { FINDING_CATEGORY, rulingMatchesCategory } = require('../src/rulings.cjs');
 
 const NOW = Date.parse('2026-08-27T00:00:00Z');
+
+// --- T-0316: gate y waker honran y rechazan EXACTAMENTE las mismas lineas ----
+// La palabra de la category no se copia a mano: los dos deciden "esta deferral
+// aplica a esta finding" con rulingMatchesCategory() de src/rulings.cjs.
+test('T-0316: gate y waker coinciden linea por linea sobre que deferral cubre una tarjeta en review', () => {
+  const FUTURE = '2026-09-30T00:00:00Z';
+  const casos = [
+    { category: FINDING_CATEGORY.staleReview, cubre: true,  por: 'la palabra que el steward emite' },
+    { category: undefined,                    cubre: true,  por: 'sin category: laxitud compartida' },
+    { category: 'review',                     cubre: false, por: 'la palabra vieja del waker, que nadie emite' },
+    { category: 'idle',                       cubre: false, por: 'una deferral escrita para otra situacion' },
+  ];
+  const finding = { id: 'T-0312', category: FINDING_CATEGORY.staleReview, age_hours: 999, repo: 'wezbridge', state: 'review', title: 'x' };
+  for (const c of casos) {
+    const line = { task: 'T-0312', ruling: 'deferred', until: FUTURE, at: '2026-08-20T12:00:00Z', why: 'parada' };
+    if (c.category !== undefined) line.category = c.category;
+    const gateCubre = evaluate({ findings: [finding], rulings: [line], now: NOW }).unruled.length === 0;
+    const wakerCalla = reviewWakeTargets({ tasks: [{ id: 'T-0312', state: 'review' }], rulings: [line], now: NOW }).length === 0;
+    assert.equal(gateCubre, c.cubre, `gate, category=${c.category}: ${c.por}`);
+    assert.equal(wakerCalla, c.cubre, `waker, category=${c.category}: ${c.por}`);
+    assert.equal(rulingMatchesCategory(line, FINDING_CATEGORY.staleReview), c.cubre, `predicado compartido, category=${c.category}`);
+  }
+});
+
+test('T-0316: ningun interprete compara la category con un literal a mano', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const culpables = [];
+  for (const rel of ['scripts/steward-gate.cjs', 'scripts/orchestrator-turn.cjs', 'scripts/fleet-steward.cjs']) {
+    const src = fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+    // Solo el codigo, sin comentarios: un guard que dispara sobre prosa enseña a esquivarlo.
+    const code = src.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+    if (/category\s*!==\s*['"]/.test(code)) culpables.push(`${rel}: compara category contra un literal`);
+    if (/category:\s*['"]stale-review['"]/.test(code)) culpables.push(`${rel}: emite 'stale-review' como literal en vez de FINDING_CATEGORY`);
+  }
+  assert.deepEqual(culpables, [], 'la palabra volvio a copiarse a mano:\n  ' + culpables.join('\n  '));
+});
 
 /**
  * Dos rulings por tarea donde el orden de archivo y el de timestamp DISCREPAN:
@@ -66,13 +104,13 @@ function fixture() {
     },
     // --- T-0002: el caso del waker -----------------------------------------
     {
-      task: 'T-0002', ruling: 'deferred', category: 'review',
+      task: 'T-0002', ruling: 'deferred', category: FINDING_CATEGORY.staleReview,
       at: '2026-08-20T12:00:00Z',            // mas NUEVO por reloj
       until: '2026-08-21T00:00:00Z',         // ...pero YA VENCIDO a NOW
       why: 'parado hasta manana',
     },
     {
-      task: 'T-0002', ruling: 'deferred', category: 'review',
+      task: 'T-0002', ruling: 'deferred', category: FINDING_CATEGORY.staleReview,
       at: '2026-08-18T12:00:00Z',            // mas VIEJO por reloj, ULTIMO en el archivo
       until: '2026-09-30T00:00:00Z',         // ...y VIGENTE a NOW
       why: 'parado hasta fin de septiembre',

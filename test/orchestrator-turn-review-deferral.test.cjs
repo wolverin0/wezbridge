@@ -23,14 +23,41 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { reviewWakeTargets, reviewTargetsIn, classifyWake } = require('../scripts/orchestrator-turn.cjs');
+const { FINDING_CATEGORY } = require('../src/rulings.cjs');
 
 const NOW = Date.parse('2026-08-27T04:00:00Z');
 const FUTURE = '2026-08-27T12:30:00Z';
 const PAST = '2026-08-27T02:00:00Z';
 
 const review = (id) => ({ id, state: 'review' });
-const deferral = (task, until, category = 'review') => ({
+// T-0316: la category de la fixture sale del MISMO modulo que usa
+// fleet-steward.cjs para emitirla, nunca de un literal. La version anterior
+// decia 'review' por defecto —una palabra que el steward jamas escribio— y por
+// eso este archivo paso verde mientras el waker despertaba por deferrals
+// vigentes en produccion.
+const deferral = (task, until, category = FINDING_CATEGORY.staleReview) => ({
   task, category, ruling: 'deferred', until, at: '2026-08-26T20:12:00Z',
+});
+
+// --- T-0316: la palabra del steward, no la del test (fail-first) ------------
+test('T-0316: una deferral con la category que fleet-steward EMITE (stale-review) silencia al waker', () => {
+  assert.strictEqual(FINDING_CATEGORY.staleReview, 'stale-review',
+    'si el steward cambia la palabra, este test tiene que seguir hablando la suya');
+  const targets = reviewWakeTargets({
+    tasks: [review('T-0312')],
+    rulings: [{ task: 'T-0312', category: 'stale-review', ruling: 'deferred', until: FUTURE, at: '2026-08-26T20:12:00Z' }],
+    now: NOW,
+  });
+  assert.deepStrictEqual(targets, [],
+    'la deferral que el gate honra tiene que callar al waker: medido el 2026-09-02, 02:00Z y 04:00Z despertados por T-0312');
+});
+
+test('T-0316: la palabra vieja del waker (review) ya NO compra silencio: nadie la emite', () => {
+  assert.deepStrictEqual(
+    reviewWakeTargets({ tasks: [review('T-0312')], rulings: [deferral('T-0312', FUTURE, 'review')], now: NOW }),
+    ['T-0312'],
+    'una category que ningun productor escribe es una deferral para otra situacion',
+  );
 });
 
 // --- AC1: deferral vigente => NO despierta (fail-first) ---------------------
@@ -95,7 +122,7 @@ test('AC4: un ruling que no es deferred no silencia el trigger de review', () =>
     assert.deepStrictEqual(
       reviewWakeTargets({
         tasks: [review('T-0207')],
-        rulings: [{ task: 'T-0207', category: 'review', ruling: word, at: '2026-08-27T03:00:00Z' }],
+        rulings: [{ task: 'T-0207', category: FINDING_CATEGORY.staleReview, ruling: word, at: '2026-08-27T03:00:00Z' }],
         now: NOW,
       }),
       ['T-0207'],
@@ -104,7 +131,7 @@ test('AC4: un ruling que no es deferred no silencia el trigger de review', () =>
   }
 });
 
-test('AC4: la deferral tiene que ser de la categoria review', () => {
+test('AC4: la deferral tiene que ser de la categoria que el steward emite para review (stale-review)', () => {
   assert.deepStrictEqual(
     reviewWakeTargets({ tasks: [review('T-0207')], rulings: [deferral('T-0207', FUTURE, 'idle')], now: NOW }),
     ['T-0207'],

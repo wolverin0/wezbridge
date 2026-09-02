@@ -52,7 +52,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { latestRulingWhere } = require('../src/rulings.cjs');
+const { latestRulingWhere, FINDING_CATEGORY, rulingMatchesCategory } = require('../src/rulings.cjs');
 
 const HERE = __dirname;
 const REPO = path.join(HERE, '..');
@@ -220,7 +220,11 @@ function deferralIsLive(ruling, now) {
   // Category is part of the match, as in steward-gate: a card parked while
   // merely idle must not stay silent once its finished work needs judging.
   // Absent category matches anything, which is that function's own laxity.
-  if (ruling.category && ruling.category !== 'review') return false;
+  // T-0316: the word is the one fleet-steward EMITS for a card in review
+  // ('stale-review'), read from src/rulings.cjs — this line used to compare
+  // against 'review', a word no producer ever wrote, so a deferral the gate
+  // honoured never silenced the waker (02:00Z and 04:00Z turns, 2026-09-02).
+  if (!rulingMatchesCategory(ruling, FINDING_CATEGORY.staleReview)) return false;
   if (!ruling.until) return false;                 // a deferral with no end is a shrug
   const until = Date.parse(ruling.until);
   return Number.isFinite(until) && now < until;

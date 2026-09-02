@@ -32,6 +32,7 @@ const { taskIdFromCorr } = require('../src/a2a-intel.cjs');
 const { auditRoutines } = require('./routine-audit.cjs');
 const { reconcileLeases, liveCensus: reconcilerCensus } = require('./lease-reconcile.cjs');
 const { lintSpecRefs, lintRulings } = require('./dispatch-lint.cjs');
+const { FINDING_CATEGORY } = require('../src/rulings.cjs');
 
 const HOURS = (h) => h * 3600 * 1000;
 
@@ -509,7 +510,7 @@ function classify(task, now, dir = intelDir(), ctx = null) {
     }
     case 'review':
       return age > HOURS(RULES.staleReview)
-        ? { ...common, category: 'stale-review', why: 'work finished, review never happened' } : null;
+        ? { ...common, category: FINDING_CATEGORY.staleReview, why: 'work finished, review never happened' } : null;
     case 'failed':
       return age > HOURS(RULES.staleFailed)
         ? { ...common, category: 'stale-failed', why: 'failed and neither retried nor triaged' } : null;
