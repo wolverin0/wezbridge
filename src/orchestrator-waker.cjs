@@ -388,8 +388,13 @@ function createWaker(opts) {
     // Order matters: intents first, cursor second. A crash in between re-reads
     // the same lines next tick and the id-dedupe absorbs them — never loses one.
     if (added) persistPending();
-    state.cursorBytes += consumed;
+    // T-0314: el cursor es una POSICION EN BYTES (stat.size, readSync, el
+    // fingerprint). `consumed` es un indice de caracteres del string decodificado:
+    // con un solo acento el cursor quedaba corto, el fingerprint del tick
+    // siguiente se leia desplazado y el guard de rotacion disparaba un reset
+    // falso en CADA tick (medido 71 en 70 min). Se avanza en bytes.
     const consumedBytes = Buffer.from(chunk.slice(0, consumed), 'utf8');
+    state.cursorBytes += consumedBytes.length;
     const fpLen = Math.min(consumedBytes.length, 256);
     state.cursorTail = {
       len: fpLen,

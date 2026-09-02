@@ -274,8 +274,12 @@ function createConsumer(opts) {
     // the two re-reads the same lines and the id-dedupe absorbs them.
     if (added) persistPending();
     if (expired || added) persistDelivered();
-    state.cursorBytes += consumed;
+    // T-0314: mismo defecto que el waker — el cursor es una posicion en BYTES y
+    // `consumed` cuenta caracteres. Con sobres con acentos, cada pasada de
+    // queue-drain veia "archivo rotado", reseteaba a 0 y re-ingestaba entradas
+    // ya entregadas (5 replays del mismo request el 2026-09-02). Bytes.
     const consumedBytes = Buffer.from(chunk.slice(0, consumed), 'utf8');
+    state.cursorBytes += consumedBytes.length;
     const fpLen = Math.min(consumedBytes.length, 256);
     state.cursorTail = {
       len: fpLen,
