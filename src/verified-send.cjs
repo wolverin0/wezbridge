@@ -78,7 +78,11 @@ function classifyDelivery(delivered, submitted) {
   return 'unverified';
 }
 
-function createVerifiedSend({ wez, sleep }) {
+/** Motivo unico de rechazo de la primitiva; los llamadores comparan contra esto, no contra prosa. */
+const REFUSED_COMPOSER_FOREIGN_TEXT = 'composer-foreign-text';
+const isRefusal = (r) => Boolean(r && typeof r === 'object' && r.refused);
+
+function createVerifiedSend({ wez, sleep, logAction = null }) {
   // Returns 'submitted' | 'stuck' | 'unknown' (pane unreadable / non-TUI shell).
   async function verifyPromptSubmission(paneId, text, { retries = 2, settleMs = 700 } = {}) {
     const norm = String(text).replace(/\s+/g, ' ').trim().toLowerCase();
@@ -114,13 +118,21 @@ function createVerifiedSend({ wez, sleep }) {
     return 'stuck';
   }
 
-  // Version ligada al pane: lee el tail y aplica el predicado. Fail-open ante
-  // un pane ilegible, igual que verifyPromptSubmission.
-  function paneComposerHoldsForeignText(paneId) {
+  // Lee el tail UNA vez y aplica el UNICO predicado (composerHoldsForeignText);
+  // `held` es el extracto para el reporte/log, no una segunda deteccion.
+  // Fail-open ante un pane ilegible, igual que verifyPromptSubmission.
+  function heldForeignText(paneId) {
     try {
       wez.invalidateGetTextCache(paneId);
-      return composerHoldsForeignText(wez.getFullText(paneId, 25));
-    } catch { return false; }
+      const tail = wez.getFullText(paneId, 25);
+      if (!composerHoldsForeignText(tail)) return null;
+      return inputBoxContent(String(tail).split(/\r?\n/));
+    } catch { return null; }
+  }
+
+  // Version ligada al pane: lee el tail y aplica el predicado.
+  function paneComposerHoldsForeignText(paneId) {
+    return heldForeignText(paneId) !== null;
   }
 
   // Delivery-INTEGRITY verdict, distinct from submission: 'ok' if the composer
@@ -149,7 +161,25 @@ function createVerifiedSend({ wez, sleep }) {
   // Bracketed paste keeps internal newlines soft (no per-line submits / splice
   // corruption); the trailing CR is sent separately because a bracketed
   // paste's own newline is soft and never submits.
-  async function sendPromptDeferredEnter(paneId, text) {
+  //
+  // T-0323 (2026-09-02, dano real): la defensa contra un composer con texto
+  // AJENO vivia SOLO en el wrapper de la cola; la primitiva confiaba en el
+  // llamador. Un llamador directo (node, script, runtime viejo) pego un sobre
+  // detras de una frase del operador sin enviar y el Enter diferido submiteo el
+  // hibrido. Ahora el guard vive ACA: sin `force`, la primitiva rehusa y NO
+  // toca el pane — ni paste ni Enter (un Enter sobre texto ajeno lo manda).
+  // Pisar a proposito exige `force: true` + `why`, y queda en action-log como
+  // `composer-override` con el texto pisado. Fail-open si el pane no se lee.
+  async function sendPromptDeferredEnter(paneId, text, { force = false, why = '' } = {}) {
+    const held = heldForeignText(paneId);
+    if (held !== null) {
+      if (!force) return { refused: REFUSED_COMPOSER_FOREIGN_TEXT, held, pane: paneId };
+      if (!String(why || '').trim()) {
+        throw new Error(`sendPromptDeferredEnter(pane ${paneId}): force:true requires a why — the composer holds unsent text ${JSON.stringify(held.slice(0, 80))} and overriding it is an audited action`);
+      }
+      const logFn = logAction || require('./action-log.cjs').logAction;
+      logFn('composer-override', { target: `pane-${paneId}`, why: String(why).trim(), extra: { held, bytes: Buffer.byteLength(String(text), 'utf8') } });
+    }
     wez.sendTextBracketed(paneId, text); // atomic; internal newlines stay soft
     await sleep(400);
     const delivered = composerHoldsTail(paneId, text);
@@ -168,6 +198,8 @@ module.exports = {
   composerHoldsForeignText,
   classifyDelivery,
   COMPOSER_PLACEHOLDERS,
+  REFUSED_COMPOSER_FOREIGN_TEXT,
+  isRefusal,
   createVerifiedSend,
   verifyPromptSubmission: bound.verifyPromptSubmission,
   composerHoldsTail: bound.composerHoldsTail,

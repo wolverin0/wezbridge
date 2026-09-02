@@ -626,8 +626,16 @@ function createWaker(opts) {
       let verdict = 'unverified';
       try {
         const delivered = await send.sendPromptDeferredEnter(targetId, text);
-        const submitted = await send.verifyPromptSubmission(targetId, text);
-        verdict = classifyDelivery(delivered, submitted);
+        if (delivered && delivered.refused) {
+          // T-0323: el composer del ORQUESTADOR retiene texto ajeno; la
+          // primitiva no escribio. Sin verify (reintentaria Enter). Queda
+          // 'unverified': un reintento tras el cooldown, despues flag.
+          log(`orch-waker: pane-${targetId} composer retiene texto sin enviar ${JSON.stringify(String(delivered.held).slice(0, 60))} — poke diferido`);
+          verdict = 'unverified';
+        } else {
+          const submitted = await send.verifyPromptSubmission(targetId, text);
+          verdict = classifyDelivery(delivered, submitted);
+        }
       } catch (err) {
         verdict = 'failed'; // un send que TIRA es un fallo medido, no una duda
         log(`orch-waker: poke send failed: ${err.message}`);

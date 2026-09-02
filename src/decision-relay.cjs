@@ -351,7 +351,14 @@ function createRelay(opts = {}) {
     let submitted = null;
     try {
       deliveredCode = await send.sendPromptDeferredEnter(paneId, envelope);
-      submitted = await send.verifyPromptSubmission(paneId, envelope);
+      // T-0323: la primitiva rehusa sobre un composer con texto ajeno y no
+      // escribe nada. No verificar (reintentaria Enter sobre ese texto): queda
+      // 'unverified' y se reintenta en la proxima pasada.
+      if (deliveredCode && deliveredCode.refused) {
+        log(`decision-relay[${project}]: pane-${paneId} composer retiene texto sin enviar ${JSON.stringify(String(deliveredCode.held).slice(0, 60))} — difiero ${entry.task}`);
+      } else {
+        submitted = await send.verifyPromptSubmission(paneId, envelope);
+      }
     } catch (err) {
       log(`decision-relay[${project}]: send fallo: ${err.message}`);
     }

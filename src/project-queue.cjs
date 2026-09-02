@@ -376,7 +376,14 @@ function createConsumer(opts) {
       let integrity = 'unknown';
       try {
         integrity = await send.sendPromptDeferredEnter(targetId, envelope);
-        submitted = await send.verifyPromptSubmission(targetId, envelope);
+        // T-0323: el pre-chequeo de arriba corre una vez por drain; la primitiva
+        // vuelve a mirar en cada sobre (el operador pudo tipear entre medio) y
+        // rehusa sin escribir. Sin verify: reintentaria Enter sobre ese texto.
+        if (integrity && integrity.refused) {
+          log(`project-queue[${project}]: pane-${targetId} composer retiene texto sin enviar ${JSON.stringify(String(integrity.held).slice(0, 60))} — sobre ${id} diferido`);
+        } else {
+          submitted = await send.verifyPromptSubmission(targetId, envelope);
+        }
         // W4, gemelo del waker: un send que NO se pudo verificar no es una
         // entrega. La regla vive una sola vez, en verified-send.cjs. Aca
         // 'unverified' se trata como fallo (reintento con cooldown y cap), que

@@ -136,7 +136,11 @@ async function deliverPoke(message) {
   // drill #1 of this very card hit it. An alert that sits unsubmitted in an
   // input box is the daemon's silent death all over again, one layer up.
   const text = `[daemon-sentinel] ${message} Evidencia: _intel/evidence/wezbridge/daemon-sentinel.jsonl`;
-  await verified.sendPromptDeferredEnter(paneId, text);
+  const sent = await verified.sendPromptDeferredEnter(paneId, text);
+  // T-0323: composer con texto ajeno => la primitiva no escribio; no verificar
+  // (reintentaria Enter sobre el texto del operador). El poke se reporta como
+  // no entregado y el proximo tick lo reintenta.
+  if (sent && sent.refused) return { delivered: false, paneId, reason: `${sent.refused}: ${String(sent.held).slice(0, 80)}` };
   const submitted = await verified.verifyPromptSubmission(paneId, text);
   try {
     require(path.join(REPO, 'src', 'action-log.cjs')).logAction('sentinel_poke', {

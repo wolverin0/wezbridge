@@ -748,7 +748,13 @@ function handleToolCall(name, args) {
 
       return (async () => {
         try {
-          await sendPromptDeferredEnter(paneId, text);
+          const sent = await sendPromptDeferredEnter(paneId, text);
+          // T-0323: la primitiva rehusa si el composer retiene texto ajeno. NO
+          // verificar despues: verifyPromptSubmission reintenta Enter y eso
+          // mandaria el texto del operador.
+          if (sent && sent.refused) {
+            return { content: [{ type: 'text', text: `REFUSED (${sent.refused}): pane ${paneId} composer holds UNSENT text ${JSON.stringify(String(sent.held).slice(0, 120))} — nothing was typed. A key from the operator unblocks it; a script that must override calls verified-send with force:true + why (audited as composer-override).` }], isError: true };
+          }
           // Read back instead of firing blind extra enters (claim-8945 fix):
           // confirm the text actually left the input box, retry enter if not.
           const submitted = await verifyPromptSubmission(paneId, text);
@@ -1184,10 +1190,16 @@ function handleToolCall(name, args) {
             finalPrompt = header + args.prompt;
           }
 
-          await sendPromptDeferredEnter(newPaneId, finalPrompt);
-          // Verified submission (claim-8945 fix) — read the input box back
-          // and retry enter until the prompt actually leaves it.
-          promptSubmitted = await verifyPromptSubmission(newPaneId, finalPrompt);
+          const sent = await sendPromptDeferredEnter(newPaneId, finalPrompt);
+          if (sent && sent.refused) {
+            // T-0323: un pane recien nacido no deberia retener texto; si lo hace,
+            // no se verifica (el retry de Enter lo mandaria) y se reporta.
+            promptSubmitted = `refused:${sent.refused}`;
+          } else {
+            // Verified submission (claim-8945 fix) — read the input box back
+            // and retry enter until the prompt actually leaves it.
+            promptSubmitted = await verifyPromptSubmission(newPaneId, finalPrompt);
+          }
         }
 
         return {
@@ -1748,6 +1760,12 @@ function handleToolCall(name, args) {
 
       try {
         const delivered = await sendPromptDeferredEnter(toPane, envelope);
+        if (delivered && delivered.refused) {
+          // T-0323: composer con texto ajeno => la primitiva no escribio nada.
+          // No verificar (reintentaria Enter sobre el texto del operador).
+          log(`a2a_send pane-${fromPane} -> pane-${toPane} corr=${corr} REFUSED ${delivered.refused}: held=${JSON.stringify(String(delivered.held).slice(0, 80))}`);
+          return { content: [{ type: 'text', text: `REFUSED (${delivered.refused}): pane ${toPane} (${toProject || 'unknown project'}) composer holds UNSENT text ${JSON.stringify(String(delivered.held).slice(0, 120))} — the envelope was NOT typed (corr=${corr}). Retry after the operator submits or clears it; enqueue via the project queue if it must not be lost.` }], isError: true, submitted: 'refused', delivered: 'refused' };
+        }
         const submitted = await verifyPromptSubmission(toPane, envelope);
         log(`a2a_send pane-${fromPane} -> pane-${toPane} corr=${corr} type=${msgType} [submit:${submitted} deliver:${delivered}]`);
         const truncated = delivered === 'truncated';
