@@ -1,45 +1,75 @@
 'use strict';
 /**
- * composer-state.cjs — "is the prompt still sitting unsent in the composer?"
+ * composer-state.cjs — "que hay en el composer respecto de MI payload".
+ * Un solo modulo, importado por poke-pane.cjs (T-0303: poke-pane tenia una COPIA
+ * local de composerStillHolds; dos copias es como el arreglo llega a una sola).
+ *  · composerContent(tail): la linea viva del composer, normalizada. Reusa
+ *    inputBoxContent de src/verified-send.cjs — la misma extraccion que usa el
+ *    camino MCP, y la que quita el BORDE DERECHO (│) que la copia vieja dejaba.
+ *  · composerStillHolds(tail, payload): el payload sigue sin enviarse. Detecta
+ *    CABEZA, COLA o cualquier fragmento (>= 4 chars) del payload, y el paste
+ *    colapsado. La version anterior solo podia ver la cabeza: un envio
+ *    fragmentado deja la COLA, asi que el guard era estructuralmente incapaz de
+ *    disparar sobre su propio modo de falla (T-0303, medido 2026-08-30).
+ *  · pasteLandedIntact(tail, payload): DESPUES de pegar y ANTES del Enter: el
+ *    composer tiene que mostrar la cabeza del payload (o el paste colapsado).
+ *    Si muestra otra cosa, el paste no entro como UN prompt (fragmentado con
+ *    --no-paste, o texto ajeno ya estaba ahi) y NO hay que apretar Enter.
  *
- * Extracted from poke-pane.cjs on 2026-08-14 for one reason: poke-pane.cjs is a
- * top-level script with no exports, so the only way to test it was to grep its
- * source text. That test then broke when a THIRD ARGUMENT was added to an
- * unrelated call — the behaviour was perfect, the regex was stale — and, far
- * worse, it would have stayed GREEN if the Enter write had been deleted while a
- * comment still mentioned it. A test that matches source text is measuring the
- * spelling, not the behaviour. Same fix as src/a2a-length-guard.cjs got a day
- * earlier: give the decision a module so it can be exercised with real input.
- *
- * WHY THIS DECISION MATTERS AT ALL. A successful `wezterm cli send-text` proves
- * bytes arrived, not that the pane accepted them. Bracketed paste makes some
- * TUIs hold text in the composer indefinitely. So delivery is verified by the
- * composer going EMPTY, never by finding the text echoed in the pane — echo is
- * exactly what an unsent prompt looks like.
+ * Extracted from poke-pane.cjs on 2026-08-14: a script with no exports only
+ * gets tested by grepping its source, and that test measures spelling, not
+ * behaviour. Delivery is verified by the composer going EMPTY, never by echo.
  */
+const { inputBoxContent } = require('../src/verified-send.cjs');
+
+const flat = (value) => String(value ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+const COLLAPSED_PASTE_RE = /\[?pasted (text|content)|\+\s*\d+\s+lines?\]?/i;
+
+/** @returns la linea viva del composer (sin marcador ni bordes), '' si no hay. */
+function composerContent(tail) {
+  if (!tail) return '';
+  return inputBoxContent(String(tail).split(/\r?\n/));
+}
 
 /**
  * @param tail    recent pane text from `wezterm cli get-text`
  * @param payload what we tried to submit
- * @returns true when the payload still appears to be sitting in the composer
+ * @returns true when ANY visible piece of the payload still sits in the composer
  */
 function composerStillHolds(tail, payload) {
-  const flat = (value) => String(value).replace(/\s+/g, ' ').trim().toLowerCase();
-  const probe = flat(payload).slice(0, 60);
-  if (!probe) return false;
-  const lines = String(tail).split(/\r?\n/);
-  const markers = lines.filter((line) => /^[\s│|]*[❯>›]/u.test(line));
-  const last = markers.at(-1) || '';
-  const content = flat(last.replace(/^[\s│|]*[❯>›]\s*/u, ''));
-  return Boolean(content) && (
-    probe.startsWith(content.slice(0, 40)) ||
+  const norm = flat(payload);
+  if (!norm) return false;
+  const content = composerContent(tail);
+  if (!content) return false;
+  if (COLLAPSED_PASTE_RE.test(content)) return true;
+  const probe = norm.slice(0, 60);
+  return (
+    probe.startsWith(content.slice(0, 40)) ||     // cabeza (posiblemente truncada por el ancho)
     content.startsWith(probe.slice(0, 40)) ||
-    (content.length >= 8 && flat(payload).includes(content.slice(0, 60))) ||
-    // A collapsed paste ("[Pasted text +12 lines]") is the composer holding the
-    // payload under a different name. Treating it as cleared is how a long poke
-    // gets reported delivered while it sits there untouched.
-    /\[?pasted (text|content)|\+\s*\d+\s+lines?\]?/i.test(content)
+    norm.endsWith(content) ||                     // cola exacta
+    (content.length >= 4 && norm.includes(content.slice(0, 60)))  // cualquier fragmento
   );
 }
 
-module.exports = { composerStillHolds };
+/**
+ * @returns 'intact' | 'collapsed' | 'fragmented' | 'empty'
+ *   intact     el composer muestra la cabeza del payload: el paste entro entero.
+ *   collapsed  "[Pasted text +N lines]": entero pero no legible; se acepta.
+ *   fragmented el composer muestra OTRA cosa: una linea posterior del payload
+ *              (se tipeo con --no-paste y las anteriores ya se submitearon) o
+ *              texto ajeno. Apretar Enter aca es lo que fragmenta/hibrida.
+ *   empty      sin linea de composer legible (shell, pane ilegible): no se
+ *              puede afirmar nada; el llamador decide (poke-pane sigue y avisa).
+ */
+function pasteLandedIntact(tail, payload) {
+  const content = composerContent(tail);
+  if (!content) return 'empty';
+  if (COLLAPSED_PASTE_RE.test(content)) return 'collapsed';
+  const head = flat(payload).slice(0, 40);
+  if (!head) return 'empty';
+  const shown = content.slice(0, 40);
+  if (head.startsWith(shown) || shown.startsWith(head)) return 'intact';
+  return 'fragmented';
+}
+
+module.exports = { composerContent, composerStillHolds, pasteLandedIntact, COLLAPSED_PASTE_RE };

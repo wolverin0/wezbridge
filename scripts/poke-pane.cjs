@@ -20,7 +20,18 @@
  * agent gets a payment-adjacent task.
  *
  * Exit codes:  0 submitted · 2 bad usage · 3 wezterm unreachable · 4 no match ·
- *              5 ambiguous · 6 send failed · 7 submit remained stuck
+ *              5 ambiguous · 6 send failed · 7 submit remained stuck ·
+ *              8 composer unreadable · 9 paste did not land as ONE prompt (Enter NOT sent) ·
+ *              10 composer already held someone else's unsent text (nothing written)
+ *
+ * DELIVERY (T-0303, 2026-09-02): the payload goes in as a BRACKETED PASTE and the
+ * Enter is a SEPARATE write. The previous `--no-paste` typed the payload as raw
+ * keys, so every `\n` was a SUBMIT: a 3-line envelope arrived as 3 prompts plus
+ * an empty one (reproduced against a TUI double), and the verifier still said
+ * VERIFIED because it only compared the composer against the payload's HEAD
+ * while fragmentation only ever leaves the TAIL. Now: integrity is checked
+ * BEFORE Enter (composer must show the head, or a collapsed paste), the
+ * verifier lives in composer-state.cjs and also sees tails/fragments/borders.
  */
 const { execFileSync } = require('child_process');
 const fs = require('fs');
@@ -175,51 +186,89 @@ function sendViaStdin(paneId, payload, socketEnv, { noPaste = true } = {}) {
   });
 }
 
-function composerStillHolds(tail, payload) {
-  const flat = (value) => String(value).replace(/\s+/g, ' ').trim().toLowerCase();
-  const probe = flat(payload).slice(0, 60);
-  if (!probe) return false;
-  const lines = String(tail).split(/\r?\n/);
-  const markers = lines.filter((line) => /^[\s│|]*[❯>›]/u.test(line));
-  const last = markers.at(-1) || '';
-  const content = flat(last.replace(/^[\s│|]*[❯>›]\s*/u, ''));
-  return Boolean(content) && (
-    probe.startsWith(content.slice(0, 40)) ||
-    content.startsWith(probe.slice(0, 40)) ||
-    (content.length >= 8 && flat(payload).includes(content.slice(0, 60))) ||
-    /\[?pasted (text|content)|\+\s*\d+\s+lines?\]?/i.test(content)
-  );
+// ONE verifier, shared: composer-state.cjs (T-0303 — this file had a private copy).
+const { composerStillHolds, pasteLandedIntact, composerContent } = require('./composer-state.cjs');
+const { composerHoldsForeignText } = require('../src/verified-send.cjs');
+const readTail = () => execFileSync(
+  WEZTERM,
+  [...CLI_BASE, 'get-text', '--pane-id', String(target.pane_id), '--start-line', '-40'],
+  { encoding: 'utf8', timeout: 20000, env: target._socketEnv, windowsHide: true },
+);
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+// ---------- refuse to type over someone else's unsent text (T-0323 rule) ----------
+// Fail-open if the pane cannot be read: a guard that cannot look cannot stop.
+try {
+  const before = readTail();
+  if (composerHoldsForeignText(before)) {
+    die(10, `pane ${target.pane_id} composer already holds unsent text ${JSON.stringify(composerContent(before).slice(0, 80))} — nothing written; a key from the operator unblocks it`);
+  }
+} catch (e) {
+  if (e && typeof e === 'object' && e.status === 10) process.exit(10);
 }
 
-// ---------- send ----------
-// --no-paste: bracketed paste makes some TUIs hold the text without accepting
-// it. The CR is a SEPARATE stdin write for the same reason — on Windows a
-// control character passed as an argv element can be swallowed before wezterm
-// sees it. A successful send-text exit is not submission proof, so read the
-// live composer and nudge Enter once more if the prompt is still sitting there.
+// ---------- send: bracketed paste, then a SEPARATE Enter ----------
+// The payload is a bracketed paste (no --no-paste): the composer takes it as ONE
+// unit and its internal newlines stay soft. The CR is a separate --no-paste stdin
+// write (a control char in argv can be swallowed on Windows before wezterm sees
+// it), and it is only sent once the paste is seen to have landed intact.
+// A single trailing newline (every --file ends with one) is dropped.
+//
+// ONE LINE ON THE WIRE (measured 2026-09-02 against a TUI double, Windows 10 /
+// ConPTY): wezterm does not wrap the paste in bracketed-paste markers here even
+// when the app enabled DECSET 2004, and the bytes arrive IDENTICAL with or
+// without --no-paste — one chunk, newlines included. Whether that lands as one
+// prompt then depends on the TUI's own burst heuristic (Ink/Claude Code has one;
+// a crossterm TUI without bracketed paste treats every newline as Enter). So
+// the only delivery that is one prompt on EVERY composer is a payload with no
+// newline in it: internal newlines are flattened to " ⏎ " and the log SAYS so.
+// Nothing is dropped; the reader sees where the lines were.
+const trimmed = text.replace(/\r?\n$/, '');
+const lineCount = trimmed.split(/\r?\n/).length;
+const payload = trimmed.replace(/\s*\r?\n\s*/g, ' ⏎ ');
+if (lineCount > 1) {
+  console.log(`${new Date().toISOString()} poke-pane FLATTENED: ${lineCount} lines -> 1 line (${payload.length} chars) with " ⏎ " between them, so the composer takes it as ONE prompt on any TUI`);
+}
 try {
-  sendViaStdin(target.pane_id, text, target._socketEnv);
-  sendViaStdin(target.pane_id, '\r', target._socketEnv);
+  sendViaStdin(target.pane_id, payload, target._socketEnv, { noPaste: false });
 } catch (e) {
   die(6, `send to pane ${target.pane_id} failed: ${String(e.message || e).split('\n')[0]}`);
 }
 
-// ---------- verify actual submission, not mere echo ----------
-const verified = 'VERIFIED (composer cleared)';
+// ---------- integrity BEFORE Enter: did the paste land as one prompt? ----------
+let landed = 'empty';
 try {
-  const readTail = () => execFileSync(
-    WEZTERM,
-    [...CLI_BASE, 'get-text', '--pane-id', String(target.pane_id), '--start-line', '-40'],
-    { encoding: 'utf8', timeout: 20000, env: target._socketEnv, windowsHide: true },
-  );
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 700);
+  pause(700);
+  landed = pasteLandedIntact(readTail(), payload);
+} catch (e) {
+  die(8, `composer verification unavailable for pane ${target.pane_id}: ${String(e.message || e).split('\n')[0]}`);
+}
+if (landed === 'fragmented') {
+  // Enter here is exactly what fragments/hybridises the prompt. Leave it visible.
+  let shown = '';
+  try { shown = composerContent(readTail()).slice(0, 80); } catch { /* best effort */ }
+  die(9, `paste did not land as ONE prompt in pane ${target.pane_id}: composer shows ${JSON.stringify(shown)} instead of the payload head — Enter NOT sent, text left in the composer for the operator`);
+}
+if (landed === 'empty') {
+  console.log(`${new Date().toISOString()} poke-pane NOTE: pane ${target.pane_id} has no readable composer line (shell or non-TUI): paste integrity unverified, submitting anyway`);
+}
+try {
+  sendViaStdin(target.pane_id, '\r', target._socketEnv);
+} catch (e) {
+  die(6, `enter to pane ${target.pane_id} failed: ${String(e.message || e).split('\n')[0]}`);
+}
+
+// ---------- verify actual submission, not mere echo ----------
+const verified = `VERIFIED (paste ${landed}, composer cleared)`;
+try {
+  pause(700);
   let tail = readTail();
-  if (composerStillHolds(tail, text)) {
+  if (composerStillHolds(tail, payload)) {
     sendViaStdin(target.pane_id, '\r', target._socketEnv);
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 900);
+    pause(900);
     tail = readTail();
   }
-  if (composerStillHolds(tail, text)) {
+  if (composerStillHolds(tail, payload)) {
     die(7, `prompt remained in pane ${target.pane_id} composer after two Enter writes`);
   }
 } catch (e) {
