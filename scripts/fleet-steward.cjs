@@ -339,47 +339,104 @@ function auditProposals(dir = intelDir(), now = Date.now()) {
  * El linker (src/result-linker.cjs) emite `result.unlinked {corr, reason}`; sin
  * esto ese evento vive en events.jsonl, que nadie mira, y la consecuencia es la
  * peor de todas: trabajo TERMINADO que el tablero sigue mostrando como en curso
- * (o directamente no muestra). Misma forma que proposal-unledgered — ventana de
- * 72h para el SCAN, el gate acota la RESPUESTA — y el mismo fail-soft: streams
- * ausentes o ilegibles dan cero hallazgos.
+ * (o directamente no muestra). Los casos recientes conservan una ventana
+ * individual de 72h con un tope de tres filas; el exceso y los huerfanos mas
+ * viejos se compactan en una sola fila hasta los 7 dias. Streams ausentes o
+ * ilegibles dan cero hallazgos.
  *
  * El repo sale de la tarjeta cuando el corr resuelve a una; si no, 'unknown'.
  * Inventarle un dueno seria peor: lo mandaria al board de otro.
  */
 const RESULT_UNLINKED_WINDOW_HOURS = 72;
+const RESULT_UNLINKED_ARCHIVE_HOURS = 168;
+const RESULT_UNLINKED_INDIVIDUAL_LIMIT = 3;
+const CLOSED_TASK_STATES = new Set(['done', 'cancelled']);
+
+function resultTaskCards(dir) {
+  const tasksDir = path.join(dir, 'tasks');
+  return taskFiles(tasksDir).filter((f) => TASK_FILE.test(f)).flatMap((f) => {
+    try { return [JSON.parse(fs.readFileSync(path.join(tasksDir, f), 'utf8'))]; }
+    catch { return []; }
+  });
+}
+
+function firstResultTimes(dir) {
+  const times = new Map();
+  for (const result of readJsonl(path.join(dir, 'a2a-results.jsonl'))) {
+    const at = ms(result && result.time);
+    if (!result || !result.corr || !at) continue;
+    const previous = times.get(result.corr);
+    if (!previous || at < previous) times.set(result.corr, at);
+  }
+  return times;
+}
+
+function resultCardForCorr(corr, cards) {
+  const exact = cards.filter((card) => card.corr === corr);
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) return null;
+  const id = taskIdFromCorr(corr);
+  return id ? cards.find((card) => card.id === id) || null : null;
+}
+
+function archivedResultFinding(results, now) {
+  if (!results.length) return [];
+  return [{
+    id: 'result:unlinked-archive', repo: 'unknown', state: null,
+    title: `${results.length} results sin tarjeta, ultimos 7 dias`, owner: null,
+    age_hours: Math.min(...results.map((r) => hours(now - r.at))),
+    category: 'result-unlinked',
+    why: `${results.length} results sin tarjeta, ultimos 7 dias; ver a2a-results.jsonl para el contenido persistido`,
+    collapsed: results.map(({ corr, reason }) => ({ corr, reason })),
+  }];
+}
+
+function individualResultFinding(result, card, now) {
+  return {
+    id: `result:${result.corr}`,
+    repo: (card && card.repo) || 'unknown',
+    state: card ? card.state : null,
+    title: card ? card.title : `result corr=${result.corr}`,
+    owner: (card && card.lease && card.lease.owner) || null,
+    age_hours: hours(now - result.at),
+    category: 'result-unlinked',
+    why: `un type=result llego y NO movio ninguna tarjeta (${result.reason}) — el trabajo puede estar terminado y el tablero no lo sabe; nombra la tarjeta en el corr o corregi el estado`,
+  };
+}
 
 function auditResultLinks(dir = intelDir(), now = Date.now()) {
   // Primer intento fallido por corr: los reintentos del cursor no reinician el
   // reloj ni multiplican el item.
+  const arrivedAt = firstResultTimes(dir);
   const first = new Map();
   for (const e of readJsonl(path.join(dir, 'events.jsonl'))) {
     if (!e || e.event !== 'result.unlinked' || !e.corr) continue;
-    const at = ms(e.time);
-    if (!at || at > now || now - at > HOURS(RESULT_UNLINKED_WINDOW_HOURS)) continue;
+    const at = arrivedAt.get(e.corr) || ms(e.time);
+    if (!at || at > now || now - at > HOURS(RESULT_UNLINKED_ARCHIVE_HOURS)) continue;
     const prev = first.get(e.corr);
     if (!prev || at < prev.at) first.set(e.corr, { corr: e.corr, at, reason: e.reason || 'sin razon declarada' });
   }
   if (!first.size) return [];
 
+  const cards = resultTaskCards(dir);
   const findings = [];
+  const recentOrphans = [];
+  const archived = [];
   for (const r of first.values()) {
-    const id = taskIdFromCorr(r.corr);
-    let card = null;
-    if (id) {
-      try { card = JSON.parse(fs.readFileSync(path.join(dir, 'tasks', `${id}.json`), 'utf8')); } catch { card = null; }
+    const card = resultCardForCorr(r.corr, cards);
+    if (card && CLOSED_TASK_STATES.has(card.state)) continue;
+    if (now - r.at > HOURS(RESULT_UNLINKED_WINDOW_HOURS)) {
+      if (!card) archived.push(r);
+      continue;
     }
-    findings.push({
-      id: `result:${r.corr}`,
-      repo: (card && card.repo) || 'unknown',
-      state: card ? card.state : null,
-      title: card ? card.title : `result corr=${r.corr}`,
-      owner: (card && card.lease && card.lease.owner) || null,
-      age_hours: hours(now - r.at),
-      category: 'result-unlinked',
-      why: `un type=result llego y NO movio ninguna tarjeta (${r.reason}) — el trabajo puede estar terminado y el tablero no lo sabe; nombra la tarjeta en el corr o corregi el estado`,
-    });
+    if (card) findings.push(individualResultFinding(r, card, now));
+    else recentOrphans.push(r);
   }
-  return findings;
+  const slots = Math.max(0, RESULT_UNLINKED_INDIVIDUAL_LIMIT - findings.length);
+  const newest = [...recentOrphans].sort((a, b) => b.at - a.at);
+  findings.push(...newest.slice(0, slots).map((r) => individualResultFinding(r, null, now)));
+  archived.push(...newest.slice(slots));
+  return [...findings, ...archivedResultFinding(archived, now)];
 }
 
 /**
