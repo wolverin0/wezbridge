@@ -430,8 +430,11 @@ async function applyIntent(intent) {
       // ledger mismo lo sobreescribe a 'operator' al forzar el gate.
       const blockedBy = ['operator', 'third_party', 'agent'].includes(p.blocked_by) ? p.blocked_by : 'agent';
       const args = ['create', '--repo', repo, '--kind', p.kind, '--title', p.title, '--goal', goal, '--blocked-by', blockedBy];
-      const criteria = Array.isArray(p.acceptance) ? p.acceptance.join(';') : (typeof p.acceptance === 'string' ? p.acceptance : null);
-      if (criteria) args.push('--criteria', criteria);
+      // T-0252: un --criterion por criterio, VERBATIM. Antes se pegaban con ';' y
+      // el ledger los volvia a partir por ';' — un criterio con punto y coma en
+      // su prosa llegaba partido y la tarjeta se imprimia como exito.
+      const criteria = Array.isArray(p.acceptance) ? p.acceptance : (typeof p.acceptance === 'string' ? [p.acceptance] : []);
+      for (const c of criteria) if (String(c ?? '').trim()) args.push('--criterion', String(c).trim());
       const r = await runLedger(args);
       if (!r.ok) return { ...base, result: { ...base.result, reason: `ledger create failed: ${r.stderr.slice(0, 300)}` } };
       const created = parseLedgerTask(r.stdout);

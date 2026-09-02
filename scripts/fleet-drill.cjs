@@ -117,8 +117,8 @@ function ensureCards(ctx) {
   if (ctx.cards.docs && ctx.cards.deploy) return ctx.cards;
   const found = ctx.readTasks();
   const byOrigin = (o) => found.find((t) => t.origin_key === o);
-  const docs = byOrigin('drill:docs') || ctx.runLedger(['create', '--title', '[DRILL] docs header', '--goal', 'Agregar el header de 7 lineas a docs/README.md', '--kind', 'docs', '--repo', ctx.repo, '--criteria', 'header present;tests pass', '--blocked-by', 'agent', '--origin', 'drill:docs']);
-  const deploy = byOrigin('drill:deploy') || ctx.runLedger(['create', '--title', '[DRILL] deploy probe', '--goal', 'Reportar WEZBRIDGE_BIND; no cambiar nada', '--kind', 'deploy', '--repo', ctx.repo, '--criteria', 'value reported', '--origin', 'drill:deploy']);
+  const docs = byOrigin('drill:docs') || ctx.runLedger(['create', '--title', '[DRILL] docs header', '--goal', 'Agregar el header de 7 lineas a docs/README.md', '--kind', 'docs', '--repo', ctx.repo, '--criterion', 'header present', '--criterion', 'tests pass', '--blocked-by', 'agent', '--origin', 'drill:docs']);
+  const deploy = byOrigin('drill:deploy') || ctx.runLedger(['create', '--title', '[DRILL] deploy probe', '--goal', 'Reportar WEZBRIDGE_BIND; no cambiar nada', '--kind', 'deploy', '--repo', ctx.repo, '--criterion', 'value reported', '--origin', 'drill:deploy']);
   must(docs && docs.id, `ledger create docs no devolvio id: ${JSON.stringify(docs).slice(0, 200)}`);
   must(deploy && deploy.id, `ledger create deploy no devolvio id: ${JSON.stringify(deploy).slice(0, 200)}`);
   ctx.cards = { docs: docs.id, deploy: deploy.id };
@@ -150,7 +150,7 @@ function ensureDocsRunning(ctx, jobId = 'JOB-drill-seed') {
  * docs entre checks arrastra estado y una lease viva con otro owner.
  */
 function seedRunningCard(ctx, label, jobId) {
-  const c = ctx.runLedger(['create', '--title', `[DRILL] ${label}`, '--goal', `drill ${label}`, '--kind', 'docs', '--repo', ctx.repo, '--criteria', 'header present;tests pass', '--blocked-by', 'agent', '--origin', `drill:${label}:${Date.now()}`]);
+  const c = ctx.runLedger(['create', '--title', `[DRILL] ${label}`, '--goal', `drill ${label}`, '--kind', 'docs', '--repo', ctx.repo, '--criterion', 'header present', '--criterion', 'tests pass', '--blocked-by', 'agent', '--origin', `drill:${label}:${Date.now()}`]);
   must(c && c.id, `ledger create ${label} no devolvio id`);
   const corr = `${c.id}:${label}:20260901`;
   ctx.runLedger(['update', c.id, '--state', 'ready', '--note', 'drill seed']);
@@ -450,7 +450,7 @@ const CHECKS = [
       const report = steward.audit(ctx.readTasks(), Date.now(), ctx.intel, { census: [] });
       must(report.findings.some((f) => f.category === 'result-unlinked'), 'steward sin hallazgo result-unlinked');
       // FAILED
-      const c2 = ctx.runLedger(['create', '--title', '[DRILL] failing', '--goal', 'x', '--kind', 'docs', '--repo', ctx.repo, '--criteria', 'a', '--blocked-by', 'agent', '--origin', `drill:fail:${Date.now()}`]);
+      const c2 = ctx.runLedger(['create', '--title', '[DRILL] failing', '--goal', 'x', '--kind', 'docs', '--repo', ctx.repo, '--criterion', 'a', '--blocked-by', 'agent', '--origin', `drill:fail:${Date.now()}`]);
       ctx.runLedger(['update', c2.id, '--state', 'ready']); ctx.runLedger(['update', c2.id, '--state', 'running', '--corr', `${c2.id}:f:20260901`]);
       const fbody = `FinalOrchestra JOB-f: FAILED\nrompio\ncriteria:\n- a: fail — E=JOB-f-1\nevidence: E=JOB-f-1\nnext_action: factory result JOB-f --detail full`;
       a2a.recordResultBody({ corr: `${c2.id}:f:20260901`, fromPane: 9, toPane: null, v2: a2a.detectV2(fbody), body: fbody });

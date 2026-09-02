@@ -155,7 +155,7 @@ test('create PERSISTE --blocker en vez de comérselo', () => {
   // blocker le pide al operador que decida sin decirle sobre qué.
   sandbox((intel) => {
     const r = cli(intel, ['create', '--title', 'con pregunta', '--goal', 'x',
-      '--repo', 'wezbridge', '--criteria', 'a;b', '--blocked-by', 'operator',
+      '--repo', 'wezbridge', '--criterion', 'a', '--criterion', 'b', '--blocked-by', 'operator',
       '--state', 'blocked', '--blocker', '¿migramos el NAS o lo retiramos?']);
     assert.equal(r.ok, true, `create falló: ${r.stderr}`);
     assert.equal(only(intel).blocker, '¿migramos el NAS o lo retiramos?',
@@ -169,7 +169,7 @@ test('create SIGUE aceptando lo que está bien formado', () => {
   // fue a la deriva la primera vez.
   sandbox((intel) => {
     const r = cli(intel, ['create', '--title', 'bien formada', '--goal', 'y',
-      '--repo', 'wezbridge', '--criteria', 'algo medible;otra cosa', '--blocked-by', 'agent']);
+      '--repo', 'wezbridge', '--criterion', 'algo medible', '--criterion', 'otra cosa', '--blocked-by', 'agent']);
     assert.equal(r.ok, true, `una tarjeta completa tiene que pasar: ${r.stderr}`);
     const t = only(intel);
     assert.equal(t.repo, 'wezbridge');
@@ -203,7 +203,7 @@ test('update REPARA los criterios de aceptación', () => {
       state: 'queued', blocked_by: 'agent', acceptance_criteria: [], lease: null,
     }, null, 2));
 
-    const r = cli(intel, ['update', 'T-0001', '--criteria', 'medible;verificable']);
+    const r = cli(intel, ['update', 'T-0001', '--criterion', 'medible', '--criterion', 'verificable']);
     assert.equal(r.ok, true, `update falló: ${r.stderr}`);
     assert.deepEqual(only(intel).acceptance_criteria, ['medible', 'verificable'],
       'sin esto, las 16 tarjetas abiertas sin criterios no se pueden cerrar nunca con evidencia');
