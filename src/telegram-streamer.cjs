@@ -57,6 +57,13 @@ const projectToPane = new Map(); // project -> pane_id (refreshed on each discov
 // --- Load token and config ---
 let BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 let GROUP_ID = process.env.TELEGRAM_GROUP_ID;
+// 2026-09-02 (decision del operador): el canal que le llega es un DM (chat_id
+// positivo) del bot de wabot, no el supergrupo con topics del plugin. Un DM no
+// tiene hilos: createForumTopic y message_thread_id devuelven "message thread
+// not found". En modo sin hilos todo va al chat plano y los "topics" son un
+// prefijo en el texto. Los grupos (chat_id negativo) siguen igual que antes.
+const isThreadless = () => /^\d+$/.test(String(GROUP_ID || ''));
+const THREADLESS_ID = -1; // sentinel truthy: los llamadores tratan null/0 como "sin topic"
 
 if (!BOT_TOKEN || !GROUP_ID) {
   const envPath = path.join(os.homedir(), '.claude', 'channels', 'telegram', '.env');
@@ -202,6 +209,7 @@ async function createTopicIfMissing(project) {
   const blocklist = Array.isArray(topicMap._blocklist) ? topicMap._blocklist : [];
   if (blocklist.includes(project)) return null;
   if (topicCreationFailed.has(project)) return null;
+  if (isThreadless()) return THREADLESS_ID; // DM: no hay topics que crear
   if (topicCreationInFlight.has(project)) return null;
 
   topicCreationInFlight.add(project);
@@ -434,7 +442,7 @@ function telegramPost(method, body) {
 async function sendMsg(text, threadId, { notify = false } = {}) {
   return telegramPost('sendMessage', {
     chat_id: GROUP_ID,
-    message_thread_id: threadId,
+    ...(isThreadless() ? {} : { message_thread_id: threadId }),
     text,
     parse_mode: 'HTML',
     // Live-stream edits stay silent; decision pushes exist to PING the
@@ -826,7 +834,7 @@ async function streamPaneEvents(pane, project) {
     const text = `<b>${ev.title}</b>\n${ev.detail}`;
     const result = await telegramPost('sendMessage', {
       chat_id: GROUP_ID,
-      message_thread_id: threadId,
+      ...(isThreadless() ? {} : { message_thread_id: threadId }),
       text,
       parse_mode: 'HTML',
       disable_notification: true,
@@ -850,7 +858,7 @@ async function streamPaneEvents(pane, project) {
       const plain = text.replace(/<[^>]+>/g, '').slice(0, 4000);
       const retry = await telegramPost('sendMessage', {
         chat_id: GROUP_ID,
-        message_thread_id: threadId,
+        ...(isThreadless() ? {} : { message_thread_id: threadId }),
         text: plain,
         disable_notification: true,
       });
@@ -973,7 +981,7 @@ async function streamPane(pane, project, isDuplicate) {
       const plain = html.replace(/<[^>]+>/g, '').slice(0, 4000);
       const plainResult = await telegramPost('sendMessage', {
         chat_id: GROUP_ID,
-        message_thread_id: threadId,
+        ...(isThreadless() ? {} : { message_thread_id: threadId }),
         text: plain,
         disable_notification: true,
       });

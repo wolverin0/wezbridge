@@ -21,6 +21,24 @@ for /f "tokens=*" %%p in ('wmic process where "Name='node.exe' and CommandLine l
     exit /b 0
 )
 
+REM 2026-09-02 (decision del operador): el chat del plugin de Telegram (~/.claude/channels/telegram/.env)
+REM daba "chat not found" desde el 13-ago. El canal que SI le llega al operador es el bot de wabot
+REM (DM al OWNER). Se leen token y owner de su .env EN EL MOMENTO DE ARRANCAR, sin copiarlos a otro
+REM archivo; el streamer prioriza estas variables de entorno sobre el .env del plugin.
+set "WABOT_ENV=G:\_OneDrive\OneDrive\Desktop\Py Apps\whatsappbot-prod - Copy - Copy\whatsappbot-final\.env"
+if exist "%WABOT_ENV%" (
+    for /f "usebackq tokens=1,* delims==" %%a in ("%WABOT_ENV%") do (
+        if /i "%%a"=="TELEGRAM_BOT_TOKEN" set "TELEGRAM_BOT_TOKEN=%%b"
+        if /i "%%a"=="TELEGRAM_OWNER_ID" set "TELEGRAM_GROUP_ID=%%b"
+    )
+)
+if not defined TELEGRAM_GROUP_ID echo %DATE% %TIME% [start-telegram-streamer] WARN: sin TELEGRAM_OWNER_ID en el .env de wabot, cae al .env del plugin >> "%LOG%"
+REM En un DM no hay topics por proyecto: el modo raw (stream de cada pane) es un solo chat
+REM interleavado. events = solo eventos significativos + pushes de decisiones. Override con STREAMER_MODE.
+if not defined STREAMER_MODE set "STREAMER_MODE=events"
+REM Lo que el operador pidio de este canal son las DECISIONES (decision-push cada 60 s). El stream de
+REM eventos de panes en un DM es ruido: se sondea cada 10 min en vez de cada 10 s. Override con STREAMER_POLL_MS.
+if not defined STREAMER_POLL_MS set "STREAMER_POLL_MS=600000"
 echo %DATE% %TIME% [start-telegram-streamer] launching node "%STREAMER%" >> "%LOG%"
 
 REM `start /B` detaches. `"" ""` are the (empty) window title arg and program.
