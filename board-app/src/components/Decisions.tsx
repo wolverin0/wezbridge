@@ -183,6 +183,9 @@ export default function Decisions({ decisions, findings, deferred, lastRuling, o
     question: `${f.category}${f.unruled ? ' — SIN DECIDIR, el gate está rojo por esto' : ''}: ${f.why}`,
     category: f.category,
   }));
+  const unruledIds = new Set(findings.filter((f) => f.unruled).map((f) => f.id));
+  const unruledCards = findingCards.filter((d) => unruledIds.has(d.id));
+  const restCards = findingCards.filter((d) => !unruledIds.has(d.id));
 
   return (
     <>
@@ -220,18 +223,29 @@ export default function Decisions({ decisions, findings, deferred, lastRuling, o
         </details>
       )}
 
-      {/* Hallazgos plegados por defecto: son diagnóstico del steward, no
-          decisiones — mostrarlos con la misma carta abierta hacía leer
-          "Decisiones 3" sobre una pantalla con 21 cartas. Se abren solos
-          únicamente cuando hay alguno SIN DECIDIR (gate rojo). */}
-      {findingCards.length > 0 && (
-        <details className="findings-fold" open={findings.some((f) => f.unruled)}>
+      {/* Hallazgos del steward: diagnóstico, no decisiones. Dos veces (2026-08
+          y 2026-09-02) el operador leyó "Decisiones 2" sobre una pantalla con
+          20+ cartas: el pliegue se abría ENTERO apenas había UN hallazgo sin
+          decidir. Ahora los SIN DECIDIR (los que ponen el gate en rojo) se
+          muestran siempre, con su propio número, y el resto queda plegado y
+          nunca se abre solo. Lo que se ve arriba es lo que hay que decidir. */}
+      {unruledCards.length > 0 && (
+        <section aria-label="Hallazgos sin decidir" className="unruled-block">
+          <h3 className="findings-head">
+            Sin decidir · {unruledCards.length} — el gate está rojo por esto
+          </h3>
+          {unruledCards.map((d) => (
+            <DecisionCard key={`u-${d.id}`} d={d} onRule={onRule} onNote={onNote} busy={resolving.has(d.id)} />
+          ))}
+        </section>
+      )}
+      {restCards.length > 0 && (
+        <details className="findings-fold">
           <summary className="findings-head">
-            Hallazgos del steward · {findingCards.length} — diagnóstico, no decisiones
-            {findings.some((f) => f.unruled) && <span className="unruled-flag"> — hay sin decidir</span>}
+            Hallazgos del steward · {restCards.length} — diagnóstico ya decidido o no vencido, no decisiones
           </summary>
           <section aria-label="Hallazgos del steward">
-            {findingCards.map((d) => (
+            {restCards.map((d) => (
               <DecisionCard key={`f-${d.id}`} d={d} onRule={onRule} onNote={onNote} busy={resolving.has(d.id)} />
             ))}
           </section>

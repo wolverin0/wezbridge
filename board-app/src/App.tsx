@@ -190,8 +190,13 @@ export default function App() {
   const dataAgeMins = state ? ageMinutes(state.generated_at) : null;
   const stale = dataAgeMins !== null && dataAgeMins > 2;
 
+  // El número tiene que ser lo que se ve: tarjetas gateadas + hallazgos SIN
+  // DECIDIR (los que ponen el gate en rojo). Contar solo las primeras hacía
+  // leer "Decisiones 2" sobre una pantalla con 20+ cartas (2026-09-02, 2ª vez).
+  const unruledCount = (state?.findings_list || []).filter((f) => f.unruled).length;
+  const toDecide = (state?.decisions.length || 0) + unruledCount;
   const zones: Array<{ key: Tab; label: string; badge?: number }> = [
-    { key: 'decisiones', label: 'Decisiones', badge: state?.decisions.length || 0 },
+    { key: 'decisiones', label: 'Decisiones', badge: toDecide },
     { key: 'flota', label: 'Flota' },
     { key: 'actividad', label: 'Actividad' },
   ];
@@ -207,7 +212,12 @@ export default function App() {
 
       <main className="zones">
         <section className={`zone${tab === 'decisiones' ? ' active' : ''}`} aria-label="Decisiones">
-          <h2>Decisiones <span className="n">{state?.decisions.length ?? '…'}</span></h2>
+          <h2>
+            Decisiones{' '}
+            <span className="n">
+              {state ? `${state.decisions.length} gateada${state.decisions.length === 1 ? '' : 's'}${unruledCount ? ` + ${unruledCount} sin decidir` : ''}` : '…'}
+            </span>
+          </h2>
           {status === 'loading' && <Skeletons n={3} />}
           {status === 'error' && <ErrorBox message={error} onRetry={() => { setStatus('loading'); refresh(); }} />}
           {status === 'ok' && state && (
