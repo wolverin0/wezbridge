@@ -78,6 +78,11 @@ const DEADLINES = {
   // 2026-09-01 (W1). Una decision del operador que su dueno nunca escucho es el
   // loop roto AHORA mismo: 6h, tan apretado como dead-owner-lease.
   'decision-unheard': 6,
+  // T-0326 (2026-09-02). Una decision del operador tomada EN un pane y nunca
+  // escrita: la tarjeta gateada se movio sin ruling by=operator. 24h: el pane
+  // que actuo sigue vivo ese dia y puede escribirla con scripts/decidir.cjs;
+  // se autolimpia al aparecer el ruling.
+  'decision-unrecorded': 24,
   // Un result entregado que no movio su tarjeta deja el tablero mintiendo sobre
   // trabajo YA hecho; 24h alcanza para el reintento del cursor.
   'result-unlinked': 24,

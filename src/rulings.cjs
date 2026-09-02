@@ -115,7 +115,19 @@ const RULING_FIELDS = ['task', 'category', 'ruling', 'why', 'at', 'until', 'sour
  */
 const FINDING_CATEGORY = Object.freeze({
   staleReview: 'stale-review',
+  // T-0326: una tarjeta gateada por el operador salio de blocked (o se cerro)
+  // sin un ruling con by=operator — el operador decidio DENTRO de un pane y el
+  // pane actuo sin escribirlo. El fleet se entera horas despues o nunca.
+  decisionUnrecorded: 'decision-unrecorded',
 });
+
+/** Rulings que valen como decision DEL OPERADOR: firmadas by=operator, o entradas por un canal que solo el operador opera. */
+const OPERATOR_SOURCES = Object.freeze(['board-app', 'telegram']);
+function isOperatorRuling(r) {
+  if (!r || typeof r !== 'object') return false;
+  if (String(r.by || '').trim().toLowerCase() === 'operator') return true;
+  return OPERATOR_SOURCES.includes(r.source);
+}
 
 /**
  * "Esta linea de ruling aplica a un hallazgo de ESTA categoria?" Predicado
@@ -239,7 +251,7 @@ function appendRuling(intelDir, line, { now } = {}) {
 
 module.exports = {
   rulingsFor, latestRuling, latestRulingWhere, taskIds,
-  RULING_VOCAB, RULING_SOURCES, RULING_FIELDS, APPROVED_CATEGORIES,
+  RULING_VOCAB, RULING_SOURCES, RULING_FIELDS, APPROVED_CATEGORIES, OPERATOR_SOURCES, isOperatorRuling,
   FINDING_CATEGORY, rulingMatchesCategory,
   validateRulingLine, appendRuling,
 };

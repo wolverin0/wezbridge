@@ -32,7 +32,7 @@ const { taskIdFromCorr } = require('../src/a2a-intel.cjs');
 const { auditRoutines } = require('./routine-audit.cjs');
 const { reconcileLeases, liveCensus: reconcilerCensus } = require('./lease-reconcile.cjs');
 const { lintSpecRefs, lintRulings } = require('./dispatch-lint.cjs');
-const { FINDING_CATEGORY } = require('../src/rulings.cjs');
+const { FINDING_CATEGORY, isOperatorRuling } = require('../src/rulings.cjs');
 
 const HOURS = (h) => h * 3600 * 1000;
 
@@ -505,6 +505,48 @@ function auditDecisions(dir = intelDir(), now = Date.now()) {
 }
 
 /**
+ * T-0326 — `decision-unrecorded`: el operador decidio DENTRO de un pane y el
+ * pane actuo sin escribir el ruling. Medido el 2026-09-02 cuatro veces en un dia
+ * (T-0253 "olvidate de eso", T-0297 "elegi renombrar", el restart de wabot,
+ * T-0310): el fleet se entero horas despues por un result, o quedo con tarjetas
+ * obsoletas. La regla (docs/a2a-protocol.md) es "primero el ruling, despues la
+ * accion"; este hallazgo es lo que la vuelve exigible.
+ *
+ * Dispara sobre una tarjeta que ESTA o ESTUVO gateada por el operador (gate
+ * 'operator' en la tarjeta, o blocked_by operator) y que YA NO esta blocked
+ * (ready/running/review/done/cancelled) — o sea, alguien la movio despues de la
+ * pregunta — sin que exista un ruling del operador para ella (by=operator, o
+ * source board-app/telegram: canales que solo el operador opera). El buen
+ * camino (decide / tablero) deja el ruling y des-gatea, asi que no dispara.
+ * Epoca 2026-09-01 por state_changed_at: el backlog viejo no se retro-flaggea.
+ * Se autolimpia: un `decidir` tardio para esa tarjeta lo apaga.
+ */
+function auditUnrecordedDecisions(tasks, dir = intelDir(), now = Date.now()) {
+  const LEFT_GATE = new Set(['ready', 'running', 'review', 'done', 'cancelled']);
+  const gateOf = (t) => (t && t.contract && t.contract.gate) || (t && t.gate) || null;
+  const recorded = new Set(loadRulings(dir).filter(isOperatorRuling).map((r) => r.task));
+  const findings = [];
+  for (const t of tasks) {
+    if (!t || !LEFT_GATE.has(t.state)) continue;
+    if (gateOf(t) !== 'operator' && t.blocked_by !== 'operator') continue;
+    const moved = ms(t.state_changed_at);
+    if (!moved || moved < DECISION_EPOCH || moved > now) continue;
+    if (recorded.has(t.id)) continue;
+    findings.push({
+      id: t.id,
+      repo: t.repo || 'unknown',
+      state: t.state,
+      title: t.title,
+      owner: (t.lease && t.lease.owner) || null,
+      age_hours: hours(now - moved),
+      category: FINDING_CATEGORY.decisionUnrecorded,
+      why: `operator-gated card moved to ${t.state} at ${t.state_changed_at} with NO operator ruling (by=operator / board / telegram): the decision was taken in a pane and never written. Record it now: node wezbridge/scripts/decidir.cjs ${t.id} aprobar|cancelar|diferir "<textual del operador>"`,
+    });
+  }
+  return findings;
+}
+
+/**
  * Classify one task. Returns null when it needs no attention.
  * `now` is injected so this is testable without clock mocking.
  */
@@ -606,6 +648,9 @@ function audit(tasks, now = Date.now(), dir = intelDir(), opts = {}) {
     // mismo loop — aquel mira results que no movieron nada, este mira ordenes
     // que no salieron del archivo.
     ...auditDecisions(dir, now),
+    // Decisiones tomadas EN un pane que nadie escribio (T-0326): la tarjeta
+    // gateada se movio y no hay ruling del operador.
+    ...auditUnrecordedDecisions(tasks, dir, now),
     // Files in tasks/ that neither loader governs (T-0290).
     ...auditTaskFiles(dir, now),
     // T-0272: ¿el owner de cada lease abierta sigue existiendo? El vencimiento
@@ -623,7 +668,7 @@ function audit(tasks, now = Date.now(), dir = intelDir(), opts = {}) {
   const rank = {
     // result-unlinked va arriba a proposito: trabajo TERMINADO que el tablero no
     // registro es una mentira activa del instrumento, no backlog.
-    'awaiting-operator': 0, 'decision-unheard': 1, 'result-unlinked': 1, 'dead-owner-lease': 1, 'lease-census-unavailable': 1, 'lease-owner-unverifiable': 1,
+    'awaiting-operator': 0, 'decision-unheard': 1, 'decision-unrecorded': 1, 'result-unlinked': 1, 'dead-owner-lease': 1, 'lease-census-unavailable': 1, 'lease-owner-unverifiable': 1,
     'abandoned-lease': 2, 'routine-silent': 2, 'stale-running': 3,
     'routine-void': 4, 'routine-findings': 5, 'stale-review': 6, 'stale-failed': 7,
     // Hygiene before backlog-idle: an unspecced dispatch is about to waste a
@@ -663,6 +708,7 @@ function render(report) {
 module.exports = {
   classify, audit, render, RULES, loadTasks, loadRulings, auditTaskFiles, TASK_FILE,
   lastTransition, lastProgress, ownProgress, buildContext, auditProposals, auditResultLinks, auditDecisions,
+  auditUnrecordedDecisions,
 };
 
 if (require.main === module) {

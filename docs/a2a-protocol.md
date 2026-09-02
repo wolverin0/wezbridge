@@ -361,6 +361,37 @@ sobre malformado era rechazado por ese camino. Ahora los dos corren antes del ea
 exactamente una vez por envío, y la respuesta lo dice:
 `Ledger: T-0308 running → review` o `Ledger: result NOT linked (<razón>)`.
 
+## Decisiones que el operador toma DENTRO de un pane (T-0326, 2026-09-02)
+
+El operador decide donde está: en el pane de infra dice "olvidate de eso", en el de wabot
+autoriza un restart, en el de wezbridge elige una opción. Si el pane **actúa sin escribirlo**,
+el fleet se entera horas después por un result, o nunca, y las tarjetas quedan obsoletas
+(medido cuatro veces el 2026-09-02: T-0253, T-0297, el restart de wabot, T-0310).
+
+**Regla: primero el ruling, después la acción.** Si el operador decide sobre una tarjeta
+(aprobar, cancelar, elegir una opción, autorizar un deploy o un restart), el pane escribe el
+ruling ANTES de ejecutar:
+
+```
+node wezbridge/scripts/decidir.cjs T-NNNN aprobar|cancelar|diferir "<lo que dijo el operador, textual>" [--corr <id>] [--until <iso>]
+```
+
+que es exactamente
+
+```
+node _docs-curation/ledger.cjs decide T-NNNN --ruling approved|cancelled|deferred --why "<textual>" --source orchestrator-pane --by operator --corr <corr de la tarjeta>
+```
+
+Verbos: `approved` (sí, elegí esta opción, autorizado), `cancelled` (olvidate, no va),
+`deferred` (después; lleva `--until`). `resolved` y `operator-gated` son vocabulario del
+steward, no decisiones del operador. `--by operator` no es decorativo: es lo que distingue
+la decisión del operador de una que un agente se atribuye.
+
+**Guard:** el steward emite `decision-unrecorded` cuando una tarjeta gateada por el operador
+(gate `operator` o `blocked_by: operator`) aparece en ready/running/review/done/cancelled sin un
+ruling `by=operator` (o entrado por tablero/telegram). El gate lo vence a las 24 h. Se
+autolimpia: un `decidir` tardío lo apaga. Época 2026-09-01.
+
 ## Reference
 
 - Spec lives here (authoritative).
