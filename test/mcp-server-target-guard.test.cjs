@@ -62,10 +62,17 @@ test('T-0281 AC4: send_prompt/send_key/kill_session/set_tab_title rehusan un pan
   }
 });
 
-test('T-0281 AC4: un id que SI esta en el censo pasa el guard (set_tab_title sobre el pane 1 del mock)', async () => {
-  const res = await callTool('set_tab_title', { pane_id: 1, title: 'guard-ok' });
+test('T-0281 AC4: un id que SI esta en el censo pasa el guard (set_tab_title sobre un pane del censo vivo)', async (t) => {
+  // T-0260: el id se toma del censo, no se hardcodea. "pane 1" existia solo en la
+  // numeracion de la GUI; con el mux como espacio canonico los ids son otros.
+  const census = JSON.parse(textOf(await callTool('discover_sessions', { only_claude: false })));
+  const row = (census.sessions || [])[0];
+  if (!row) return t.skip('sin panes vivos');
+  const res = await callTool('set_tab_title', { pane_id: row.pane_id, title: 'guard-ok' });
   assert.notEqual(res.result.isError, true, textOf(res));
   assert.match(textOf(res), /tab title set/);
+  // Dejar el tab como estaba: el test corre contra la flota real del operador.
+  if (row.tab_title) await callTool('set_tab_title', { pane_id: row.pane_id, title: row.tab_title });
 });
 
 test('T-0281 AC4: read_output queda fail-open (leer no daña) y WEZBRIDGE_TARGET_GUARD=off desarma el guard', async () => {

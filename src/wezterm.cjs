@@ -4,6 +4,47 @@
  */
 const { execFileSync, execFile, spawn } = require('child_process');
 
+/**
+ * T-0260 (2026-09-02): UN solo espacio de pane_id — el del mux.
+ *
+ * Medido: el mismo pane es 11 en `sock` (mux) y 4 en `gui-sock-93436`; la GUI
+ * se reemplazo 17+ veces en un dia y cada vez estrena numeracion, asi que todo
+ * id resuelto contra un gui-sock envejece en minutos (4 misroutes reales hoy).
+ * `--prefer-mux` SOLO no alcanza: si WEZTERM_UNIX_SOCKET apunta a un gui-sock,
+ * wezterm sigue hablando con esa GUI. La regla es doble y vive ACA:
+ *   1. toda invocacion arranca con CLI_BASE (lleva --prefer-mux), y
+ *   2. el env que se le pasa fija WEZTERM_UNIX_SOCKET al `sock` del mux y
+ *      borra WEZTERM_PANE (un id del otro espacio).
+ * test/mux-single-id-space.test.cjs falla si aparece un array de argumentos cli
+ * sin --prefer-mux en src/ o scripts/. Escape hatch: WEZBRIDGE_PREFER_MUX=0
+ * vuelve al socket de la GUI (diagnostico), nunca por defecto.
+ */
+const CLI_BASE = Object.freeze(['cli', '--prefer-mux', '--no-auto-start']);
+
+function weztermSockDir() {
+  const path = require('path');
+  return path.join(process.env.USERPROFILE || process.env.HOME || '', '.local', 'share', 'wezterm');
+}
+
+/** Ruta del socket del mux (`sock`) si existe; null si esta maquina no corre mux-server. */
+function muxSocketPath() {
+  const fs = require('fs');
+  const path = require('path');
+  const dir = weztermSockDir();
+  // `sock` es un AF_UNIX socket: en Windows fs.existsSync/statSync le dicen que
+  // NO existe (medido 2026-09-02, devolvia null con el mux vivo). readdirSync si lo lista.
+  try { return fs.readdirSync(dir).includes('sock') ? path.join(dir, 'sock') : null; } catch { return null; }
+}
+
+/** Env para hablar con el mux: socket fijado, WEZTERM_PANE fuera (es del otro espacio). */
+function muxEnv(base = process.env) {
+  const env = { ...base };
+  delete env.WEZTERM_PANE;
+  const sock = muxSocketPath();
+  if (sock) env.WEZTERM_UNIX_SOCKET = sock;
+  return env;
+}
+
 // Node.js on Windows needs Windows-style paths (C:/...) not MSYS2 paths (/c/...)
 // Convert /c/... to C:/... for Node's execFileSync
 function msysToWin(p) {
@@ -95,7 +136,7 @@ function findGuiSocket() {
       if (sockFiles.includes(sockName)) {
         const sockPath = require('path').join(sockDir, sockName);
         try {
-          const out = execFileSync(WEZTERM, ['cli', '--no-auto-start', 'list', '--format', 'json'], {
+          const out = execFileSync(WEZTERM, [...CLI_BASE, 'list', '--format', 'json'], {
             encoding: 'utf-8', timeout: 5000, windowsHide: true,
             env: { ...process.env, WEZTERM_UNIX_SOCKET: sockPath },
           });
@@ -174,7 +215,7 @@ function detectSocketDivergence() {
   if (!guiSocket || !envSocket || guiSocket === envSocket) return null;
   const listVia = (sock) => {
     try {
-      const out = execFileSync(WEZTERM, ['cli', '--no-auto-start', 'list', '--format', 'json'], {
+      const out = execFileSync(WEZTERM, [...CLI_BASE, 'list', '--format', 'json'], {
         encoding: 'utf-8', timeout: 5000, windowsHide: true,
         env: { ...process.env, WEZTERM_UNIX_SOCKET: sock },
       });
@@ -188,25 +229,22 @@ function detectSocketDivergence() {
 }
 
 function buildCliInvocation(args) {
-  if (process.env.WEZBRIDGE_PREFER_MUX === '1') {
-    const muxEnv = { ...process.env };
-    delete muxEnv.WEZTERM_PANE;
-    const configArgs = process.env.WEZBRIDGE_WEZTERM_CONFIG_FILE
-      ? ['--config-file', process.env.WEZBRIDGE_WEZTERM_CONFIG_FILE]
-      : [];
+  const configArgs = process.env.WEZBRIDGE_WEZTERM_CONFIG_FILE
+    ? ['--config-file', process.env.WEZBRIDGE_WEZTERM_CONFIG_FILE]
+    : [];
+  // T-0260: el mux es el default. WEZBRIDGE_PREFER_MUX=0 es el escape hatch
+  // de diagnostico (hablar con la GUI); antes era al reves (=1 para el mux) y
+  // nadie lo seteaba, asi que cada herramienta resolvia contra la GUI viva del
+  // minuto. El flag sigue en el array aunque la env apunte a la GUI: no daña y
+  // el test de "ningun array sin --prefer-mux" no distingue ramas.
+  if (process.env.WEZBRIDGE_PREFER_MUX === '0') {
+    const guiSocket = findGuiSocket();
     return {
-      cliArgs: [...configArgs, 'cli', '--prefer-mux', '--no-auto-start', ...args],
-      env: muxEnv,
+      cliArgs: [...configArgs, ...CLI_BASE, ...args],
+      env: guiSocket ? { ...process.env, WEZTERM_UNIX_SOCKET: guiSocket } : process.env,
     };
   }
-
-  const guiSocket = findGuiSocket();
-  return {
-    cliArgs: ['cli', '--no-auto-start', ...args],
-    env: guiSocket
-      ? { ...process.env, WEZTERM_UNIX_SOCKET: guiSocket }
-      : process.env,
-  };
+  return { cliArgs: [...configArgs, ...CLI_BASE, ...args], env: muxEnv() };
 }
 
 // Note: execFileSync blocks the event loop. For N sessions, pollAll blocks N * timeout_ms.
@@ -377,16 +415,10 @@ function ensureGui() {
     guiLaunched = true;
     return;
   }
-  // Check if mux is already reachable by listing panes
-  try {
-    const result = execFileSync(WEZTERM, ['cli', '--no-auto-start', 'list'], {
-      encoding: 'utf-8', timeout: 5000, windowsHide: true,
-    });
-    if (result && result.includes('PANEID')) {
-      guiLaunched = true;
-      return;
-    }
-  } catch { /* mux not reachable */ }
+  // T-0260: antes, "mux alcanzable" cortaba aca y NO se lanzaba GUI — con el mux
+  // como socket por defecto eso dejaria panes invisibles cada vez que la GUI
+  // este colgada. "ensure GUI" significa una GUI que responda: si ninguna lo
+  // hace, se lanza una (una sola vez por proceso, guiLaunched).
   // Launch GUI connected to the unix mux domain (makes panes visible)
   try {
     const child = spawn(WEZTERM, ['connect', 'unix'], {
@@ -615,8 +647,10 @@ function _listSocketsUncached(nowMs) {
       if (m) pids.push(m[1]);
     }
     const files = fs.readdirSync(sockDir);
-    candidates = pids.map((pid) => `gui-sock-${pid}`).filter((f) => files.includes(f));
+    // T-0260: el mux PRIMERO — es el espacio canonico; las GUIs vivas quedan
+    // despues, solo para also_on y para panes que existan unicamente en una GUI.
     if (files.includes('sock')) candidates.push('sock');
+    candidates.push(...pids.map((pid) => `gui-sock-${pid}`).filter((f) => files.includes(f)));
   } catch { candidates = []; }
   if (process.env.WEZTERM_UNIX_SOCKET && !candidates.includes(path.basename(process.env.WEZTERM_UNIX_SOCKET))) {
     candidates.push(process.env.WEZTERM_UNIX_SOCKET);
@@ -627,7 +661,7 @@ function _listSocketsUncached(nowMs) {
     const mutedUntil = _mutedSockets.get(sock) || 0;
     if (mutedUntil > nowMs) continue;
     try {
-      const raw = execFileSync(WEZTERM, ['cli', '--no-auto-start', 'list', '--format', 'json'], {
+      const raw = execFileSync(WEZTERM, [...CLI_BASE, 'list', '--format', 'json'], {
         encoding: 'utf-8', timeout: 5000, windowsHide: true,
         env: { ...process.env, WEZTERM_UNIX_SOCKET: sock },
       });
@@ -644,7 +678,10 @@ function _listSocketsUncached(nowMs) {
 
 /** T-0281: el socket que buildCliInvocation usaria ahora mismo ('default' si ninguno). */
 function currentSocket() {
-  return findGuiSocket() || 'default';
+  // T-0260: el socket con el que el bridge habla es el del mux; la GUI solo si
+  // no hay mux-server en esta maquina (o con el escape hatch de diagnostico).
+  if (process.env.WEZBRIDGE_PREFER_MUX === '0') return findGuiSocket() || 'default';
+  return muxSocketPath() || findGuiSocket() || 'default';
 }
 
 /** Invalidate getText cache for a specific pane — call on kill/clear. */
@@ -788,6 +825,11 @@ function spawnSshDomain(domainName, { cwd, program, args: spawnArgs } = {}) {
 }
 
 module.exports = {
+  WEZTERM,
+  CLI_BASE,
+  buildCliInvocation,
+  muxSocketPath,
+  muxEnv,
   compareSocketSpaces,
   detectSocketDivergence,
   listSockets,

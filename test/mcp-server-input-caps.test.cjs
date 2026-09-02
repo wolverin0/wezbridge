@@ -107,7 +107,7 @@ function createMockSetup() {
   fs.writeFileSync(markerPath, '', 'utf8');
   fs.writeFileSync(mockPath, `
 'use strict';
-const args = process.argv.slice(2).filter(arg => arg !== '--no-auto-start');
+const args = process.argv.slice(2).filter(arg => arg !== '--no-auto-start' && arg !== '--prefer-mux');
 const subcommand = args[0] === 'cli' ? args[1] : args[0];
 if (subcommand === '--version') {
   process.stdout.write('wezterm 20230408-112425-69ae8472');

@@ -44,7 +44,7 @@ function createPane(args) {
 }
 
 function withoutGlobalOptions(args) {
-  return args.filter((arg) => arg !== '--no-auto-start');
+  return args.filter((arg) => arg !== '--no-auto-start' && arg !== '--prefer-mux');
 }
 
 const args = withoutGlobalOptions(process.argv.slice(2));

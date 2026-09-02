@@ -72,7 +72,7 @@ function repoMatchesCwd(repo, cwd) {
  * medir — y null se REPORTA, no se traga (ver el hallazgo census-unavailable).
  */
 function liveCensus() {
-  const res = spawnSync('wezterm', ['cli', '--no-auto-start', 'list', '--format', 'json'], { encoding: 'utf8', timeout: 15000 });
+  const res = spawnSync('wezterm', ['cli', '--prefer-mux', '--no-auto-start', 'list', '--format', 'json'], { encoding: 'utf8', timeout: 15000 });
   if (res.error || res.status !== 0) return null;
   try {
     return JSON.parse(res.stdout).map((p) => ({ pane_id: p.pane_id, cwd: p.cwd || '' }));

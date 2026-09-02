@@ -49,28 +49,81 @@ const project = arg('project');
 // cwd basename "whatsappbot-final"; exactly one is named "wabot".
 const tabTitle = arg('tab-title');
 const text = arg('file') ? fs.readFileSync(arg('file'), 'utf8') : arg('text');
-if ((!project && !tabTitle) || !text) {
-  die(2, 'usage: (--project <name> | --tab-title <substr> | both) (--text "..." | --file <path>) [--dry-run]');
+if (require.main === module && ((!project && !tabTitle) || !text)) {
+  die(2, 'usage: (--project <name> | --tab-title <exact-name> | both) (--text "..." | --file <path>) [--dry-run]');
 }
 
-function liveSocketEnvironments() {
-  if (process.env.WEZTERM_UNIX_SOCKET || process.platform !== 'win32') return [process.env];
-  const socketDir = path.join(process.env.USERPROFILE || process.env.HOME || '', '.local', 'share', 'wezterm');
+// T-0260 (2026-09-02): UN solo espacio de pane_id, el del mux. Medido: el mismo
+// pane era 11 en `sock` y 4 en un gui-sock, y la GUI se reemplazo 17+ veces en
+// un dia; resolver contra la GUI viva del minuto produjo 4 misroutes reales.
+// `--prefer-mux` solo no alcanza si WEZTERM_UNIX_SOCKET apunta a un gui-sock,
+// asi que el env del mux fija el socket y borra WEZTERM_PANE. Las GUIs quedan
+// como fallback SOLO para una pane que no exista en el mux (spawneada fuera del
+// dominio), y la salida lo dice.
+const CLI_BASE = ['cli', '--prefer-mux', '--no-auto-start'];
+const SOCKET_DIR = path.join(process.env.USERPROFILE || process.env.HOME || '', '.local', 'share', 'wezterm');
+function muxEnvironment() {
+  const env = { ...process.env };
+  delete env.WEZTERM_PANE;
+  // `sock` es un AF_UNIX socket: fs.existsSync dice false en Windows; readdirSync lo lista.
+  let hasMux = false;
+  try { hasMux = fs.readdirSync(SOCKET_DIR).includes('sock'); } catch { hasMux = false; }
+  if (hasMux) env.WEZTERM_UNIX_SOCKET = path.join(SOCKET_DIR, 'sock');
+  env._space = 'mux';
+  return env;
+}
+function guiSocketEnvironments() {
+  if (process.platform !== 'win32') return [];
   try {
     const tasks = execFileSync('tasklist', ['/fi', 'imagename eq wezterm-gui.exe', '/fo', 'csv', '/nh'], {
       encoding: 'utf8', timeout: 5000, windowsHide: true,
     });
-    const socketNames = new Set(fs.readdirSync(socketDir));
-    const sockets = [...tasks.matchAll(/"wezterm-gui\.exe","(\d+)"/gi)]
+    const socketNames = new Set(fs.readdirSync(SOCKET_DIR));
+    return [...tasks.matchAll(/"wezterm-gui\.exe","(\d+)"/gi)]
       .map((match) => `gui-sock-${match[1]}`)
       .filter((name) => socketNames.has(name))
-      .map((name) => path.join(socketDir, name));
-    if (sockets.length) {
-      return sockets.map((socket) => ({ ...process.env, WEZTERM_UNIX_SOCKET: socket }));
-    }
-  } catch { /* the normal retry/failure path below records a distinct failure */ }
-  return [process.env];
+      .map((name) => ({ ...process.env, WEZTERM_UNIX_SOCKET: path.join(SOCKET_DIR, name), _space: 'gui' }));
+  } catch { return []; }
 }
+function liveSocketEnvironments() {
+  if (process.env.WEZBRIDGE_PREFER_MUX === '0') return [...guiSocketEnvironments(), muxEnvironment()];
+  return [muxEnvironment(), ...guiSocketEnvironments()];
+}
+
+/**
+ * Elige el pane destino entre las filas listadas. Pura, para testearla.
+ *  - --project: basename del cwd, igualdad case-insensitive.
+ *  - --tab-title: igualdad EXACTA case-insensitive (T-0260 item 3: antes era
+ *    substring, y "infra" matcheaba "infra-old"; la ambiguedad tiene que ser
+ *    error, nunca "el primero").
+ *  - Espacio: si hay matches en el mux, las filas de GUI se ignoran (son la
+ *    misma pane con otro id); las filas de GUI solo cuentan cuando NINGUNA del
+ *    mux matchea (pane gui-only).
+ * Devuelve { matches, space }.
+ */
+function selectPane(list, { project = null, tabTitle = null } = {}) {
+  const wantedProject = project ? String(project).toLowerCase() : null;
+  const wantedTab = tabTitle ? String(tabTitle).trim().toLowerCase() : null;
+  const seen = new Set();
+  const all = [];
+  for (const p of list) {
+    const space = (p._socketEnv && p._socketEnv._space) || 'mux';
+    const socketKey = `${(p._socketEnv && p._socketEnv.WEZTERM_UNIX_SOCKET) || 'default'}:${p.pane_id}`;
+    if (seen.has(socketKey)) continue;
+    seen.add(socketKey);
+    const cwd = decodeURIComponent(String(p.cwd || '')).replace(/^file:\/\/[^/]*/, '');
+    const name = cwd.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || '';
+    if (wantedProject && name.toLowerCase() !== wantedProject) continue;
+    if (wantedTab && String(p.tab_title || '').trim().toLowerCase() !== wantedTab) continue;
+    all.push({ ...p, cwd, name, _space: space });
+  }
+  const mux = all.filter((m) => m._space === 'mux');
+  if (mux.length) return { matches: mux, space: 'mux' };
+  return { matches: all, space: all.length ? 'gui-only' : 'none' };
+}
+
+module.exports = { selectPane, CLI_BASE };
+if (require.main !== module) return;
 
 // ---------- resolve, at fire time, never from a stored id ----------
 // `wezterm cli list` goes through the mux and keeps working when a per-GUI
@@ -81,7 +134,7 @@ let lastErr = '';
 for (const socketEnv of liveSocketEnvironments()) {
   for (let i = 0; i < 3; i += 1) {
     try {
-      const panes = JSON.parse(execFileSync(WEZTERM, ['cli', '--no-auto-start', 'list', '--format', 'json'], {
+      const panes = JSON.parse(execFileSync(WEZTERM, [...CLI_BASE, 'list', '--format', 'json'], {
         encoding: 'utf8', timeout: 20000, env: socketEnv, windowsHide: true,
       }));
       list.push(...panes.map((pane) => ({ ...pane, _socketEnv: socketEnv })));
@@ -91,38 +144,27 @@ for (const socketEnv of liveSocketEnvironments()) {
 }
 if (!list.length) die(3, `wezterm unreachable after 3 attempts: ${lastErr}`);
 
-const wantedProject = project ? String(project).toLowerCase() : null;
-const wantedTab = tabTitle ? String(tabTitle).toLowerCase() : null;
-const seen = new Set();
-const matches = [];
-for (const p of list) {
-  const socketKey = `${p._socketEnv.WEZTERM_UNIX_SOCKET || 'default'}:${p.pane_id}`;
-  if (seen.has(socketKey)) continue;
-  seen.add(socketKey);
-  const cwd = decodeURIComponent(String(p.cwd || '')).replace(/^file:\/\/[^/]*/, '');
-  const name = cwd.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || '';
-  if (wantedProject && name.toLowerCase() !== wantedProject) continue;
-  // tab_title is the operator's own label; title is whatever the program set.
-  if (wantedTab && !String(p.tab_title || '').toLowerCase().includes(wantedTab)) continue;
-  matches.push({ ...p, cwd, name });
-}
+const { matches, space } = selectPane(list, { project, tabTitle });
 
-const criteria = [project && `project "${project}"`, tabTitle && `tab-title "${tabTitle}"`].filter(Boolean).join(' + ');
+const criteria = [project && `project "${project}"`, tabTitle && `tab-title "${tabTitle}" (exact)`].filter(Boolean).join(' + ');
 if (!matches.length) die(4, `no pane matching ${criteria}`);
 if (matches.length > 1) {
-  die(5, `ambiguous — ${matches.length} panes match ${criteria}: ${
-    matches.map((m) => `pane ${m.pane_id} (win${m.window_id}/tab${m.tab_id}, "${(m.title || '').slice(0, 30)}")`).join(' | ')
+  die(5, `ambiguous — ${matches.length} panes match ${criteria} in space ${space}: ${
+    matches.map((m) => `pane ${m.pane_id} (win${m.window_id}/tab${m.tab_id}, tab_title "${m.tab_title || ''}", "${(m.title || '').slice(0, 30)}")`).join(' | ')
   }. Refusing to guess.`);
 }
 
 const target = matches[0];
+if (space === 'gui-only') {
+  console.log(`${new Date().toISOString()} poke-pane NOTE: pane ${target.pane_id} exists only on a GUI socket (not in the mux): id is NOT in the canonical space`);
+}
 if (has('dry-run')) {
-  console.log(`${new Date().toISOString()} poke-pane DRY-RUN: would send ${text.length} chars to pane ${target.pane_id} (win${target.window_id}/tab${target.tab_id}, ${target.cwd})`);
+  console.log(`${new Date().toISOString()} poke-pane DRY-RUN: would send ${text.length} chars to pane ${target.pane_id} [${space}] (win${target.window_id}/tab${target.tab_id}, ${target.cwd})`);
   process.exit(0);
 }
 
 function sendViaStdin(paneId, payload, socketEnv, { noPaste = true } = {}) {
-  const args = ['cli', '--no-auto-start', 'send-text', '--pane-id', String(paneId)];
+  const args = [...CLI_BASE, 'send-text', '--pane-id', String(paneId)];
   if (noPaste) args.push('--no-paste');
   execFileSync(WEZTERM, args, {
     input: payload,
@@ -167,7 +209,7 @@ const verified = 'VERIFIED (composer cleared)';
 try {
   const readTail = () => execFileSync(
     WEZTERM,
-    ['cli', '--no-auto-start', 'get-text', '--pane-id', String(target.pane_id), '--start-line', '-40'],
+    [...CLI_BASE, 'get-text', '--pane-id', String(target.pane_id), '--start-line', '-40'],
     { encoding: 'utf8', timeout: 20000, env: target._socketEnv, windowsHide: true },
   );
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 700);

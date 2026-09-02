@@ -6,7 +6,30 @@
 > Leer cuando: el daemon no rebindea, wezterm crasheó, todo ETIMEDOUTea, un GUI dice "not
 > responding", hay >1 wezterm-mux-server, o vas a setear env de guards/grader/inbox.
 > Términos clave: WEZBRIDGE_*, restore-session, probeMux, degraded, inconclusive,
-> session-snapshot, --no-auto-start, gui-watchdog, Recover-WezTermGui, mux_split.
+> session-snapshot, --no-auto-start, gui-watchdog, Recover-WezTermGui, mux_split,
+> espacio único de pane_id (--prefer-mux + sock, T-0260), WEZBRIDGE_PREFER_MUX=0, gui_only.
+
+## Espacio único de pane_id: el mux (T-0260, 2026-09-02)
+
+Un `pane_id` solo significa algo dentro de UN socket. Esta máquina corre un `wezterm-mux-server`
+(`~/.local/share/wezterm/sock`, estable por días) y una GUI que se reemplaza seguido (`gui-sock-<pid>`,
+17+ veces el 2026-09-02 por el watchdog), y **las dos numeran los mismos panes distinto** (medido: la
+misma pane era 11 en `sock` y 4 en la GUI). Resolver un id contra "la GUI viva del minuto" produjo
+4 misroutes reales en un día. Regla vigente, implementada en `src/wezterm.cjs` y `scripts/poke-pane.cjs`:
+
+- **Todo `wezterm cli` lleva `--prefer-mux` Y el env fija `WEZTERM_UNIX_SOCKET` al `sock` del mux**
+  (`CLI_BASE` + `muxEnv()`). Las dos cosas: medido que `--prefer-mux` solo no alcanza si el env apunta
+  a un gui-sock. `WEZTERM_PANE` se borra del env (es un id del otro espacio).
+- `discover_sessions` publica **una fila por pane real con el id del mux**; la GUI aparece solo en
+  `also_on`. Una pane que exista únicamente en una GUI (spawneada fuera del dominio) se conserva con
+  `gui_only: true`: su id NO es del espacio canónico.
+- `poke-pane --tab-title` compara **exacto** (case-insensitive); más de un match es exit 5, nunca "el
+  primero". Prefiere el mux; cae a la GUI solo para panes gui-only, y lo imprime.
+- Guard: `test/mux-single-id-space.test.cjs` falla si aparece un array `cli` sin `--prefer-mux` en
+  `src/` o `scripts/`. Escape hatch de diagnóstico: `WEZBRIDGE_PREFER_MUX=0` (hablar con la GUI).
+- Gotcha Windows: `sock` es un AF_UNIX socket y `fs.existsSync` dice que no existe; se detecta con
+  `readdirSync`. El MCP de cada pane carga `src/*` al arrancar: hasta reiniciar la sesión, ese pane
+  sigue resolviendo con la regla vieja.
 
 ## Variables de entorno útiles
 - `WEZTERM_LOG=wezterm_mux_server_impl::local=off` — silencia la categoría de error 10054

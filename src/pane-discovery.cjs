@@ -292,10 +292,17 @@ function dedupeAcrossSockets(rows, wezOps) {
     if (!byKey.has(k)) byKey.set(k, []);
     byKey.get(k).push(r);
   }
+  // T-0260: el espacio canonico es el del mux (currentSocket). Una pane que solo
+  // existe en una GUI (spawneada fuera del dominio del mux) se conserva, pero
+  // marcada: su pane_id NO es del espacio canonico y quien la direccione lo sabe.
+  const isMux = (s) => typeof s === 'string' && /[\\/]sock$/.test(s);
   const out = [];
   for (const group of byKey.values()) {
     const sockets = new Set(group.map((r) => r.socket));
-    if (sockets.size < 2) { out.push(...group); continue; }
+    if (sockets.size < 2) {
+      for (const r of group) out.push(canonical && r.socket && r.socket !== canonical && isMux(canonical) ? { ...r, gui_only: true } : r);
+      continue;
+    }
     const keep = group.find((r) => r.socket === canonical) || group[0];
     const others = group.filter((r) => r !== keep).map((r) => ({ socket: r.socket, paneId: r.paneId }));
     out.push({ ...keep, also_on: others });

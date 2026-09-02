@@ -37,7 +37,7 @@ function livePanes() {
   let lastErr = null;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      list = JSON.parse(execFileSync('wezterm', ['cli', '--no-auto-start', 'list', '--format', 'json'],
+      list = JSON.parse(execFileSync('wezterm', ['cli', '--prefer-mux', '--no-auto-start', 'list', '--format', 'json'],
         { encoding: 'utf8', timeout: 20000 }));
       lastErr = null;
       break;
@@ -50,7 +50,7 @@ function livePanes() {
   for (const p of list) {
     let tail = '';
     try {
-      tail = execFileSync('wezterm', ['cli', '--no-auto-start', 'get-text', '--pane-id', String(p.pane_id)],
+      tail = execFileSync('wezterm', ['cli', '--prefer-mux', '--no-auto-start', 'get-text', '--pane-id', String(p.pane_id)],
         { encoding: 'utf8', timeout: 15000 });
     } catch { /* pane may have closed mid-scan */ }
     const lines = tail.split('\n').filter(l => l.trim()).slice(-6);

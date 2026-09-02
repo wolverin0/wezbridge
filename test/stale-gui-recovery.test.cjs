@@ -14,7 +14,11 @@ test('workspace spawn opens a fresh GUI when the running GUI socket is stale', (
   const marker = path.join(home, 'wezterm-marker.exe');
   fs.mkdirSync(socketDirectory, { recursive: true });
   fs.writeFileSync(staleSocket, '', 'utf8');
+  // T-0260: el mux (`sock`) es el socket canonico; la GUI colgada solo afecta la
+  // visibilidad. El spawn tiene que ir al mux, y ademas levantarse una GUI fresca.
+  fs.writeFileSync(path.join(socketDirectory, 'sock'), '', 'utf8');
   fs.writeFileSync(marker, '', 'utf8');
+  const cliSockets = [];
 
   const originalExecFileSync = childProcess.execFileSync;
   const originalSpawn = childProcess.spawn;
@@ -32,8 +36,10 @@ test('workspace spawn opens a fresh GUI when the running GUI socket is stale', (
     }
     if (file === marker) {
       const socket = options?.env?.WEZTERM_UNIX_SOCKET || '';
-      if ((args || []).includes('list') && socket.endsWith('gui-sock-1000')) return '[{}]';
-      if ((args || []).includes('spawn') && socket.endsWith('gui-sock-1000')) return '42\n';
+      cliSockets.push({ args: [...(args || [])], socket });
+      const onMux = /[\\/]sock$/.test(socket);
+      if ((args || []).includes('list') && (socket.endsWith('gui-sock-1000') || onMux)) return '[{}]';
+      if ((args || []).includes('spawn') && onMux) return '42\n';
       throw new Error('stale gui socket');
     }
     if (file === 'sleep' || file === 'timeout') return '';
@@ -51,10 +57,14 @@ test('workspace spawn opens a fresh GUI when the running GUI socket is stale', (
     const paneId = wezterm.spawnInWorkspace('roadmap-autopilot');
 
     assert.equal(paneId, 42);
-    assert.equal(spawnCalls.length, 1);
+    assert.equal(spawnCalls.length, 1, 'con la GUI colgada se lanza UNA GUI fresca (visibilidad)');
     assert.equal(spawnCalls[0].file, marker);
     assert.deepEqual(spawnCalls[0].args, ['connect', 'unix']);
     assert.equal(spawnCalls[0].options.detached, true);
+    const spawnCli = cliSockets.find((c) => c.args.includes('spawn'));
+    assert.ok(spawnCli, 'hubo un wezterm cli spawn');
+    assert.match(spawnCli.socket, /[\\/]sock$/, 'T-0260: el spawn va al MUX, nunca al gui-sock del minuto');
+    assert.ok(spawnCli.args.includes('--prefer-mux'));
   } finally {
     childProcess.execFileSync = originalExecFileSync;
     childProcess.spawn = originalSpawn;
