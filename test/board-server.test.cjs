@@ -230,9 +230,10 @@ test('cancelled appends a schema-exact line the gate treats as permanent cover',
     .trim().split('\n').map(JSON.parse);
   const last = onDisk[onDisk.length - 1];
   assert.deepStrictEqual(last, line, 'response echoes exactly what was written');
-  assert.deepStrictEqual(Object.keys(last).sort(), ['at', 'category', 'ruling', 'source', 'task', 'why'],
-    'field set matches the rulings schema, PROCEDENCIA incluida (W1)');
+  assert.deepStrictEqual(Object.keys(last).sort(), ['at', 'by', 'category', 'ruling', 'source', 'task', 'why'],
+    'field set matches the rulings schema, PROCEDENCIA y ACTOR incluidos (W1, T-0312)');
   assert.strictEqual(last.source, 'board-app', 'quien escribio la linea queda en la linea');
+  assert.strictEqual(last.by, 'operator', 'quien DECIDIO queda en la linea: el tablero es del operador');
 
   const finding = { id: 'T-9001', category: last.category, age_hours: 100 };
   assert.ok(rulingCovers(last, finding, Date.now()), 'gate covers the browser-written cancellation');
@@ -769,4 +770,17 @@ test('validateRuling NO acepta un corr del request ni inventa uno cuando la tarj
   const tasks = [{ id: 'T-9116', corr: null }];
   const { line } = srv.validateRuling({ task: 'T-9116', verb: 'approved', note: 'dale', corr: 'forjado' }, [], Date.now(), tasks);
   assert.strictEqual(line.corr, undefined, 'el corr lo dice la tarjeta, nunca el cliente HTTP');
+});
+
+// T-0312 / FinalOrchestra AC2 (2026-09-02): toda decision del tablero lleva
+// ACTOR. El lector canonico de FO exige `by`; la linea approved de T-0310 del
+// 12:57:33Z salio sin el y FO la descarto (409). El tablero es la superficie
+// del operador (token), asi que un tap sin `by` persiste 'operator'.
+test('un tap del tablero sin `by` persiste un actor estable: operator', () => {
+  const { line } = srv.validateRuling({ task: 'T-9117', verb: 'approved', note: 'ok' }, []);
+  assert.strictEqual(line.by, 'operator', 'una decision sin actor no es consumible por FinalOrchestra');
+  const explicit = srv.validateRuling({ task: 'T-9117', verb: 'approved', note: 'ok', by: 'gonzalo' }, []);
+  assert.strictEqual(explicit.line.by, 'gonzalo', 'un by explicito no se pisa');
+  const { validateRulingLine } = require('../src/rulings.cjs');
+  assert.strictEqual(validateRulingLine(line, Date.now()).ok, true);
 });

@@ -211,8 +211,11 @@ solo reporta vivo/muerto deja pasar exactamente eso; el reporte tiene que nombra
 
 ## T31 — [x] Drill e2e wezbridge <-> Eve <-> graph: nueve checks que pueden fallar
 
-**Cerrado 2026-09-01 (stub). Commits 67fc88a..a762176 + _docs-curation 9182620.** Result completo con
+**Cerrado 2026-09-01 (stub) y 2026-09-02 (LIVE, 10/10 GREEN con Eve real). Commits 67fc88a..a762176 +
+_docs-curation 9182620; live: 89f4093, 5f52e7e, 55e66aa (corr en la linea del tablero).** Result completo con
 linea base RED pegada, 17 mutaciones con asesino nombrado y conteos: `_intel/results/T31-drill-result.md`.
+Drill live: `artifacts/2026-09-01-fleet-drill-1.md` — checks 4/5 cerraron con el Aprobar del operador en :4272
+(2026-09-02T12:57:33Z, `source=board-app`, `corr=T-0310:drill-deploy:20260901`) y `decision-relay --once`.
 
 **Archivos:** `scripts/fleet-drill.cjs`, `test/fleet-drill.test.cjs`, `test/mocks/eve-stub.cjs` (harness);
 cableado W1–W6 en `src/rulings.cjs`, `src/result-linker.cjs`, `src/decision-relay.cjs`, `src/a2a-intel.cjs`,

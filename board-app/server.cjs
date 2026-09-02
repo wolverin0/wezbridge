@@ -440,7 +440,12 @@ function validateRuling(body, findings, now = Date.now(), tasks = []) {
     at: new Date(now).toISOString(),
     source: 'board-app',
   };
-  if (by !== undefined) line.by = by.trim();
+  // T-0312 (AC2 de FinalOrchestra): toda decision del tablero lleva ACTOR. El
+  // tablero es la superficie del operador (token en .env.local, loopback), asi
+  // que un tap sin `by` explicito ES del operador: se persiste 'operator', no se
+  // omite. Medido 2026-09-02 12:57Z: la linea approved de T-0310 salio sin `by`
+  // y el lector canonico de FO (OriginRulingSchema exige actor) la descarto.
+  line.by = by !== undefined ? by.trim() : 'operator';
   // T-0312: el corr lo dice la TARJETA, nunca el cliente HTTP. Es lo que
   // deja correlacionar una aprobacion gate=operator con el job que la espera
   // en FinalOrchestra (una decision, dos superficies). Sin corr en la carta,
