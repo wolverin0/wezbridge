@@ -749,3 +749,24 @@ test('T31: un approve invoca el relay inyectado UNA vez con el intelDir del tabl
     assert.equal(calls.length, 1, 'deferred no avisa a nadie: no mueve la tarjeta');
   } finally { await new Promise((r) => s2.close(r)); }
 });
+
+// ---------------------------------------------------------------------------
+// T-0312 (2026-09-02): la linea del tablero tiene que llevar el `corr` de la
+// tarjeta. Sin el, el ruling approved de un kind gate=operator no se puede
+// correlacionar con el job que espera en FinalOrchestra (AC2: UNA decision
+// con task/correlation id visible en las dos superficies) — medido en vivo
+// con T-0310: card.corr estampado y la linea salia sin corr igual.
+test('validateRuling copia el corr de la TARJETA a la linea (no del request)', () => {
+  const tasks = [{ id: 'T-9115', corr: 'T-9115:drill-deploy:20260901' }];
+  const { error, line } = srv.validateRuling({ task: 'T-9115', verb: 'approved', note: 'dale' }, [], Date.now(), tasks);
+  assert.ok(!error, error);
+  assert.strictEqual(line.corr, 'T-9115:drill-deploy:20260901', 'la linea sale sin corr: FO no puede correlacionar la aprobacion');
+  const { validateRulingLine } = require('../src/rulings.cjs');
+  assert.strictEqual(validateRulingLine(line, Date.now()).ok, true);
+});
+
+test('validateRuling NO acepta un corr del request ni inventa uno cuando la tarjeta no lo tiene', () => {
+  const tasks = [{ id: 'T-9116', corr: null }];
+  const { line } = srv.validateRuling({ task: 'T-9116', verb: 'approved', note: 'dale', corr: 'forjado' }, [], Date.now(), tasks);
+  assert.strictEqual(line.corr, undefined, 'el corr lo dice la tarjeta, nunca el cliente HTTP');
+});

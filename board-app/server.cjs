@@ -423,7 +423,7 @@ async function kitchenHealth() {
  * escritor: este validador arma, el otro valida. Dos schemas sobre el mismo
  * archivo es el defecto T-0294, y el test lo afirma cruzando los dos.
  */
-function validateRuling(body, findings, now = Date.now()) {
+function validateRuling(body, findings, now = Date.now(), tasks = []) {
   if (!body || typeof body !== 'object') return { error: 'body must be a JSON object' };
   const { task, verb, until, note, by } = body;
   if (by !== undefined && (typeof by !== 'string' || !by.trim() || by.length > 80)) {
@@ -441,6 +441,12 @@ function validateRuling(body, findings, now = Date.now()) {
     source: 'board-app',
   };
   if (by !== undefined) line.by = by.trim();
+  // T-0312: el corr lo dice la TARJETA, nunca el cliente HTTP. Es lo que
+  // deja correlacionar una aprobacion gate=operator con el job que la espera
+  // en FinalOrchestra (una decision, dos superficies). Sin corr en la carta,
+  // la linea sale sin corr — no se inventa.
+  const card = Array.isArray(tasks) ? tasks.find((t) => t && t.id === task) : null;
+  if (card && typeof card.corr === 'string' && card.corr.trim()) line.corr = card.corr.trim();
   const finding = findings.find((f) => f.id === task);
   // Un approve responde LA PREGUNTA DEL OPERADOR, no el hallazgo bajo el que el
   // steward archivo la tarjeta ese dia (medido 2026-09-01: un approve previo la
@@ -678,7 +684,7 @@ function createServer(token, { rateLimiter = makeRateLimiter(), censusCache = ma
         try { body = JSON.parse(await readBody(req)); } catch { return sendJson(res, 400, { error: 'invalid JSON' }); }
         const tasks = loadTasks();
         const report = audit(tasks, Date.now(), INTEL);
-        const { error, line } = validateRuling(body, report.findings);
+        const { error, line } = validateRuling(body, report.findings, Date.now(), tasks);
         if (error) return sendJson(res, 400, { error });
         // ORDER IS THE CONTRACT: the ruling is the source of truth, so it lands
         // before anything else is attempted. Everything below may fail without
