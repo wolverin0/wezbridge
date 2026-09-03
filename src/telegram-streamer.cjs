@@ -879,6 +879,11 @@ async function streamPaneEvents(pane, project) {
 
 // --- Main stream loop for a single pane ---
 async function streamPane(pane, project, isDuplicate) {
+  // 2026-09-03 (operador, valen.txt): en un DM el stream de panes es ruido —
+  // el modo events le mandaba "✏️ Write <ruta>" por cada archivo que un pane
+  // escribia. `decisions` = SOLO el push de decisiones (checkDecisions); ningun
+  // evento de pane sale por Telegram. Es el modo por defecto del launcher.
+  if (STREAMER_MODE === 'decisions') return;
   // In events mode, delegate entirely to the event-based streamer.
   if (STREAMER_MODE === 'events') return streamPaneEvents(pane, project);
   let threadId = topicMap[project];

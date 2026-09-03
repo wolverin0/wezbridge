@@ -34,8 +34,9 @@ if exist "%WABOT_ENV%" (
 )
 if not defined TELEGRAM_GROUP_ID echo %DATE% %TIME% [start-telegram-streamer] WARN: sin TELEGRAM_OWNER_ID en el .env de wabot, cae al .env del plugin >> "%LOG%"
 REM En un DM no hay topics por proyecto: el modo raw (stream de cada pane) es un solo chat
-REM interleavado. events = solo eventos significativos + pushes de decisiones. Override con STREAMER_MODE.
-if not defined STREAMER_MODE set "STREAMER_MODE=events"
+REM interleavado, y events le mandaba al operador "Write <ruta>" por cada archivo escrito (2026-09-03).
+REM decisions = SOLO el push de decisiones; ningun evento de pane sale por Telegram. Override con STREAMER_MODE.
+if not defined STREAMER_MODE set "STREAMER_MODE=decisions"
 REM Lo que el operador pidio de este canal son las DECISIONES (decision-push cada 60 s). El stream de
 REM eventos de panes en un DM es ruido: se sondea cada 10 min en vez de cada 10 s. Override con STREAMER_POLL_MS.
 if not defined STREAMER_POLL_MS set "STREAMER_POLL_MS=600000"
