@@ -40,6 +40,15 @@ If the honest answer is "nothing should change", **write that as a ruling** — 
      `"value_landed_in":"<file that now carries the value>"` — and make sure the value actually IS in
      that file. The steward's `ruling-unlanded` lint flags value-change rulings that name no file; a
      value living only in ruling prose caused the 120s/1800s near-miss.
+3b. **Intake from Super Productivity** (T-0338). `node wezbridge/scripts/intake-card.cjs --list` prints the
+   operator's ideas that have no card yet (`_intel/intake/<taskId>.json`, exported by sp-bridge). For EACH one
+   you are the translator between a one-line idea and a card: write the `--goal` in executable terms, pick the
+   `--repo` that owns the change and a `--kind` from its graph, and derive **at least 2 verifiable criteria**
+   (a test, a file, a measurement). Then:
+   `node wezbridge/scripts/intake-card.cjs create <taskId> --repo <slug> --kind <kind> --goal "..." --criterion "..." --criterion "..."`
+   The helper is idempotent (origin `sp:<taskId>`), refuses fewer than 2 criteria, and writes the `T-id` back
+   into the json so sp-bridge returns it to the task's note in SP and completes the task when the card closes.
+   Gated kinds are born `blocked` as usual: that is the operator's question, not yours to answer.
 4. **Harvest anything in `review`.** Read the result file the worker wrote — never the scrollback. Verify
    each `acceptance_criteria` item **yourself**; do not accept the evaluator's own summary of whether it
    passed. Then set the task to `done`, or back to `ready` with a stated reason. Leaving work in `review`

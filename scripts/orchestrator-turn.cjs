@@ -106,10 +106,17 @@ function classifyEvent(evt) {
  * which is what makes "% of turns with no action" a derivable number instead
  * of an anecdote.
  */
-function classifyWake({ gateExit, reviewCount, reviewTasks, events = [] }) {
+function classifyWake({ gateExit, reviewCount, reviewTasks, events = [], intakePending = 0 }) {
   const reasons = [];
   const classes = [];
   const noise = [];
+  // T-0338: ideas del operador anotadas en Super Productivity (proyecto Intake)
+  // que sp-bridge exporto a _intel/intake/*.json y todavia no tienen tarjeta.
+  // Es trabajo dirigido por el operador: despierta el turno como un result.
+  if (Number(intakePending) > 0) {
+    reasons.push(`${intakePending} Intake item(s) from Super Productivity awaiting a card (node wezbridge/scripts/intake-card.cjs --list)`);
+    classes.push('results-directed');
+  }
   // `reviewTasks` (ids) is the shape since T-0288; `reviewCount` (a number) is
   // kept because the 91 turn records already on disk were written with it and
   // the board back-fills their classes from these very strings.
@@ -451,7 +458,10 @@ async function main() {
   const gateExit = runGate();
   const reviewTasks = reviewTargetsIn(INTEL);
   const reviews = reviewTasks.length;
-  const { wake, reasons, classes, noise } = classifyWake({ gateExit, reviewTasks });
+  // T-0338: ideas de Intake sin tarjeta. Fail-open: si no se puede leer el dir, 0.
+  let intakePending = 0;
+  try { intakePending = require('./intake-card.cjs').listPending(INTEL).length; } catch { intakePending = 0; }
+  const { wake, reasons, classes, noise } = classifyWake({ gateExit, reviewTasks, intakePending });
   const now = snapshot();
   const prev = lastTurn();
 
