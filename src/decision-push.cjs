@@ -93,18 +93,22 @@ function formatDecisionMessage(task) {
 }
 
 /** Durable metadata-only trace; the board's activity feed reads events.jsonl. */
-function appendNotifiedEvent(dir, taskId, now) {
+function appendNotifiedEvent(dir, taskId, now, via) {
   try {
     const line = JSON.stringify({
       time: new Date(now).toISOString(), event: 'decision.notified', task_id: taskId,
+      ...(via ? { via } : {}),
     });
     fs.appendFileSync(path.join(dir, 'events.jsonl'), line + '\n');
   } catch { /* fail-soft */ }
 }
 
 /**
- * One poll-cycle pass. `send(text) -> {ok}` is injected (the streamer passes
- * its sendMsg bound to the 'decisiones' topic; tests pass a stub).
+ * One poll-cycle pass. `send(text, task) -> {ok, via?}` is injected: the
+ * streamer passes either its Telegram sendMsg (uses `text`) or the central de
+ * avisos sender from src/events-gateway.cjs (builds an event from `task`,
+ * T-0334); tests pass a stub. `via` lands in events.jsonl so the sink in use
+ * is measurable.
  *
  * A task is marked pushed ONLY after a successful POST — a failed or thrown
  * send leaves the entry absent so the next cycle retries. Never throws.
@@ -125,13 +129,14 @@ async function pushDecisions({ tasks, send, now = Date.now(), onNotified } = {})
   const failed = [];
   for (const task of toNotify) {
     let result;
-    try { result = await send(formatDecisionMessage(task)); }
+    try { result = await send(formatDecisionMessage(task), task); }
     catch (err) { result = { ok: false, description: err.message }; }
 
     if (result && result.ok) {
-      current = { ...current, [task.id]: { pushed_at: new Date(now).toISOString() } };
+      const via = typeof result.via === 'string' ? result.via : undefined;
+      current = { ...current, [task.id]: { pushed_at: new Date(now).toISOString(), ...(via ? { via } : {}) } };
       savePushedState(dir, current);
-      appendNotifiedEvent(dir, task.id, now);
+      appendNotifiedEvent(dir, task.id, now, via);
       notified.push(task.id);
       if (onNotified) { try { onNotified(task.id); } catch { /* fail-soft */ } }
     } else {

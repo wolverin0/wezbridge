@@ -44,6 +44,17 @@ misma pane era 11 en `sock` y 4 en la GUI). Resolver un id contra "la GUI viva d
   seteado a 20 por el operador 2026-08-23)
 - `WEZBRIDGE_AFFINITY=0` / `WEZBRIDGE_AFFINITY_JSON` — control de la afinidad proyecto→agente
   (default: lee `_intel/affinity.json`)
+- **Central de avisos (T-0334, 2026-09-03)** — `WEZBRIDGE_EVENTS_URL` (base del hub de
+  personaldashboard, sin `/v1/events`) + `PERSONALDASHBOARD_EVENTS_HMAC_SECRET` (Vaultwarden
+  "Homelab - PersonalDashboard emitter wezbridge"): con ambos seteados el telegram-streamer manda
+  cada decisión gateada como evento P1 firmado (`src/events-gateway.cjs`, `dedupe_key`=T-id) con 3
+  acciones firmadas al tablero (`/act`, `board-app/lib/action-links.cjs`) y **cero** Telegram
+  directo. Sin ellos, cae al DM de Telegram. `WEZBRIDGE_BOARD_PUBLIC_URL` = URL del tablero que
+  abre el teléfono (LAN/WireGuard). Los tres viven en `wezbridge/.env.local` (gitignored) y los
+  carga `scripts/start-telegram-streamer.cmd` al arrancar. Contrato del hub:
+  `personaldashboard/docs/CENTRAL-NOTIFICATION-HUB.md`. Diagnóstico: `events.jsonl` lleva
+  `via: gateway|telegram` por decisión notificada; un 401 "Invalid event signature" con la receta
+  del doc = secreto de Vaultwarden ≠ secreto en el env de producción del hub.
 
 ## Restart-on-port-conflict (daemon no rebindea a :4200)
 Matar toda instancia stale:

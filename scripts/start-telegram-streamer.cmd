@@ -33,6 +33,20 @@ if exist "%WABOT_ENV%" (
     )
 )
 if not defined TELEGRAM_GROUP_ID echo %DATE% %TIME% [start-telegram-streamer] WARN: sin TELEGRAM_OWNER_ID en el .env de wabot, cae al .env del plugin >> "%LOG%"
+REM 2026-09-03 (T-0334, central de avisos): si wezbridge\.env.local trae WEZBRIDGE_EVENTS_URL y
+REM PERSONALDASHBOARD_EVENTS_HMAC_SECRET, las decisiones van como eventos P1 a la bandeja de
+REM personaldashboard con acciones firmadas al tablero, y NADA sale por Telegram desde el streamer.
+REM WEZBRIDGE_BOARD_PUBLIC_URL es la URL del tablero que abre el telefono (LAN/WireGuard), no 127.0.0.1.
+REM El secreto vive solo en ese archivo (gitignored) y en Vaultwarden; nunca se loguea.
+set "WEZ_ENV=%~dp0..\.env.local"
+if exist "%WEZ_ENV%" (
+    for /f "usebackq tokens=1,* delims==" %%a in ("%WEZ_ENV%") do (
+        if /i "%%a"=="WEZBRIDGE_EVENTS_URL" set "WEZBRIDGE_EVENTS_URL=%%b"
+        if /i "%%a"=="PERSONALDASHBOARD_EVENTS_HMAC_SECRET" set "PERSONALDASHBOARD_EVENTS_HMAC_SECRET=%%b"
+        if /i "%%a"=="WEZBRIDGE_BOARD_PUBLIC_URL" set "WEZBRIDGE_BOARD_PUBLIC_URL=%%b"
+    )
+)
+if defined WEZBRIDGE_EVENTS_URL echo %DATE% %TIME% [start-telegram-streamer] decision sink: gateway %WEZBRIDGE_EVENTS_URL% >> "%LOG%"
 REM En un DM no hay topics por proyecto: el modo raw (stream de cada pane) es un solo chat
 REM interleavado, y events le mandaba al operador "Write <ruta>" por cada archivo escrito (2026-09-03).
 REM decisions = SOLO el push de decisiones; ningun evento de pane sale por Telegram. Override con STREAMER_MODE.

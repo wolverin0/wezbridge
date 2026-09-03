@@ -43,6 +43,7 @@ const { evaluate, rulingCovers } = require(path.join(HERE, '..', 'scripts', 'ste
 const { gateOf } = require(path.join(HERE, '..', 'scripts', 'fleet-board.cjs'));
 const { evaluateIntel: freshEvaluate } = require(path.join(HERE, '..', 'scripts', 'board-fresh-gate.cjs'));
 const { buildObservability, makeCensusCache } = require(path.join(HERE, 'lib', 'observability.cjs'));
+const { verifyAction, ACTION_VERBS } = require(path.join(HERE, 'lib', 'action-links.cjs'));
 
 const VERBS = ['approved', 'deferred', 'cancelled'];
 const INBOX_KINDS = ['note', 'new-task', 'call-me'];
@@ -650,10 +651,139 @@ function log(line) {
  * main() pasa el relay real. Un relay que explota nunca deshace el ruling —
  * el aviso es un mejor esfuerzo; el steward (decision-unheard) es el que grita.
  */
+/**
+ * THE ruling write path, shared by /api/rulings (tablero, token) and /act
+ * (central de avisos, signed link). Returns {status, payload}; never throws.
+ */
+async function applyRulingBody(body, { relay } = {}) {
+  const tasks = loadTasks();
+  const report = audit(tasks, Date.now(), INTEL);
+  const { error, line } = validateRuling(body, report.findings, Date.now(), tasks);
+  if (error) return { status: 400, payload: { error } };
+  // ORDER IS THE CONTRACT: the ruling is the source of truth, so it lands
+  // before anything else is attempted. Everything below may fail without
+  // unwriting it.
+  // UN solo escritor de rulings.jsonl (src/rulings.cjs): valida el
+  // vocabulario, exige `source` y nunca deja media linea. Si rechaza, la
+  // decision NO ocurrio y se dice — nada abajo llego a correr.
+  try {
+    appendRuling(INTEL, line);
+  } catch (e) {
+    log(`RULING REFUSED: ${String(e.message)}`);
+    return { status: 400, payload: { error: String(e.message) } };
+  }
+  log(`ruling appended: ${JSON.stringify(line)}`);
+
+  const transition = applyTransition(line.task, line);
+  if (transition.applied) {
+    log(`task transitioned: ${line.task} ${transition.from} → ${transition.to}${transition.ungated ? ' (un-gated)' : ''}`);
+    if (transition.still_gated) {
+      log(`STILL GATED: ${line.task} moved to ${transition.to} but gateOf() still reads 'operator' — the card will NOT leave the board`);
+    }
+  } else if (transition.error) {
+    log(`TASK NOT MOVED: ${line.task} — ${transition.error} (the ruling stands)`);
+  }
+
+  // Approvals are a GO the orchestrator must act on, so they ALSO land in
+  // the inbox its monitor watches. Deferrals/cancellations are complete
+  // in themselves — the gate reads them directly.
+  if (line.ruling === 'approved') {
+    appendLine(path.join(INTEL, 'operator-actions.jsonl'), {
+      type: 'operator-action', kind: 'approval',
+      text: `Operator approved ${line.task} from the board: ${line.why}`,
+      task: line.task, at: line.at, source: 'board-app',
+      task_transition: transition,
+    });
+  }
+  let relayOut = null;
+  if (transition.applied && typeof relay === 'function') {
+    try {
+      relayOut = await relay({ intelDir: INTEL, log });
+      log(`relay: delivered=${(relayOut.delivered || []).length} queued=${(relayOut.queued || []).length} undeliverable=${(relayOut.undeliverable || []).length}`);
+    } catch (e) {
+      relayOut = { error: String(e && e.message || e) };
+      log(`relay FAILED (the ruling stands): ${relayOut.error}`);
+    }
+  }
+  return { status: 200, payload: { ok: true, line, transition, relay: relayOut } };
+}
+
+// ---------------------------------------------------------------------------
+// /act — signed action links from the central de avisos (T-0334)
+// ---------------------------------------------------------------------------
+
+const escHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+function sendHtml(res, code, title, inner) {
+  const html = `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${escHtml(title)}</title><style>body{font:16px system-ui,sans-serif;margin:0;padding:24px;background:#0f1115;color:#e6e6e6}
+main{max-width:520px;margin:0 auto}h1{font-size:20px}p{line-height:1.45}label{display:block;margin:14px 0 6px}
+input,textarea{width:100%;box-sizing:border-box;padding:10px;border-radius:8px;border:1px solid #444;background:#181b22;color:#eee}
+button{margin-top:18px;width:100%;padding:14px;font-size:17px;border:0;border-radius:10px;background:#3b82f6;color:#fff}
+a{color:#8ab4ff}.muted{color:#999;font-size:14px}</style></head><body><main>${inner}</main></body></html>`;
+  res.writeHead(code, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+  res.end(html);
+}
+
+/** Confirmation page: the tap that arrives from the bandeja never rules by itself. */
+function actConfirmPage(res, v, task) {
+  const label = ACTION_VERBS[v.verb];
+  const title = task ? task.title : '(tarjeta no encontrada en el ledger)';
+  const question = task && task.blocker ? `<p>${escHtml(task.blocker)}</p>` : '';
+  const untilField = v.verb === 'deferred'
+    ? `<label for="until">Hasta (fecha)</label><input id="until" name="until" type="date" required value="${new Date(Date.now() + 7 * 86400 * 1000).toISOString().slice(0, 10)}">`
+    : '';
+  const hidden = ['task', 'verb', 'exp', 'sig'].map((k) => `<input type="hidden" name="${k}" value="${escHtml(v[k])}">`).join('');
+  sendHtml(res, 200, `${label} ${v.task}`, `<h1>${escHtml(label)} ${escHtml(v.task)}</h1>
+<p class="muted">${escHtml(task ? task.repo || '' : '')}</p><p>${escHtml(title)}</p>${question}
+<form method="post" action="/act">${hidden}${untilField}
+<label for="note">Nota (se guarda como el porqué de la decisión)</label>
+<textarea id="note" name="note" rows="3" required>${escHtml(`${label} desde la bandeja`)}</textarea>
+<button type="submit">${escHtml(label)} ${escHtml(v.task)}</button></form>
+<p class="muted">Enlace firmado por el tablero; vence ${new Date(v.exp * 1000).toLocaleString('es-AR')}.</p>`);
+}
+
+async function handleAct(req, res, url, token, { rateLimiter, relay }) {
+  let fields;
+  if (req.method === 'GET') {
+    fields = Object.fromEntries(url.searchParams);
+  } else if (req.method === 'POST') {
+    if (!rateLimiter(req.socket.remoteAddress || '?')) return sendHtml(res, 429, 'Demasiados intentos', '<h1>Demasiados intentos</h1><p>Esperá un minuto.</p>');
+    fields = Object.fromEntries(new URLSearchParams(await readBody(req)));
+  } else {
+    return sendHtml(res, 405, 'Método no permitido', '<h1>Método no permitido</h1>');
+  }
+  const v = verifyAction(token, fields);
+  if (!v.ok) {
+    log(`act REFUSED (${req.method}): ${v.error} task=${fields.task || '?'} verb=${fields.verb || '?'}`);
+    return sendHtml(res, 403, 'Enlace inválido', `<h1>Enlace inválido</h1><p>${escHtml(v.error)}. Abrí la decisión desde el tablero.</p>`);
+  }
+  const task = loadTasks().find((t) => t && t.id === v.task) || null;
+  if (req.method === 'GET') return actConfirmPage(res, { ...v, sig: fields.sig }, task);
+
+  const body = { task: v.task, verb: v.verb, note: String(fields.note || '') };
+  if (v.verb === 'deferred' && fields.until) {
+    // A bare date from the phone form means 09:00 ART (12:00Z) of that day.
+    body.until = /^\d{4}-\d{2}-\d{2}$/.test(fields.until) ? `${fields.until}T12:00:00.000Z` : fields.until;
+  }
+  const out = await applyRulingBody(body, { relay });
+  const label = ACTION_VERBS[v.verb];
+  if (out.status !== 200) {
+    return sendHtml(res, out.status, 'No se aplicó', `<h1>No se aplicó</h1><p>${escHtml(out.payload.error || 'error')}</p><p><a href="javascript:history.back()">Volver</a></p>`);
+  }
+  const tr = out.payload.transition || {};
+  const moved = tr.applied ? `La tarjeta pasó de <b>${escHtml(tr.from)}</b> a <b>${escHtml(tr.to)}</b>.` : 'La decisión quedó registrada.';
+  return sendHtml(res, 200, `Listo: ${v.task}`, `<h1>Listo: ${escHtml(label)} ${escHtml(v.task)}</h1><p>${moved}</p>
+<p class="muted">Ruling ${escHtml(out.payload.line.ruling)} · by ${escHtml(out.payload.line.by)} · source board-app · ${escHtml(out.payload.line.at)}</p>`);
+}
+
 function createServer(token, { rateLimiter = makeRateLimiter(), censusCache = makeCensusCache(), relay = null } = {}) {
   return http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x');
     try {
+      // Signed action links (T-0334): the signature is the credential, so this
+      // path sits BEFORE the token check and outside the static SPA.
+      if (url.pathname === '/act') return await handleAct(req, res, url, token, { rateLimiter, relay });
       if (!url.pathname.startsWith('/api/')) return serveStatic(res, url.pathname);
 
       if (!tokenOk(req, token)) return sendJson(res, 401, { error: 'missing or wrong x-board-token' });
@@ -687,56 +817,8 @@ function createServer(token, { rateLimiter = makeRateLimiter(), censusCache = ma
       if (req.method === 'POST' && url.pathname === '/api/rulings') {
         let body;
         try { body = JSON.parse(await readBody(req)); } catch { return sendJson(res, 400, { error: 'invalid JSON' }); }
-        const tasks = loadTasks();
-        const report = audit(tasks, Date.now(), INTEL);
-        const { error, line } = validateRuling(body, report.findings, Date.now(), tasks);
-        if (error) return sendJson(res, 400, { error });
-        // ORDER IS THE CONTRACT: the ruling is the source of truth, so it lands
-        // before anything else is attempted. Everything below may fail without
-        // unwriting it.
-        // UN solo escritor de rulings.jsonl (src/rulings.cjs): valida el
-        // vocabulario, exige `source` y nunca deja media linea. Si rechaza, la
-        // decision NO ocurrio y se dice — nada abajo llego a correr.
-        try {
-          appendRuling(INTEL, line);
-        } catch (e) {
-          log(`RULING REFUSED: ${String(e.message)}`);
-          return sendJson(res, 400, { error: String(e.message) });
-        }
-        log(`ruling appended: ${JSON.stringify(line)}`);
-
-        const transition = applyTransition(line.task, line);
-        if (transition.applied) {
-          log(`task transitioned: ${line.task} ${transition.from} → ${transition.to}${transition.ungated ? ' (un-gated)' : ''}`);
-          if (transition.still_gated) {
-            log(`STILL GATED: ${line.task} moved to ${transition.to} but gateOf() still reads 'operator' — the card will NOT leave the board`);
-          }
-        } else if (transition.error) {
-          log(`TASK NOT MOVED: ${line.task} — ${transition.error} (the ruling stands)`);
-        }
-
-        // Approvals are a GO the orchestrator must act on, so they ALSO land in
-        // the inbox its monitor watches. Deferrals/cancellations are complete
-        // in themselves — the gate reads them directly.
-        if (line.ruling === 'approved') {
-          appendLine(path.join(INTEL, 'operator-actions.jsonl'), {
-            type: 'operator-action', kind: 'approval',
-            text: `Operator approved ${line.task} from the board: ${line.why}`,
-            task: line.task, at: line.at, source: 'board-app',
-            task_transition: transition,
-          });
-        }
-        let relayOut = null;
-        if (transition.applied && typeof relay === 'function') {
-          try {
-            relayOut = await relay({ intelDir: INTEL, log });
-            log(`relay: delivered=${(relayOut.delivered || []).length} queued=${(relayOut.queued || []).length} undeliverable=${(relayOut.undeliverable || []).length}`);
-          } catch (e) {
-            relayOut = { error: String(e && e.message || e) };
-            log(`relay FAILED (the ruling stands): ${relayOut.error}`);
-          }
-        }
-        return sendJson(res, 200, { ok: true, line, transition, relay: relayOut });
+        const out = await applyRulingBody(body, { relay });
+        return sendJson(res, out.status, out.payload);
       }
 
       if (req.method === 'POST' && url.pathname === '/api/orchestrator-inbox') {
@@ -791,6 +873,6 @@ async function liveRelay({ intelDir, log: relayLog = log }) {
 
 module.exports = {
   createServer, liveRelay, loadToken, buildState, activityFeed, makeRateLimiter,
-  validateRuling, validateInboxNote, applyTransition, ungateTask, detailOf,
+  validateRuling, validateInboxNote, applyTransition, ungateTask, detailOf, applyRulingBody,
   VERBS, INBOX_KINDS, PAGE_SIZE, TASK_TRANSITION,
 };

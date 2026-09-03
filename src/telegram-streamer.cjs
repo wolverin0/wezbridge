@@ -1092,9 +1092,22 @@ async function pollIncoming() {
 // never take down the live streams.
 const decisionPush = require('./decision-push.cjs');
 const { loadTasks } = require('../scripts/fleet-steward.cjs');
+const eventsGateway = require('./events-gateway.cjs');
 const DECISION_CHECK_MS = parseInt(process.env.DECISION_CHECK_MS || '60000', 10);
 const DECISION_TOPIC = 'decisiones';
 let lastDecisionCheckAt = 0;
+// T-0334: with WEZBRIDGE_EVENTS_URL + PERSONALDASHBOARD_EVENTS_HMAC_SECRET set
+// (launcher loads them from wezbridge/.env.local) decisions go to the central
+// de avisos as P1 events with signed board actions and NOTHING goes to
+// Telegram from here. Chosen once at boot; never both sinks.
+const DECISION_SINK = eventsGateway.selectDecisionSink(process.env);
+const gatewaySend = DECISION_SINK === 'gateway' ? eventsGateway.gatewaySenderFromEnv(process.env) : null;
+async function telegramDecisionSend(text) {
+  const threadId = topicMap[DECISION_TOPIC] || await createTopicIfMissing(DECISION_TOPIC);
+  if (!threadId) return { ok: false, description: `no "${DECISION_TOPIC}" topic` };
+  const r = await sendMsg(text, threadId, { notify: true });
+  return r && r.ok ? { ...r, via: 'telegram' } : r;
+}
 
 async function checkDecisions() {
   const now = Date.now();
@@ -1103,18 +1116,17 @@ async function checkDecisions() {
   try {
     const tasks = loadTasks();
     if (!tasks.length) return; // no ledger visible from here — nothing to push
-    await decisionPush.pushDecisions({
+    const out = await decisionPush.pushDecisions({
       tasks,
       now,
-      send: async (text) => {
-        const threadId = topicMap[DECISION_TOPIC] || await createTopicIfMissing(DECISION_TOPIC);
-        if (!threadId) return { ok: false, description: `no "${DECISION_TOPIC}" topic` };
-        return sendMsg(text, threadId, { notify: true });
-      },
+      send: gatewaySend || telegramDecisionSend,
       onNotified: (taskId) => emit({
-        source: 'telegram-streamer', event: 'decision_notified', task_id: taskId,
+        source: 'telegram-streamer', event: 'decision_notified', task_id: taskId, via: DECISION_SINK,
       }),
     });
+    if (out && out.failed && out.failed.length) {
+      stderr(`decision push: ${out.failed.length} failed via ${DECISION_SINK} (${out.failed.join(', ')}) — retry next cycle`);
+    }
   } catch (err) {
     stderr(`decision push error: ${err.message}`);
   }
@@ -1159,6 +1171,7 @@ emit({
   min_edit_interval_ms: STREAMER_MODE === 'events' ? EVENT_MIN_INTERVAL_MS : MIN_EDIT_INTERVAL_MS,
 });
 stderr(`v2 started. Mode: ${STREAMER_MODE}. Watching ${Object.keys(topicMap).length - 1} topics. Poll every ${POLL_INTERVAL_MS}ms.`);
+stderr(`decision sink: ${DECISION_SINK}${DECISION_SINK === 'gateway' ? ` -> ${new URL('/v1/events', process.env.WEZBRIDGE_EVENTS_URL)}${eventsGateway.loadBoardToken() ? ' (signed board actions)' : ' (NO board token: events without actions)'}` : ' (Telegram DM)'}`);
 
 // Initial poll
 pollAll().catch(err => stderr(`Initial poll error: ${err.message}`));
