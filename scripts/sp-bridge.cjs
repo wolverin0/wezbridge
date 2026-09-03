@@ -290,7 +290,17 @@ async function main() {
     case 'done': { if (!opts.ext) { console.error('uso: done --ext <id>'); return 2; } console.log(JSON.stringify({ completed: await hub.completeOnce(opts.ext) })); return 0; }
     case 'sync-decisions': console.log(JSON.stringify(await hub.syncDecisions())); return 0;
     case 'sync-intake': console.log(JSON.stringify(await hub.syncIntake())); return 0;
-    case 'sync': console.log(JSON.stringify({ decisions: await hub.syncDecisions(), intake: await hub.syncIntake() })); return 0;
+    case 'sync': {
+      const out = { ts: stamp(), decisions: await hub.syncDecisions(), intake: await hub.syncIntake() };
+      console.log(JSON.stringify(out));
+      // La schtask corre oculta (run-hidden.vbs) y no captura stdout: el log es propio.
+      try {
+        const logDir = path.join(__dirname, '..', 'logs');
+        fs.mkdirSync(logDir, { recursive: true });
+        fs.appendFileSync(path.join(logDir, 'sp-bridge.log'), `${JSON.stringify(out)}\n`);
+      } catch { /* el log nunca frena la sincronizacion */ }
+      return 0;
+    }
     default: console.error('uso: sp-bridge.cjs ping|ensure-projects|task|remind|done|sync-decisions|sync-intake|sync'); return 2;
   }
 }
