@@ -69,6 +69,16 @@ test('B2: el placeholder de codex NO es texto del usuario => SE ENTREGA', () => 
     '"Ask Codex to do anything" es chrome del TUI; tratarlo como texto retenido corta toda entrega a paneles codex');
 });
 
+test('B4 (2026-09-03): la pista de Claude Code "press up to edit queued messages" NO es texto del usuario => SE ENTREGA', () => {
+  // Medido en el pane de wabot: con mensajes encolados la UI muestra esa pista en
+  // la linea del composer y el waker la reporto como texto retenido. Un pane con
+  // cola no esta reteniendo nada del operador: rechazarle entregas es un falso
+  // positivo de la misma clase que el placeholder de codex.
+  const guard = loadGuard();
+  const QUEUED = [BORDE, '❯ press up to edit queued messages', BORDE].join('\n');
+  assert.strictEqual(guard(QUEUED), false, 'la pista de cola de Claude Code no bloquea la entrega');
+});
+
 test('B3: tail ilegible o vacio => SE ENTREGA (fail-open, igual que el resto del camino)', () => {
   const guard = loadGuard();
   for (const v of ['', null, undefined]) {

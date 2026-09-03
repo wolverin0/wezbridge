@@ -39,6 +39,11 @@ function inputBoxContent(tailLines) {
 // toda entrega a ese tipo de pane — el falso positivo es peor que el bug.
 const COMPOSER_PLACEHOLDERS = [
   'ask codex to do anything',   // codex CLI, medido en pane 35 (omniremote)
+  // Claude Code: pista de la UI cuando hay mensajes ENCOLADOS (medido 2026-09-03
+  // en el pane de wabot, el waker lo reporto como "texto retenido"). No es texto
+  // del usuario: tratarlo como retenido rechazaba entregas a un pane que solo
+  // tenia cola.
+  'press up to edit queued messages',
 ];
 
 /**
