@@ -4,6 +4,11 @@
       "type": "stdio",
       "command": "node",
       "args": ["G:/_OneDrive/OneDrive/Desktop/Py Apps/wezbridge/src/mcp-server.cjs"]
+    },
+    "super-productivity": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "super-productivity-mcp@latest"]
     }
   }
 }
