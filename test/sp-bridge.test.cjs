@@ -125,3 +125,41 @@ test('resolveDataDir: SP_MCP_DATA_DIR gana; sin override usa el dir estandar', (
   assert.equal(sp.resolveDataDir({ SP_MCP_DATA_DIR: 'X:/sp' }), 'X:/sp');
   assert.match(sp.resolveDataDir({}), /super-productivity-mcp$/);
 });
+
+// ── T-0376 (OMNIGOD wave 1): un plugin mudo deja evidencia DURABLE y el reintento es seguro ──
+test('T-0376 fail-first: plugin mudo => sync falla con evidencia durable (log, last-failure, evento) y NO toca el map; al volver el plugin, un solo task y sin duplicados', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-mute-'));
+  const intel = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-mute-intel-'));
+  const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-mute-log-'));
+  fs.mkdirSync(path.join(intel, 'tasks'));
+  fs.writeFileSync(path.join(intel, 'tasks', 'T-0900.json'), JSON.stringify(card()));
+
+  // 1) nadie contesta: cliente con timeout minimo y sin plugin que tickee
+  const mute = sp.createClient({ dataDir, timeoutMs: 30, pollMs: 1 });
+  const hubMute = sp.createHub(mute, { intel });
+  const r1 = await sp.syncOnce({ hub: hubMute, logDir, intelDir: intel });
+  assert.equal(r1.ok, false, 'con el plugin mudo el sync tiene que FALLAR, no fingir exito');
+  assert.match(r1.record.error, /no responde/i, 'el motivo es legible');
+  assert.equal(r1.record.stage, 'decisions');
+  const logLines = fs.readFileSync(path.join(logDir, 'sp-bridge.log'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(logLines.length, 1);
+  assert.ok(logLines[0].error, 'el fallo queda en el MISMO log que los exitos (antes solo se logueaba el exito)');
+  const lastFailure = JSON.parse(fs.readFileSync(path.join(intel, '.sp-bridge', 'last-failure.json'), 'utf8'));
+  assert.equal(lastFailure.stage, 'decisions');
+  const events = fs.readFileSync(path.join(intel, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.ok(events.some((e) => e.event === 'sp-bridge.sync_failed'), 'evento durable para el tablero/steward');
+  assert.ok(!fs.existsSync(path.join(intel, '.sp-bridge', 'map.json')) || Object.keys(JSON.parse(fs.readFileSync(path.join(intel, '.sp-bridge', 'map.json'), 'utf8'))).length === 0,
+    'un fallo no escribe el map: nada quedo "creado" sin estarlo');
+
+  // 2) vuelve el plugin: el reintento crea UNA tarea, y el siguiente sync ninguna
+  const plugin = fakePlugin(dataDir);
+  const live = sp.createClient({ dataDir, timeoutMs: 2000, pollMs: 1, sleep: async () => plugin.tick() });
+  const hubLive = sp.createHub(live, { intel });
+  const r2 = await sp.syncOnce({ hub: hubLive, logDir, intelDir: intel });
+  assert.equal(r2.ok, true, JSON.stringify(r2.record));
+  assert.equal(r2.record.decisions.created, 1, 'la decision gateada se crea una vez al volver el plugin');
+  const r3 = await sp.syncOnce({ hub: hubLive, logDir, intelDir: intel });
+  assert.equal(r3.record.decisions.created, 0, 'reintento seguro: cero duplicados');
+  const lastSuccess = JSON.parse(fs.readFileSync(path.join(intel, '.sp-bridge', 'last-success.json'), 'utf8'));
+  assert.ok(lastSuccess.ts >= lastFailure.ts, 'last-success es posterior al fallo: un checker puede leer la edad');
+});

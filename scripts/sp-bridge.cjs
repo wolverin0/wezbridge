@@ -291,19 +291,49 @@ async function main() {
     case 'sync-decisions': console.log(JSON.stringify(await hub.syncDecisions())); return 0;
     case 'sync-intake': console.log(JSON.stringify(await hub.syncIntake())); return 0;
     case 'sync': {
-      const out = { ts: stamp(), decisions: await hub.syncDecisions(), intake: await hub.syncIntake() };
-      console.log(JSON.stringify(out));
-      // La schtask corre oculta (run-hidden.vbs) y no captura stdout: el log es propio.
-      try {
-        const logDir = path.join(__dirname, '..', 'logs');
-        fs.mkdirSync(logDir, { recursive: true });
-        fs.appendFileSync(path.join(logDir, 'sp-bridge.log'), `${JSON.stringify(out)}\n`);
-      } catch { /* el log nunca frena la sincronizacion */ }
-      return 0;
+      const r = await syncOnce({ hub });
+      console.log(JSON.stringify(r.record));
+      return r.ok ? 0 : 1;
     }
     default: console.error('uso: sp-bridge.cjs ping|ensure-projects|task|remind|done|sync-decisions|sync-intake|sync'); return 2;
   }
 }
 
-module.exports = { PROTOCOL_VERSION, PROJECTS, AGENT_TAG, resolveDataDir, createClient, createHub, loadMap, mapFile, extMarker };
+/**
+ * Una pasada de sync con evidencia DURABLE del resultado, exito o fallo (T-0376).
+ *
+ * Antes solo se logueaba el exito: cuando el plugin no contestaba, main() tiraba,
+ * la schtask salia 1 y NADIE lo veia — el log de exitos quedo congelado en
+ * 2026-09-04T13:17Z y la revision OMNIGOD lo encontro 12 h despues. Ahora:
+ *   - exito  -> linea en logs/sp-bridge.log + _intel/.sp-bridge/last-success.json
+ *   - fallo  -> linea {ts, error, stage} en el MISMO log + last-failure.json
+ *               + evento sp-bridge.sync_failed en _intel/events.jsonl
+ * El fallo no crea ni completa nada: reintentar es seguro porque cada creacion
+ * es idempotente por id externo (createTaskOnce) y el map solo se escribe al
+ * confirmar. Nunca lanza: devuelve {ok, record}.
+ */
+async function syncOnce({ hub, logDir = path.join(__dirname, '..', 'logs'), intelDir = INTEL, now = () => new Date() } = {}) {
+  const ts = now().toISOString();
+  const stateDir = path.join(intelDir, '.sp-bridge');
+  const append = (file, obj) => { try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.appendFileSync(file, `${JSON.stringify(obj)}\n`); } catch { /* la evidencia nunca frena el sync */ } };
+  const writeJson = (file, obj) => { try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(obj, null, 2)); } catch { /* idem */ } };
+  let stage = 'decisions';
+  try {
+    const decisions = await hub.syncDecisions();
+    stage = 'intake';
+    const intake = await hub.syncIntake();
+    const record = { ts, decisions, intake };
+    append(path.join(logDir, 'sp-bridge.log'), record);
+    writeJson(path.join(stateDir, 'last-success.json'), record);
+    return { ok: true, record };
+  } catch (err) {
+    const record = { ts, error: String(err && err.message || err).slice(0, 300), stage };
+    append(path.join(logDir, 'sp-bridge.log'), record);
+    writeJson(path.join(stateDir, 'last-failure.json'), record);
+    append(path.join(intelDir, 'events.jsonl'), { time: ts, event: 'sp-bridge.sync_failed', stage, error: record.error });
+    return { ok: false, record };
+  }
+}
+
+module.exports = { PROTOCOL_VERSION, PROJECTS, AGENT_TAG, resolveDataDir, createClient, createHub, loadMap, mapFile, extMarker, syncOnce };
 if (require.main === module) main().then((c) => process.exit(c)).catch((e) => { console.error(`sp-bridge: ${e.message}`); process.exit(1); });
