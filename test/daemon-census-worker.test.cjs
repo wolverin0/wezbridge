@@ -72,14 +72,19 @@ before(async () => {
   // Entre comillas: NODE_OPTIONS parte por espacios y este repo vive bajo "Py Apps"
   // (misma leccion que test/setup.cjs: sin comillas, MODULE_NOT_FOUND 'G:/.../Py').
   const preload = `--require="${PRELOAD.replace(/\\/g, '/')}"`;
+  // test/setup.cjs (preload de TODA la suite, heredado por NODE_OPTIONS) pisa
+  // WEZBRIDGE_WEZTERM_BIN con el mock dentro de cualquier hijo node. El daemon
+  // bajo prueba necesita el binario colgado de verdad, asi que se le quita ESE
+  // preload a su NODE_OPTIONS en vez de tocar setup.cjs: la primera version de
+  // este test le agrego un marcador a setup.cjs y eso rompio los tests LIVE de
+  // poke-pane y pane-registry (bisecado 05/09 con git checkout del archivo).
+  const inherited = String(process.env.NODE_OPTIONS || '')
+    .split(/\s+(?=--)/).filter((seg) => seg && !/setup\.cjs/.test(seg));
   daemon = spawn(process.execPath, [ENTRY], {
     env: {
       ...process.env,
-      NODE_OPTIONS: [process.env.NODE_OPTIONS, preload].filter(Boolean).join(' '),
+      NODE_OPTIONS: [...inherited, preload].join(' '),
       WEZBRIDGE_WEZTERM_BIN: FAKE_WEZTERM,
-      // test/setup.cjs (preload de toda la suite) pisa WEZBRIDGE_WEZTERM_BIN con el
-      // mock dentro del daemon hijo; este marcador le dice que respete el nuestro.
-      WEZBRIDGE_TEST_KEEP_WEZTERM_BIN: '1',
       WEZBRIDGE_INTEL_DIR: INTEL,
       DASHBOARD_PORT: String(port),
       WEZBRIDGE_SESSION_SNAPSHOT: '2', // tick cada 2 s: el camino que bloqueaba
