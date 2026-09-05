@@ -4,7 +4,14 @@ const childProcess = require('child_process');
 const path = require('path');
 
 const mockPath = path.join(__dirname, 'mocks', 'wezterm-mock.cjs');
-process.env.WEZBRIDGE_WEZTERM_BIN = mockPath;
+// T-0321: un test que arranca el daemon REAL con un wezterm.exe deliberadamente
+// colgado (test/daemon-census-worker.test.cjs) necesita que su binario
+// sobreviva a este preload, que tambien corre dentro del daemon hijo via
+// NODE_OPTIONS y lo pisaba con el mock (medido: AC3/AC4 fallaban solo dentro
+// de la suite completa). El marcador es explicito para que nadie lo herede sin querer.
+if (process.env.WEZBRIDGE_TEST_KEEP_WEZTERM_BIN !== '1') {
+  process.env.WEZBRIDGE_WEZTERM_BIN = mockPath;
+}
 
 // Quote the path — NODE_OPTIONS splits on spaces, and this repo lives under
 // "Py Apps" (child test processes died with MODULE_NOT_FOUND 'G:/.../Py').

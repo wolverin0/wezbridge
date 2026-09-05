@@ -355,8 +355,39 @@ function createEventHandlers(ctx) {
     });
     log('a2a-heartbeat watcher armed (5min silent threshold, 60s scan)');
     const snapEnv = process.env.WEZBRIDGE_SESSION_SNAPSHOT;
-    if (snapEnv !== '0') {
-      const intervalMs = (snapEnv && Number(snapEnv) > 1 ? Number(snapEnv) : 60) * 1000;
+    const snapshotIntervalMs = snapEnv !== '0' ? (snapEnv && Number(snapEnv) > 1 ? Number(snapEnv) : 60) * 1000 : 0;
+    // T-0321: el censo de panes (y con el, el snapshot) corre en un WORKER. El
+    // daemon nunca ejecuta wezterm de forma sincrona en su event loop: medido,
+    // execFileSync respeta el timeout pero bloquea el loop 10 s + 1 reintento
+    // por pane, y con 12 panes son 240 s sin HTTP ni heartbeat con el proceso
+    // vivo (episodios 02-09 00:29Z, 02-09 15:10Z, 04-09 15:22Z).
+    let censusHandle = null;
+    if (process.env.WEZBRIDGE_CENSUS !== '0') {
+      try {
+        const paneCensus = require('../pane-census.cjs');
+        const censusIntel = process.env.WEZBRIDGE_INTEL_DIR || path.join(SRC_DIR, '..', '..', '_intel');
+        const ccfg = paneCensus.loadCensusConfig({ intelDir: censusIntel, env: process.env });
+        censusHandle = paneCensus.startCensus({ ...ccfg, snapshotIntervalMs, log });
+        // /api/panes y el monitor de auto-handoff tambien salen de la cache.
+        if (typeof ipc.setPaneSource === 'function') ipc.setPaneSource(() => censusHandle.getPanes());
+        daemonStatus.set('pane_census', {
+          armed: true, reason: `worker fuera del loop (censo ${ccfg.intervalMs} ms, hang ${ccfg.hangMs} ms, ${ccfg.source})`,
+          probe: () => censusHandle.status(),
+        });
+        log(`pane-census armed: worker hijo, censo cada ${ccfg.intervalMs} ms, mata+relanza si una llamada wezterm pasa de ${ccfg.hangMs} ms (${ccfg.source})`);
+      } catch (e) {
+        censusHandle = null;
+        daemonStatus.set('pane_census', { armed: false, reason: `failed: ${e.message}` });
+        log(`pane-census failed to start (cayendo al camino sincrono): ${e.message}`);
+      }
+    } else {
+      daemonStatus.set('pane_census', { armed: false, reason: 'WEZBRIDGE_CENSUS=0 (explicit off)' });
+    }
+    if (snapEnv !== '0' && censusHandle) {
+      daemonStatus.set('session_snapshot', { armed: true, reason: `armed (${snapshotIntervalMs / 1000}s tick, en el worker del censo)` });
+      log(`session-snapshot watcher armed (${snapshotIntervalMs / 1000}s tick) — corre en el worker del censo, no en este loop`);
+    } else if (snapEnv !== '0') {
+      const intervalMs = snapshotIntervalMs;
       sessionSnapshot.startWatcher({
         // Enrich raw panes with pane-discovery's AI detection: Claude Code
         // sets topic titles with no "claude" in them, so the title-regex
@@ -449,7 +480,7 @@ function createEventHandlers(ctx) {
         log(`clawtrol operator message ${message.intent_id} delivered to wezbridge reasoner`);
         return true;
       };
-      const bridgeArmed = bridge.start({ notifyOperatorMessage });
+      const bridgeArmed = bridge.start({ notifyOperatorMessage, discoverPanes: censusHandle ? () => censusHandle.getPanes() : null });
       log(bridgeArmed ? 'clawtrol-bridge armed (outbound sync loop)' : 'clawtrol-bridge disabled (CLAWTROL_URL/TOKEN unset)');
       // The bridge was the ONLY background loop with no entry here, so its
       // health — including the 2026-08-12 flood-containment counters — could
@@ -466,7 +497,8 @@ function createEventHandlers(ctx) {
     }
     try {
       const watchdog = require('../pane0-watchdog.cjs');
-      log(watchdog.start() ? 'pane0-watchdog armed (30s check, 90s absent-recovery, 10min cooldown, 3-strike disable)' : 'pane0-watchdog disabled (WEZBRIDGE_WATCHDOG=0)');
+      const wdStarted = watchdog.start({ discoverPanes: censusHandle ? () => censusHandle.getPanes() : null });
+      log(wdStarted ? `pane0-watchdog armed (30s check, 90s absent-recovery, 10min cooldown, 3-strike disable${censusHandle ? ', censo desde el worker' : ''})` : 'pane0-watchdog disabled (WEZBRIDGE_WATCHDOG=0)');
     } catch (e) {
       log(`pane0-watchdog failed to start: ${e.message}`);
     }
@@ -501,7 +533,8 @@ function createEventHandlers(ctx) {
           eventsPath: path.join(intelDir, 'pane-events.jsonl'),
           stateDir: path.join(intelDir, '.orch-waker-state'),
           watchRepos: wakerCfg.repos,
-          discoverPanes: () => (discoverPanes ? discoverPanes() : []),
+          // T-0321: el waker lee el censo del worker; nunca wezterm sincrono en el loop.
+          discoverPanes: () => (censusHandle ? censusHandle.getPanes() : (discoverPanes ? discoverPanes() : [])),
           send: verifiedSend,
           log,
         });
@@ -529,7 +562,15 @@ function createEventHandlers(ctx) {
       const intelDir = process.env.WEZBRIDGE_INTEL_DIR
         || path.join(SRC_DIR, '..', '..', '_intel');
       fs.mkdirSync(intelDir, { recursive: true });
-      daemonStatus.startHeartbeat({ file: path.join(intelDir, '.daemon-heartbeat.json') });
+      daemonStatus.startHeartbeat({
+        file: path.join(intelDir, '.daemon-heartbeat.json'),
+        // T-0321 AC3: el beat lleva la ultima llamada CLI y su antiguedad.
+        extra: () => {
+          if (!censusHandle) return {};
+          const st = censusHandle.status();
+          return { last_cli_call: st.last_cli_call, census: st };
+        },
+      });
       log(`daemon heartbeat armed (${daemonStatus.HEARTBEAT_INTERVAL_MS / 1000}s beat -> _intel/.daemon-heartbeat.json)`);
     } catch (e) {
       log(`daemon heartbeat failed to start: ${e.message}`);

@@ -44,6 +44,19 @@ misma pane era 11 en `sock` y 4 en la GUI). Resolver un id contra "la GUI viva d
   seteado a 20 por el operador 2026-08-23)
 - `WEZBRIDGE_AFFINITY=0` / `WEZBRIDGE_AFFINITY_JSON` — control de la afinidad proyecto→agente
   (default: lee `_intel/affinity.json`)
+- **Censo de panes en worker (T-0321, 2026-09-04)** — el daemon `:4200` ya NO ejecuta wezterm de
+  forma sincrona en su event loop: `src/pane-census.cjs` lanza `src/pane-census-worker.cjs` como
+  hijo, que hace `discoverPanes()` y el session-snapshot; waker, watchdog, clawtrol-bridge,
+  `/api/panes` y el monitor de auto-handoff leen esa cache. Si una llamada wezterm del hijo pasa de
+  `hangMs` sin volver, el padre mata el árbol (`taskkill /T`) y relanza con backoff; el heartbeat
+  lleva `last_cli_call {name, started_at, age_ms, in_flight}` y `census {restarts, kills, ...}`, y
+  `bridge_health` dice "WEZTERM CLI COLGADA — `wezterm listPanes` lleva 4 min sin volver" en vez de
+  "DAEMON DOWN". Config por archivo `_intel/pane-census.json` `{intervalMs, hangMs, silentMs}`
+  (defaults 20000/45000/120000); env `WEZBRIDGE_CENSUS_INTERVAL_MS` / `WEZBRIDGE_CENSUS_HANG_MS` /
+  `WEZBRIDGE_CENSUS_SILENT_MS` pisan al archivo; `WEZBRIDGE_CENSUS=0` vuelve al camino sincrono viejo.
+  Por qué: medido (T-0321 AC1) que `execFileSync` SÍ respeta su timeout, pero bloquea el loop 10 s +
+  1 reintento por pane = 240 s con 12 panes: proceso vivo, puerto LISTENING, sin HTTP ni heartbeat.
+  Subir timeouts o agregar reintentos EMPEORA esa aritmética.
 - **Central de avisos (T-0334, 2026-09-03)** — `WEZBRIDGE_EVENTS_URL` (base del hub de
   personaldashboard, sin `/v1/events`) + `PERSONALDASHBOARD_EVENTS_HMAC_SECRET` (Vaultwarden
   "Homelab - PersonalDashboard emitter wezbridge"): con ambos seteados el telegram-streamer manda

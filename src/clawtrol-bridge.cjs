@@ -519,10 +519,15 @@ function appendTaskMessage(msg) {
 
 // ---------- snapshot builders (metadata only — never scrollback/env) ----------
 
+// T-0321: el daemon inyecta el censo del worker; el require sincrono de
+// pane-discovery queda solo para usos fuera del daemon.
+let injectedDiscoverPanes = null;
+
 async function buildPanes() {
   try {
-    const discovery = require('./pane-discovery.cjs');
-    const panes = await discovery.discoverPanes();
+    const panes = typeof injectedDiscoverPanes === 'function'
+      ? (injectedDiscoverPanes() || [])
+      : await require('./pane-discovery.cjs').discoverPanes();
     // v1 shipped only 4 fields, so the cockpit could show a pane existed but not
     // whether it was about to die of context exhaustion, which model it was
     // burning, or what role it plays. All of these are ALREADY parsed by
@@ -852,7 +857,8 @@ function resolveClawtrolDecision({ intelDir: dir, readFile } = {}) {
   };
 }
 
-function start({ notifyOperatorMessage } = {}) {
+function start({ notifyOperatorMessage, discoverPanes = null } = {}) {
+  injectedDiscoverPanes = typeof discoverPanes === 'function' ? discoverPanes : null;
   // The burial outranks the env: a machine that still exports the creds must
   // not be able to resurrect a bridge the operator buried.
   if (resolveClawtrolDecision().disarmed) return false;

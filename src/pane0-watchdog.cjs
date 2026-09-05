@@ -73,8 +73,11 @@ function lastOrchBeaconMs({ now = Date.now() } = {}) {
 /** True when a Claude pane whose project basename matches the orchestrator repo exists. */
 async function orchestratorPaneExists() {
   try {
-    const discovery = require('./pane-discovery.cjs');
-    const panes = await discovery.discoverPanes();
+    // T-0321: con el censo en worker, el daemon inyecta discoverPanes desde la
+    // cache; la llamada sincrona a wezterm solo queda como fallback fuera del daemon.
+    const panes = typeof state.discoverPanes === 'function'
+      ? (state.discoverPanes() || [])
+      : await require('./pane-discovery.cjs').discoverPanes();
     const repo = orchRepo().toLowerCase();
     return panes.some((p) => p.isClaude
       && String(p.project || '').toLowerCase().replace(/\\/g, '/').split('/').filter(Boolean).pop() === repo);
@@ -138,10 +141,11 @@ async function check(deps = {}) {
   }
 }
 
-function start() {
+function start({ discoverPanes = null } = {}) {
   if (process.env.WEZBRIDGE_WATCHDOG === '0') return false;
   if (state.running) return true;
   state.running = true;
+  state.discoverPanes = discoverPanes;
   state.timer = setInterval(() => { check().catch(() => { /* fail-soft */ }); }, CHECK_MS);
   if (state.timer.unref) state.timer.unref();
   return true;

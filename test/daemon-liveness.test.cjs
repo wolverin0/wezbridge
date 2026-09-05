@@ -441,3 +441,25 @@ test('RESULTS TRIGGER: a GREENFIELD repo does not swallow its FIRST ever result'
   assert.equal(sent.length, 1, 'the first result from a repo that had none must POKE, not seed');
   assert.match(sent[0], /M1-first-ever/);
 });
+
+// ── T-0321 AC3: una llamada CLI colgada se nombra, no se confunde con DAEMON DOWN ──
+test('T-0321: a wezterm call in flight past CLI_HUNG_MS is named with its age — not DAEMON DOWN', () => {
+  const beat = { ...beatAt(5_000), last_cli_call: {
+    name: 'wezterm listPanes', started_at: '2026-09-04T15:18:00.000Z', age_ms: 240_000, in_flight: true,
+  } };
+  const out = ds.assessLiveness({ heartbeat: beat, daemonReachable: true, now: T0 });
+  const hung = out.alerts.find((a) => /WEZTERM CLI COLGADA/.test(a));
+  assert.ok(hung, `debe nombrar la llamada colgada — alerts: ${JSON.stringify(out.alerts)}`);
+  assert.match(hung, /wezterm listPanes/, 'nombra la llamada');
+  assert.match(hung, /4 ?min|240 ?s/, 'dice la antiguedad');
+  assert.ok(!out.alerts.some((a) => /^DAEMON DOWN/.test(a)), 'el daemon esta vivo: ninguna alerta EMPIEZA con DAEMON DOWN (la de CLI lo menciona para negarlo)');
+});
+
+test('T-0321: a call that already returned, or a young one, raises nothing', () => {
+  const done = { ...beatAt(5_000), last_cli_call: { name: 'wezterm listPanes', started_at: 'x', age_ms: 240_000, in_flight: false } };
+  const young = { ...beatAt(5_000), last_cli_call: { name: 'wezterm listPanes', started_at: 'x', age_ms: 15_000, in_flight: true } };
+  for (const beat of [done, young]) {
+    const out = ds.assessLiveness({ heartbeat: beat, daemonReachable: true, now: T0 });
+    assert.ok(!out.alerts.some((a) => /WEZTERM CLI COLGADA/.test(a)), JSON.stringify(out.alerts));
+  }
+});

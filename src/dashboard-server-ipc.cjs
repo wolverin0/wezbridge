@@ -24,8 +24,15 @@ function assertWorktreePathInside(parentDir, candidate) {
   }
 }
 
+// T-0321: cuando el censo corre en un worker, el daemon inyecta aca la cache;
+// /api/panes y el monitor de auto-handoff dejan de ejecutar wezterm sincrono
+// en el event loop (cada llamada bloqueaba hasta 20 s por pane).
+let paneSource = null;
+function setPaneSource(fn) { paneSource = typeof fn === 'function' ? fn : null; }
+
 function collectPanes() {
-  const raw = discoverPanes ? discoverPanes() : wez.listPanes().map(p => ({ paneId: p.pane_id }));
+  const raw = paneSource ? paneSource()
+    : (discoverPanes ? discoverPanes() : wez.listPanes().map(p => ({ paneId: p.pane_id })));
   return (raw || []).map(p => ({
     pane_id: p.paneId ?? p.pane_id,
     is_claude: p.isClaude ?? false,
@@ -123,4 +130,4 @@ async function spawnAgentPane({ cwd, persona, permission_mode, worktree }, { res
   return { paneId, worktreeInfo };
 }
 
-module.exports = { collectPanes, spawnAgentPane, wez, discoverPanes };
+module.exports = { collectPanes, spawnAgentPane, wez, discoverPanes, setPaneSource };

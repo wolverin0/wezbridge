@@ -90,8 +90,11 @@ const HEARTBEAT_INTERVAL_MS = 30 * 1000;
 // GC pause or a busy machine never cries wolf — an alert that fires on healthy
 // systems trains everyone to ignore it.
 const HEARTBEAT_STALE_MS = 95 * 1000;
+// T-0321: una llamada wezterm en vuelo mas vieja que esto se reporta con nombre.
+// > 20 s (10 s + 1 reintento de wezCmd) para no gritar por un mux lento.
+const CLI_HUNG_MS = 60 * 1000;
 
-function startHeartbeat({ file, intervalMs = HEARTBEAT_INTERVAL_MS, write, now = () => Date.now() }) {
+function startHeartbeat({ file, intervalMs = HEARTBEAT_INTERVAL_MS, write, now = () => Date.now(), extra = null }) {
   if (!file) throw new Error('daemon-status.startHeartbeat: file is required');
   const writeFn = write || ((p, data) => {
     const fs = require('node:fs');
@@ -99,6 +102,13 @@ function startHeartbeat({ file, intervalMs = HEARTBEAT_INTERVAL_MS, write, now =
     fs.writeFileSync(tmp, data);
     fs.renameSync(tmp, p); // atomic: a reader never sees a half-written beat
   });
+  // T-0321 AC3: `extra()` aporta last_cli_call {name, started_at, age_ms,
+  // in_flight} y el estado del censo, para que el lector diga "colgado en
+  // wezterm listPanes desde hace 240 s" en vez de "DAEMON DOWN". Fail-soft.
+  const extraFields = () => {
+    if (typeof extra !== 'function') return {};
+    try { const v = extra(); return v && typeof v === 'object' ? v : {}; } catch { return {}; }
+  };
   const beat = () => {
     try {
       writeFn(file, `${JSON.stringify({
@@ -106,6 +116,7 @@ function startHeartbeat({ file, intervalMs = HEARTBEAT_INTERVAL_MS, write, now =
         pid: process.pid,
         intervalMs,
         services: snapshot(),
+        ...extraFields(),
       }, null, 1)}\n`);
     } catch { /* a failed beat must never take the daemon down */ }
   };
@@ -186,6 +197,15 @@ function assessLiveness({ heartbeat, daemonReachable, now = Date.now(), staleMs 
       alerts.push(`WAKER POKES UNATTENDED — oldest pending intent is ${waker.pendingOldestMinutes} min old (${waker.pending} pending). Pokes are being sent but not consumed; this is the exact failure that disarmed the waker on 2026-08-13.`);
     }
   }
+  // T-0321 AC3: con el censo en un worker, un mux mudo ya no mata el heartbeat;
+  // lo que se ve es una llamada CLI en vuelo que no vuelve. Decirlo con nombre
+  // y antiguedad es la diferencia entre "DAEMON DOWN, reinicia" (remedio
+  // equivocado: apila daemons) y "wezterm cli list colgado hace 240 s, el
+  // worker sera relanzado; si persiste, es el mux (docs/operations.md)".
+  const cli = heartbeat && heartbeat.last_cli_call;
+  if (cli && cli.in_flight && Number(cli.age_ms) > CLI_HUNG_MS) {
+    alerts.push(`WEZTERM CLI COLGADA — \`${cli.name}\` lleva ${describeAge(Number(cli.age_ms))} sin volver (desde ${cli.started_at}). El daemon esta VIVO (heartbeat fresco): no es DAEMON DOWN, es el mux mudo. El worker del censo se mata y relanza solo; si esto persiste varios minutos, el mux esta wedgeado — ver docs/operations.md antes de reiniciar WezTerm.`);
+  }
   return { ok: alerts.length === 0, alerts, heartbeatAgeMs: ageMs, probeFailedFreshBeat };
 }
 
@@ -200,5 +220,5 @@ function describeAge(ms) {
 module.exports = {
   set, snapshot, _reset,
   startHeartbeat, readHeartbeat, assessLiveness,
-  HEARTBEAT_INTERVAL_MS, HEARTBEAT_STALE_MS,
+  HEARTBEAT_INTERVAL_MS, HEARTBEAT_STALE_MS, CLI_HUNG_MS,
 };
