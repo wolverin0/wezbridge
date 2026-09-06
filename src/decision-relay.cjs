@@ -412,6 +412,7 @@ function createRelay(opts = {}) {
     // queue-drain, que reintenta gratis lo que este relay no pudo verificar.
     const queued = enqueue({
       project, corr: entry.task, type: 'request', from_pane: null, from_project: 'decision-relay',
+      ruling: entry.ruling,
       resolved_pane: paneId, submitted: attempt.submitted, delivered: attempt.deliveredCode, ok, body,
     }, { base: intelDir });
     if (!queued.ok) {
@@ -426,6 +427,17 @@ function createRelay(opts = {}) {
       return;
     }
 
+    // T-0329a — DUENO UNICO: si el sobre quedo DURABLE en la cola del proyecto,
+    // la cola es su unico dueno. El relay lo saca de SU pending (markResolved) y
+    // NO lo reintenta — antes lo retenian los dos y ambos entregaban (T-0283
+    // llego dos veces, 03/09). Si el enqueue fallo, el relay es la unica copia.
+    if (queued.ok) {
+      recordEvent({ event: 'decision.queued', task: entry.task, project, pane: paneId, ruling: entry.ruling, reason });
+      markResolved(id);
+      out.queued.push({ task: entry.task, project, pane: paneId, reason });
+      return;
+    }
+
     if (entry.attempts >= cfg.maxAttempts) {
       const capReason = `attempt cap reached (${entry.attempts}) — last outcome: ${reason}`;
       flagCapExhausted(id, entry, capReason);
@@ -434,8 +446,6 @@ function createRelay(opts = {}) {
       return;
     }
 
-    // Un `queued` por MOTIVO, no por pasada: repetirlo cada minuto convierte
-    // el log en ruido y esconde el cambio de motivo, que es la senal util.
     if (entry.notified !== reason) {
       entry.notified = reason;
       persistPending();

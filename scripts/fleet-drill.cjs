@@ -369,10 +369,14 @@ const CHECKS = [
       fs.writeFileSync(rep, JSON.stringify({ ...report, findings: report.findings.filter((f) => f.category === 'decision-unheard') }));
       const gate = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'steward-gate.cjs'), '--from', rep], { env: ctx.env, encoding: 'utf8' });
       must(gate.status === 1 && /decision-unheard/.test(gate.stdout), `steward-gate exit ${gate.status} (esperado 1 RED por decision-unheard): ${gate.stdout.slice(0, 200)}`);
-      // 5d: entrega verificada => decision.delivered; steward calla
-      r = mkRelay({ sendPromptDeferredEnter: async (p, t) => { sent.push(t); return 'ok'; }, verifyPromptSubmission: async () => 'submitted' }, [idle]);
-      out = await r.relayOnce();
-      must(ctx.events().some((e) => e.event === 'decision.delivered' && e.task === deploy), `sin decision.delivered tras send verificado (relayOnce=${JSON.stringify(out).slice(0, 200)})`);
+      // 5d: T-0329 DUEÑO UNICO — el relay ya cedio el sobre a la cola (5a); la
+      // ENTREGA final y su decision.delivered los hace queue-drain, no el relay.
+      const pq = tryRequire('src/project-queue.cjs');
+      must(pq && typeof pq.createConsumer === 'function', 'src/project-queue.cjs ausente');
+      const drainSend = { sendPromptDeferredEnter: async (p, t) => { sent.push(t); return 'ok'; }, verifyPromptSubmission: async () => 'submitted' };
+      const consumer = pq.createConsumer({ project: 'drillrepo', base: ctx.intel, discoverPanes: () => [{ ...idle, agent: 'claude' }], send: drainSend, logAction: () => {}, now: () => Date.now() });
+      out = await consumer.drain();
+      must(ctx.events().some((e) => e.event === 'decision.delivered' && e.task === deploy), `sin decision.delivered tras drenar la cola (drain=${JSON.stringify(out).slice(0, 200)})`);
       report = steward.audit(ctx.readTasks(), later, ctx.intel, { census: [{ pane_id: 7, cwd: ctx.repoDir }] });
       must(!report.findings.some((f) => f.id === deploy && f.category === 'decision-unheard'), 'decision-unheard sigue disparando con delivered (ruido)');
       // 5e: tarjeta con lease de Eve => cola finalorchestra con la llamada exacta

@@ -478,3 +478,53 @@ test('T-0405 G: un sobre encolado por un emisor SIN pane (decision-relay) se ent
     `el emisor sin pane se nombra por proyecto; texto: ${calls[0].text.slice(0, 90)}`);
   assert.doesNotMatch(calls[0].text, /pane-null/);
 });
+
+test('T-0329c: un submit falso-negativo cuyo cuerpo YA esta en el pane se cuenta entregado (sin reintentar) y emite decision.delivered', async () => {
+  const base = freshBase();
+  pq.enqueue({ project: 'wezbridge', corr: 'T-0329', type: 'request', from_pane: null, from_project: 'decision-relay', ruling: 'approved', resolved_pane: 7, ok: false, body: '[decision] operator approved T-0329: dale' }, { base });
+  const calls = [];
+  const send = {
+    sendPromptDeferredEnter: async (paneId, text) => { calls.push({ paneId, text }); return 'ok'; },
+    verifyPromptSubmission: async () => 'stuck',          // FALSO NEGATIVO
+    paneShowsSubmittedBody: () => true,                    // ...pero el cuerpo ya esta en el pane
+  };
+  const c = makeConsumer(base, { send });
+  const out = await c.drain();
+  assert.strictEqual(out.delivered, 1, `tenia que contarse entregado: ${JSON.stringify(out)}`);
+  assert.strictEqual(calls.length, 1, 'un solo send: no se reintenta sobre algo ya presente');
+  assert.strictEqual(c.status().pending, 0, 'no queda pendiente para volver a mandar');
+  const events = fs.readFileSync(path.join(base, 'events.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+  const dd = events.filter((e) => e.event === 'decision.delivered' && e.task === 'T-0329');
+  assert.strictEqual(dd.length, 1, `el gate tiene que oir la entrega por la cola: ${JSON.stringify(events)}`);
+  assert.strictEqual(dd[0].ruling, 'approved');
+});
+
+test('T-0329b: dos drains sobre un submit falso-negativo entregan el sobre UNA sola vez (no re-aterriza)', async () => {
+  const base = freshBase();
+  pq.enqueue({ project: 'wezbridge', corr: 'T-crm', type: 'request', from_pane: null, from_project: 'decision-relay', ruling: 'approved', resolved_pane: 7, ok: false, body: '[decision] operator approved T-crm: dale' }, { base });
+  const calls = [];
+  const send = {
+    sendPromptDeferredEnter: async (paneId, text) => { calls.push({ paneId, text }); return 'ok'; },
+    verifyPromptSubmission: async () => 'stuck',
+    paneShowsSubmittedBody: () => true,
+  };
+  const c = makeConsumer(base, { send });
+  await c.drain();
+  await c.drain();
+  assert.strictEqual(calls.length, 1, `el sobre aterrizo una sola vez, no 3 (corr=crm-wa-bot-qr-20260903): ${calls.length}`);
+});
+
+test('T-0329c control: submit falso-negativo pero el cuerpo NO esta en el pane => sigue siendo fallo y reintenta', async () => {
+  const base = freshBase();
+  pq.enqueue({ project: 'wezbridge', corr: 'T-x', type: 'request', from_pane: 0, ok: false, body: 'algo' }, { base });
+  const calls = [];
+  const send = {
+    sendPromptDeferredEnter: async (paneId, text) => { calls.push({ paneId, text }); return 'ok'; },
+    verifyPromptSubmission: async () => 'stuck',
+    paneShowsSubmittedBody: () => false,
+  };
+  const c = makeConsumer(base, { send });
+  const out = await c.drain();
+  assert.strictEqual(out.delivered, 0, 'sin cuerpo presente no se da por entregado');
+  assert.strictEqual(c.status().pending, 1, 'sigue pendiente para reintento');
+});

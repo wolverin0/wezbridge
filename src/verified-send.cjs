@@ -126,6 +126,27 @@ function createVerifiedSend({ wez, sleep, logAction = null }) {
   // Lee el tail UNA vez y aplica el UNICO predicado (composerHoldsForeignText);
   // `held` es el extracto para el reporte/log, no una segunda deteccion.
   // Fail-open ante un pane ilegible, igual que verifyPromptSubmission.
+  // T-0329c: un submit puede dar FALSO NEGATIVO — el sobre SI aterrizo pero
+  // verifyPromptSubmission no lo confirmo (repaint, vsync). Antes de contar el
+  // intento como fallido y reintentar (medido: corr=crm-wa-bot-qr-20260903
+  // aterrizo 3 veces), se re-lee el pane: si una porcion distintiva del cuerpo
+  // ya esta VISIBLE en el scrollback y NO en el composer, se entrego. Fail-open
+  // a false ante un pane ilegible.
+  function paneShowsSubmittedBody(paneId, body) {
+    const norm = (t) => String(t == null ? '' : t).replace(/\s+/g, ' ').trim();
+    const probe = norm(body).slice(0, 60);
+    if (probe.length < 12) return false;
+    const key = probe.slice(0, 40);
+    try {
+      wez.invalidateGetTextCache(paneId);
+      const tailLines = wez.getFullText(paneId, 40).split('\n');
+      const composer = norm(inputBoxContent(tailLines));
+      const tail = norm(tailLines.join(' '));
+      const inComposer = composer.length > 0 && (composer.includes(key) || key.includes(composer.slice(0, 40)));
+      return tail.includes(key) && !inComposer;
+    } catch { return false; }
+  }
+
   function heldForeignText(paneId) {
     try {
       wez.invalidateGetTextCache(paneId);
@@ -192,7 +213,7 @@ function createVerifiedSend({ wez, sleep, logAction = null }) {
     return delivered;
   }
 
-  return { verifyPromptSubmission, composerHoldsTail, sendPromptDeferredEnter, paneComposerHoldsForeignText };
+  return { verifyPromptSubmission, composerHoldsTail, sendPromptDeferredEnter, paneComposerHoldsForeignText, paneShowsSubmittedBody };
 }
 
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

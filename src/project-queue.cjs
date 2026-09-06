@@ -101,6 +101,8 @@ function enqueue(entry, { base } = {}) {
       // T-0405: emisores sin pane (decision-relay, orquestador headless) se nombran
       // por proyecto; sin este campo el drenaje escribia "[A2A from pane-null ...]".
       from_project: entry.from_project ?? null,
+      // T-0329a: el ruling viaja para que queue-drain emita decision.delivered.
+      ...(entry.ruling ? { ruling: entry.ruling } : {}),
       resolved_pane: entry.resolved_pane ?? null,
       submitted: entry.submitted ?? null,
       delivered: entry.delivered ?? null,
@@ -192,6 +194,12 @@ function createConsumer(opts) {
     flags: path.join(stateDir, 'flags.json'),
   };
   fs.mkdirSync(stateDir, { recursive: true });
+  // T-0329a: decision.delivered lo emite quien ENTREGA — un sobre entregado por
+  // la cola tiene que ser OIDO por el gate (antes solo lo emitia el relay).
+  const recordEvent = (evt) => {
+    try { fs.appendFileSync(path.join(base, 'events.jsonl'), `${JSON.stringify({ time: new Date(now()).toISOString(), ...evt })}
+`); } catch { /* fail-soft */ }
+  };
 
   const savedCursor = readJson(FILES.cursor, { bytes: 0, tail: null });
   const state = {
@@ -269,6 +277,7 @@ function createConsumer(opts) {
       state.pending[id] = {
         corr: entry.corr, type: entry.type, from_pane: entry.from_pane, from_project: entry.from_project ?? null,
         body: entry.body, time: entry.time, attempts: 0,
+        ...(entry.ruling ? { ruling: entry.ruling } : {}),
         ...(entry.recorded ? { recorded: true } : {}),
       };
       added += 1;
@@ -395,12 +404,24 @@ function createConsumer(opts) {
       } catch (err) {
         log(`project-queue[${project}]: send failed: ${err.message}`);
       }
+      // T-0329c: submit no verificado PERO el cuerpo ya en el pane = aterrizo,
+      // falso negativo. Se cuenta entregado en vez de reintentar y duplicar.
+      if (!ok && (integrity == null || !integrity.refused)
+          && typeof send.paneShowsSubmittedBody === 'function'
+          && send.paneShowsSubmittedBody(targetId, entry.body)) {
+        log(`project-queue[${project}]: sobre ${id} ya visible en pane-${targetId} (submit falso-negativo) — entregado sin reintentar`);
+        ok = true;
+        submitted = 'submitted';
+      }
       if (ok) {
         delete state.pending[id];
         deliveredSet.add(id);
         state.delivered.push(id);
         persistPending(); persistDelivered();
         delivered += 1;
+        if (entry.from_project === 'decision-relay' && entry.ruling) {
+          recordEvent({ event: 'decision.delivered', task: entry.corr, project, pane: targetId, ruling: entry.ruling });
+        }
         logActionFn('queue_deliver', {
           target: `pane-${targetId}`,
           why: `corr=${entry.corr}`,

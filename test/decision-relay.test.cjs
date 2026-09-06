@@ -137,7 +137,9 @@ test("verificacion 'unknown' se encola, no se cuenta como entregada", async () =
     "un send 'unknown' se conto como delivered");
   assert.equal(events(intel).filter((e) => e.event === 'decision.queued').length, 1);
   assert.equal(queue(intel, 'drillrepo')[0].ok, false, 'linea de cola con ok:false = trabajo para queue-drain');
-  assert.equal(Object.values(pendingState(intel))[0].attempts, 1, 'un intento real consumido');
+  assert.equal(send.sent.length, 1, 'un send real ocurrio');
+  // T-0329a: encolado durable => dueño unico = la cola; el relay NO lo retiene.
+  assert.deepEqual(pendingState(intel), {}, 'tras encolar, el relay suelta el sobre (dueño unico)');
 });
 
 test('pane ocupado => encolado sin consumir intento ni tocar el composer', async () => {
@@ -148,8 +150,8 @@ test('pane ocupado => encolado sin consumir intento ni tocar el composer', async
 
   assert.equal(send.sent.length, 0, 'nada se escribio en un pane ocupado');
   assert.deepEqual(out.queued.map((q) => [q.task, q.reason]), [['T-0002', 'pane-busy']]);
-  assert.equal(Object.values(pendingState(intel))[0].attempts, 0, 'el pane ocupado no consume intento');
   assert.equal(queue(intel, 'drillrepo').length, 1);
+  assert.deepEqual(pendingState(intel), {}, 'encolado durable => la cola es dueña; el relay no reintenta');
 });
 
 test('composer con texto ajeno => diferido, sin enviar encima', async () => {
@@ -161,7 +163,7 @@ test('composer con texto ajeno => diferido, sin enviar encima', async () => {
 
   assert.equal(send.sent.length, 0, 'no se envia encima del texto del operador');
   assert.deepEqual(out.queued.map((q) => [q.task, q.reason]), [['T-0002', 'composer-holds-foreign-text']]);
-  assert.equal(Object.values(pendingState(intel))[0].attempts, 0);
+  assert.deepEqual(pendingState(intel), {}, 'diferido pero encolado => la cola lo reintenta, no el relay');
 });
 
 test('tarjeta con lease de Eve => cola finalorchestra con la llamada exacta + next_action que la nombra', async () => {
@@ -251,24 +253,21 @@ test('reinicio: un relay nuevo sobre el mismo dir no re-entrega lo ya entregado'
   assert.equal(events(intel).filter((e) => e.event === 'decision.delivered').length, 1);
 });
 
-test('cap de intentos => flags.json con motivo y la entrada se deja de reintentar', async () => {
+test('T-0329a: un send stuck se ENTREGA una vez a la cola y se cede (el cap vive ahora en queue-drain, no en el relay)', async () => {
   const intel = mkIntel();
   const repoDir = seedRepoCard(intel);
   const send = mkSend({ submitted: 'stuck' });
   const relay = relayFor(intel, { panes: [idlePane(repoDir)], send, cooldownMs: 0 });
   await relay.relayOnce();
-  await relay.relayOnce();
+  const second = await relay.relayOnce();
   const third = await relay.relayOnce();
 
-  assert.deepEqual(third.flagged.map((f) => f.task), ['T-0002']);
-  const flags = JSON.parse(fs.readFileSync(path.join(intel, '.decision-relay', 'flags.json'), 'utf8'));
-  assert.equal(Object.keys(flags).length, 1);
-  assert.match(Object.values(flags)[0].reason, /attempt cap/i);
-  assert.deepEqual(pendingState(intel), {});
-
-  const fourth = await relay.relayOnce();
-  assert.equal(send.sent.length, 3, 'tres intentos y ni uno mas');
-  assert.deepEqual(fourth.flagged, []);
+  assert.equal(send.sent.length, 1, 'un solo intento del relay: encolo y solto, el cap es de la cola');
+  assert.deepEqual(second.delivered, []);
+  assert.deepEqual(third.flagged, [], 'el relay ya no flaggea entregas stuck: eso es de queue-drain');
+  assert.deepEqual(pendingState(intel), {}, 'sin pending: dueño unico = la cola');
+  assert.equal(queue(intel, 'drillrepo').length, 1, 'una sola linea de cola, ok:false, para queue-drain');
+  assert.equal(queue(intel, 'drillrepo')[0].ok, false);
 });
 
 test('relayOnce nunca lanza: un discoverPanes que tira se reporta, no rompe el relay', async () => {
@@ -307,4 +306,22 @@ test('T-0405 I: dos clics seguidos (misma tarjeta, mismo ruling, < 2 min) son UN
   const out = await relayFor(intel, { panes: [idlePane(repoDir)], send }).relayOnce();
   assert.equal(out.ingested, 1, `el doble clic no es una segunda decision: ${JSON.stringify(out)}`);
   assert.equal(send.sent.length, 1, 'un solo sobre al pane');
+});
+
+test('T-0329a: un ruling que el relay no pudo entregar queda con UN solo dueño (la cola); una segunda pasada del relay NO lo re-entrega', async () => {
+  const intel = mkIntel();
+  const repoDir = seedRepoCard(intel);
+  const send = mkSend();
+  // pane ocupado: el relay encola y suelta
+  const relay = relayFor(intel, { panes: [{ ...idlePane(repoDir), status: 'working' }], send });
+  await relay.relayOnce();
+  assert.deepEqual(pendingState(intel), {}, 'primera pasada: encolado y soltado');
+  assert.equal(queue(intel, 'drillrepo').length, 1);
+  assert.equal(queue(intel, 'drillrepo')[0].ruling, 'approved', 'el ruling viaja en la linea de cola para decision.delivered');
+  // segunda pasada del relay (mismo ruling en rulings.jsonl): NO re-entrega ni re-encola
+  const send2 = mkSend();
+  const out2 = await relayFor(intel, { panes: [idlePane(repoDir)], send: send2 }).relayOnce();
+  assert.equal(send2.sent.length, 0, 'la segunda pasada no vuelve a enviar el ruling ya cedido');
+  assert.deepEqual(out2.delivered, []);
+  assert.equal(queue(intel, 'drillrepo').length, 1, 'no se duplica la linea de cola');
 });
