@@ -116,8 +116,29 @@ function saveMap(map, intel = INTEL) {
 const extMarker = (ext) => `[ext:${ext}]`;
 
 // ---------------------------------------------------------------- operaciones de alto nivel
-function createHub(client, { intel = INTEL, log = () => {} } = {}) {
+function createHub(client, { intel = INTEL, log = () => {}, boardUrl = BOARD_URL, boardToken = null } = {}) {
   const cache = { projects: null, tags: null };
+
+  // T-0405: la decision es del operador si la tarjeta esta bloqueada por el
+  // (blocked_by) o su compuerta lo dice (gate). Mirar solo gate dejo 4 de 6
+  // tarjetas fuera de SP el 2026-09-06 (gate null/undefined, blocked_by=operator).
+  const isOperatorGated = (c) => Boolean(c) && c.state === 'blocked' && (gateOf(c) === 'operator' || c.blocked_by === 'operator');
+  // Enlaces firmados de /act (aprobar/cancelar/posponer): valen como firma del
+  // operador (T-0349) y abren desde el telefono si boardUrl es la URL publica.
+  const ACT_LINKS_KEY = 'act-links-v1';
+  function actLinksBlock(taskId) {
+    if (!boardToken) return '';
+    try {
+      const { decisionActions } = require('../board-app/lib/action-links.cjs');
+      return decisionActions(boardUrl, boardToken, taskId).map((a) => `${a.label}: ${a.url}`).join('\n');
+    } catch { return ''; }
+  }
+  function decisionNotes(c) {
+    const links = actLinksBlock(c.id);
+    return `${c.blocker || 'esperando tu decision'}\n\nDecidir en el tablero: ${boardUrl} (o /decidir ${c.id} en el pane)`
+      + (links ? `\n${links}` : '')
+      + `\ncorr: ${c.corr || '-'} · repo: ${c.repo || '-'}`;
+  }
 
   async function ensureProject(title) {
     cache.projects = cache.projects || await client.getAllProjects();
@@ -199,23 +220,30 @@ function createHub(client, { intel = INTEL, log = () => {} } = {}) {
   }
   async function syncDecisions(cards = readCards()) {
     const out = { created: 0, completed: 0 };
-    const gated = cards.filter((c) => c.state === 'blocked' && gateOf(c) === 'operator');
+    if (boardToken) out.linked = 0;
+    const gated = cards.filter(isOperatorGated);
     for (const c of gated) {
       const r = await createTaskOnce({
         ext: `fleet:${c.id}`, project: PROJECTS.decisiones,
         title: `${c.id} · ${String(c.title || '').slice(0, 90)}`,
-        notes: `${c.blocker || 'esperando tu decision'}\n\nDecidir en el tablero: ${BOARD_URL} (o /decidir ${c.id} en el pane)\ncorr: ${c.corr || '-'} · repo: ${c.repo || '-'}`,
+        notes: decisionNotes(c),
         tags: ['fleet'],
       });
-      if (r.created) out.created += 1;
+      if (r.created) {
+        out.created += 1;
+        if (boardToken) { const m = loadMap(intel); if (m[`fleet:${c.id}`]) { m[`fleet:${c.id}`].notesAppended = [ACT_LINKS_KEY]; saveMap(m, intel); } }
+      } else if (boardToken) {
+        // Tarea creada antes de que existieran los enlaces firmados: se le pegan UNA vez.
+        const links = actLinksBlock(c.id);
+        if (links && await appendNoteOnce(`fleet:${c.id}`, links, ACT_LINKS_KEY)) out.linked += 1;
+      }
     }
     const map = loadMap(intel);
     for (const [ext, e] of Object.entries(map)) {
       if (!ext.startsWith('fleet:') || e.doneAt) continue;
       const id = ext.slice('fleet:'.length);
       const card = cards.find((c) => c.id === id);
-      const stillGated = card && card.state === 'blocked' && gateOf(card) === 'operator';
-      if (!stillGated && await completeOnce(ext)) out.completed += 1;
+      if (!isOperatorGated(card) && await completeOnce(ext)) out.completed += 1;
     }
     return out;
   }
@@ -266,11 +294,28 @@ function parse(argv) {
   }
   return { pos, opts };
 }
+// T-0405: la schtask corre `node sp-bridge.cjs sync` a secas, sin el .env.local que
+// carga start-telegram-streamer.cmd. Se lee SOLO la URL publica del tablero (no
+// secretos) de wezbridge/.env.local; el BOARD_TOKEN sale de board-app/.env.local por
+// el mismo lector que usa la central de avisos (events-gateway.loadBoardToken).
+function boardConfigFromEnv(env = process.env) {
+  let publicUrl = env.WEZBRIDGE_BOARD_PUBLIC_URL || null;
+  if (!publicUrl) {
+    try {
+      const text = fs.readFileSync(path.join(__dirname, '..', '.env.local'), 'utf8');
+      const m = text.match(/^\s*WEZBRIDGE_BOARD_PUBLIC_URL\s*=\s*(\S+)/m);
+      if (m) publicUrl = m[1].replace(/^["']|["']$/g, '');
+    } catch { /* sin .env.local: se usa BOARD_URL */ }
+  }
+  let boardToken = null;
+  try { boardToken = require('../src/events-gateway.cjs').loadBoardToken(); } catch { boardToken = null; }
+  return { boardUrl: publicUrl || BOARD_URL, boardToken };
+}
 async function main() {
   const { pos, opts } = parse(process.argv.slice(2));
   const cmd = pos[0];
   const client = createClient();
-  const hub = createHub(client, { log: (m) => console.log(m) });
+  const hub = createHub(client, { log: (m) => console.log(m), ...boardConfigFromEnv() });
   const stamp = () => new Date().toISOString();
   switch (cmd) {
     case 'ping': { const r = await client.ping(); console.log(JSON.stringify({ dataDir: client.dataDir, ...r })); return r.success ? 0 : 1; }

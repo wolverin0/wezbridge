@@ -163,3 +163,50 @@ test('T-0376 fail-first: plugin mudo => sync falla con evidencia durable (log, l
   const lastSuccess = JSON.parse(fs.readFileSync(path.join(intel, '.sp-bridge', 'last-success.json'), 'utf8'));
   assert.ok(lastSuccess.ts >= lastFailure.ts, 'last-success es posterior al fallo: un checker puede leer la edad');
 });
+
+// ---------------------------------------------------------------- T-0405 (S1 de la madre T-0404)
+// Medido 2026-09-06 02:5xZ: de 6 tarjetas blocked_by=operator solo 3 estaban en SP (las
+// otras tienen gate null/undefined, y syncDecisions solo miraba gate); y la nota traia
+// http://127.0.0.1:4272, que desde el telefono no abre nada.
+test('T-0405 A: una tarjeta blocked_by=operator SIN campo gate tambien es una decision del operador', async () => {
+  const e = env();
+  const r = await e.hub.syncDecisions([card({ id: 'T-0262', gate: undefined }), card({ id: 'T-0346', gate: null })]);
+  assert.equal(r.created, 2, `las dos son decisiones del operador aunque no traigan gate: ${JSON.stringify(r)}`);
+});
+
+test('T-0405 B: con boardUrl publica + boardToken la nota lleva la URL publica y los tres enlaces firmados /act; el re-sync no duplica', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-data-'));
+  const intel = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-intel-'));
+  fs.mkdirSync(path.join(intel, 'tasks'));
+  const plugin = fakePlugin(dataDir);
+  const client = sp.createClient({ dataDir, timeoutMs: 2000, pollMs: 1, sleep: async () => plugin.tick() });
+  const hub = sp.createHub(client, { intel, boardUrl: 'http://192.0.2.10:4272/', boardToken: 'tok-de-prueba' });
+  const r1 = await hub.syncDecisions([card()]);
+  assert.equal(r1.created, 1);
+  const t = plugin.model.tasks[0];
+  assert.match(t.notes, /http:\/\/192\.0\.2\.10:4272\//, 'la URL del tablero tiene que ser la publica');
+  assert.doesNotMatch(t.notes, /127\.0\.0\.1/, 'localhost no sirve desde el telefono');
+  for (const verb of ['approved', 'cancelled', 'deferred']) {
+    assert.match(t.notes, new RegExp('/act[?]task=T-0900&verb=' + verb + '&exp=[0-9]+&sig=[0-9a-f]+'), `falta el enlace firmado ${verb}`);
+  }
+  const notesBefore = t.notes;
+  await hub.syncDecisions([card()]);
+  assert.equal(plugin.model.tasks[0].notes, notesBefore, 'el re-sync no vuelve a pegar los enlaces');
+});
+
+test('T-0405 C: una tarea creada ANTES (sin enlaces) recibe los enlaces firmados una sola vez', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-data-'));
+  const intel = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-intel-'));
+  fs.mkdirSync(path.join(intel, 'tasks'));
+  const plugin = fakePlugin(dataDir);
+  const client = sp.createClient({ dataDir, timeoutMs: 2000, pollMs: 1, sleep: async () => plugin.tick() });
+  const viejo = sp.createHub(client, { intel });
+  await viejo.syncDecisions([card()]);
+  assert.doesNotMatch(plugin.model.tasks[0].notes, /\/act\?/);
+  const nuevo = sp.createHub(client, { intel, boardUrl: 'http://192.0.2.10:4272/', boardToken: 'tok-de-prueba' });
+  const r = await nuevo.syncDecisions([card()]);
+  assert.equal(r.linked, 1, `tenia que enlazar la tarea vieja: ${JSON.stringify(r)}`);
+  assert.match(plugin.model.tasks[0].notes, /\/act\?task=T-0900&verb=approved/);
+  const r2 = await nuevo.syncDecisions([card()]);
+  assert.equal(r2.linked, 0, 'la segunda vez no agrega nada');
+});
