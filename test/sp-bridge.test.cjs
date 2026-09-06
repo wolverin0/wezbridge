@@ -265,3 +265,29 @@ test('T-0405 E: syncOutcomes escribe en la nota cada cambio de estado de la tarj
   assert.match(t().notes, /AC1: pass - evidencia X/, 'las primeras lineas del criteria van en la nota');
   assert.deepEqual(await e.hub.syncOutcomes([review]), { noted: 0 });
 });
+
+test('T-0405 J: una tarjeta que vuelve a bloquearse en el operador DESPUES de aprobada reaparece como tarea nueva (la vieja quedo hecha); sin duplicar', async () => {
+  const e = envWithBoard();
+  const c = card({ id: 'T-0262', blocker: 'autorizar limpieza' });
+  await e.hub.syncDecisions([c]);
+  await e.hub.recordDecision({ task: 'T-0262', ruling: 'approved', at: '2026-09-06T03:28:52.154Z', by: 'operator-link' });
+  const abiertas = () => e.plugin.model.tasks.filter((t) => t.title.startsWith('T-0262') && !t.isDone);
+  assert.equal(abiertas().length, 0, 'aprobada => la tarea quedo hecha');
+  // infra la devuelve a blocked con un pedido NUEVO para el operador (medido 06/09 04:4xZ)
+  const again = { ...c, state: 'blocked', blocked_by: 'operator', gate: null, blocker: 'documentar acceso de shell al appliance UISP' };
+  const r = await e.hub.syncDecisions([again]);
+  assert.equal(r.created, 1, `tiene que crear una tarea nueva: ${JSON.stringify(r)}`);
+  assert.equal(abiertas().length, 1);
+  assert.match(abiertas()[0].notes, /documentar acceso de shell/);
+  assert.match(abiertas()[0].notes, /\/act\?task=T-0262&verb=approved/, 'la tarea nueva trae sus enlaces');
+  const r2 = await e.hub.syncDecisions([again]);
+  assert.equal(r2.created, 0, 'idempotente');
+  // la decision sobre la vuelta va a la tarea NUEVA
+  const d = await e.hub.recordDecision({ task: 'T-0262', ruling: 'deferred', at: '2026-09-06T05:00:00.000Z', by: 'operator-link', until: '2026-09-08' });
+  assert.deepEqual(d, { noted: true, completed: false });
+  assert.match(abiertas()[0].notes, /DIFERIDA .* hasta 2026-09-08/);
+  // y el estado tambien
+  const out = await e.hub.syncOutcomes([{ ...again, state: 'running', blocked_by: 'agent' }]);
+  assert.ok(out.noted >= 1);
+  assert.match(e.plugin.model.tasks.filter((t) => t.title.startsWith('T-0262')).pop().notes, /Estado: blocked -> running/);
+});

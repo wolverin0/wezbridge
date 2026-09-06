@@ -226,8 +226,24 @@ function createHub(client, { intel = INTEL, log = () => {}, boardUrl = BOARD_URL
   // cada sync y vuelca cambios de estado y el result a la nota de la tarea.
   const fmtAt = (iso) => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? String(iso) : `${d.toISOString().slice(0, 16).replace('T', ' ')}Z`; };
   const RULING_ES = { approved: 'APROBADA', cancelled: 'CANCELADA', deferred: 'DIFERIDA' };
+  // Una tarjeta puede volver al operador DESPUES de aprobada (T-0262: aprobada 03:28Z,
+  // devuelta a blocked 04:4xZ con un pedido nuevo). La tarea vieja quedo hecha, asi que
+  // cada vuelta es una tarea NUEVA: fleet:ID, fleet:ID#2, fleet:ID#3... La entrada
+  // ACTIVA de una tarjeta es la que no tiene doneAt.
+  const taskIdOf = (ext) => ext.slice('fleet:'.length).replace(/#\d+$/, '');
+  function fleetEntries(map, id) {
+    return Object.entries(map).filter(([k]) => k.startsWith('fleet:') && taskIdOf(k) === id);
+  }
+  function activeExt(map, id) {
+    const hit = fleetEntries(map, id).find(([, e]) => !e.doneAt);
+    return hit ? hit[0] : null;
+  }
+  function nextExt(map, id) {
+    const n = fleetEntries(map, id).length;
+    return n === 0 ? `fleet:${id}` : `fleet:${id}#${n + 1}`;
+  }
   async function recordDecision({ task, ruling, at, by = 'operator', why = '', until = null }) {
-    const ext = `fleet:${task}`;
+    const ext = activeExt(loadMap(intel), task) || `fleet:${task}`;
     if (!loadMap(intel)[ext]) return { noted: false, completed: false };
     const key = `ruling:${ruling}:${at}`;
     const line = `Decision: ${RULING_ES[ruling] || String(ruling).toUpperCase()} ${fmtAt(at)} (${by})`
@@ -256,9 +272,11 @@ function createHub(client, { intel = INTEL, log = () => {}, boardUrl = BOARD_URL
     const out = { noted: 0 };
     for (const [ext, e] of Object.entries(loadMap(intel))) {
       if (!ext.startsWith('fleet:')) continue;
-      const id = ext.slice('fleet:'.length);
+      const id = taskIdOf(ext);
       const card = cards.find((c) => c && c.id === id);
       if (!card) continue;
+      // Solo la entrada activa de la tarjeta lleva el estado; las vueltas viejas ya cerraron.
+      if (activeExt(loadMap(intel), id) && activeExt(loadMap(intel), id) !== ext) continue;
       const prev = e.lastState || 'blocked';
       if (card.state && card.state !== prev) {
         const owner = card.lease && card.lease.owner ? ` (${card.lease.owner})` : '';
@@ -284,25 +302,27 @@ function createHub(client, { intel = INTEL, log = () => {}, boardUrl = BOARD_URL
     if (boardToken) out.linked = 0;
     const gated = cards.filter(isOperatorGated);
     for (const c of gated) {
+      const map0 = loadMap(intel);
+      const ext = activeExt(map0, c.id) || nextExt(map0, c.id);
       const r = await createTaskOnce({
-        ext: `fleet:${c.id}`, project: PROJECTS.decisiones,
+        ext, project: PROJECTS.decisiones,
         title: `${c.id} · ${String(c.title || '').slice(0, 90)}`,
         notes: decisionNotes(c),
         tags: ['fleet'],
       });
       if (r.created) {
         out.created += 1;
-        if (boardToken) { const m = loadMap(intel); if (m[`fleet:${c.id}`]) { m[`fleet:${c.id}`].notesAppended = [ACT_LINKS_KEY]; saveMap(m, intel); } }
+        if (boardToken) { const m = loadMap(intel); if (m[ext]) { m[ext].notesAppended = [ACT_LINKS_KEY]; saveMap(m, intel); } }
       } else if (boardToken) {
         // Tarea creada antes de que existieran los enlaces firmados: se le pegan UNA vez.
         const links = actLinksBlock(c.id);
-        if (links && await appendNoteOnce(`fleet:${c.id}`, links, ACT_LINKS_KEY)) out.linked += 1;
+        if (links && await appendNoteOnce(ext, links, ACT_LINKS_KEY)) out.linked += 1;
       }
     }
     const map = loadMap(intel);
     for (const [ext, e] of Object.entries(map)) {
       if (!ext.startsWith('fleet:') || e.doneAt) continue;
-      const id = ext.slice('fleet:'.length);
+      const id = taskIdOf(ext);
       const card = cards.find((c) => c.id === id);
       if (!isOperatorGated(card) && await completeOnce(ext)) out.completed += 1;
     }
