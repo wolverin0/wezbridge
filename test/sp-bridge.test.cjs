@@ -210,3 +210,58 @@ test('T-0405 C: una tarea creada ANTES (sin enlaces) recibe los enlaces firmados
   const r2 = await nuevo.syncDecisions([card()]);
   assert.equal(r2.linked, 0, 'la segunda vez no agrega nada');
 });
+
+// ---------------------------------------------------------------- T-0405 bis (pedido del operador 06/09 00:1x ART)
+// "que el mismo proceso marque la tarea como completada despues de aprobar o cancelar,
+//  y que guarde el estado de lo que hicimos en el detalle de la tarea".
+function envWithBoard() {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-data-'));
+  const intel = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-intel-'));
+  fs.mkdirSync(path.join(intel, 'tasks'));
+  fs.mkdirSync(path.join(intel, 'results'));
+  const plugin = fakePlugin(dataDir);
+  const client = sp.createClient({ dataDir, timeoutMs: 2000, pollMs: 1, sleep: async () => plugin.tick() });
+  const hub = sp.createHub(client, { intel, boardUrl: 'http://192.0.2.10:4272/', boardToken: 'tok' });
+  return { dataDir, intel, plugin, client, hub };
+}
+
+test('T-0405 D: recordDecision anota la decision en la tarea y la completa al instante (approved/cancelled); deferred solo anota; idempotente', async () => {
+  const e = envWithBoard();
+  await e.hub.syncDecisions([card({ id: 'T-0910' }), card({ id: 'T-0911' }), card({ id: 'T-0912' })]);
+  const t = (id) => e.plugin.model.tasks.find((x) => x.title.startsWith(id));
+  const r1 = await e.hub.recordDecision({ task: 'T-0910', ruling: 'approved', at: '2026-09-06T03:18:58.232Z', by: 'operator-link', why: 'Aprobar desde la bandeja' });
+  assert.deepEqual(r1, { noted: true, completed: true });
+  assert.equal(t('T-0910').isDone, true, 'aprobada => tarea completada sin esperar al sync');
+  assert.match(t('T-0910').notes, /Decision: APROBADA 2026-09-06 03:18Z \(operator-link\) - Aprobar desde la bandeja/);
+  const r2 = await e.hub.recordDecision({ task: 'T-0911', ruling: 'cancelled', at: '2026-09-06T03:20:00.000Z', by: 'operator-link' });
+  assert.deepEqual(r2, { noted: true, completed: true });
+  assert.equal(t('T-0911').isDone, true);
+  const r3 = await e.hub.recordDecision({ task: 'T-0912', ruling: 'deferred', at: '2026-09-06T03:21:00.000Z', by: 'operator-link', until: '2026-09-10' });
+  assert.deepEqual(r3, { noted: true, completed: false }, 'diferida: sigue abierta, la vas a volver a ver');
+  assert.match(t('T-0912').notes, /Decision: DIFERIDA .* hasta 2026-09-10/);
+  const again = await e.hub.recordDecision({ task: 'T-0910', ruling: 'approved', at: '2026-09-06T03:18:58.232Z', by: 'operator-link' });
+  assert.deepEqual(again, { noted: false, completed: false }, 'la misma decision no se anota dos veces');
+  const nadie = await e.hub.recordDecision({ task: 'T-0999', ruling: 'approved', at: '2026-09-06T03:22:00.000Z', by: 'operator-link' });
+  assert.deepEqual(nadie, { noted: false, completed: false }, 'tarjeta sin tarea en SP: no explota');
+});
+
+test('T-0405 E: syncOutcomes escribe en la nota cada cambio de estado de la tarjeta y el result cuando aparece, una sola vez', async () => {
+  const e = envWithBoard();
+  const c = card({ id: 'T-0920' });
+  await e.hub.syncDecisions([c]);
+  const t = () => e.plugin.model.tasks.find((x) => x.title.startsWith('T-0920'));
+  const notesAfterCreate = t().notes;
+  assert.deepEqual(await e.hub.syncOutcomes([c]), { noted: 0 }, 'sin cambio de estado no escribe');
+  assert.equal(t().notes, notesAfterCreate);
+  const running = { ...c, state: 'running', blocked_by: 'agent', gate: null, lease: { owner: 'pane-1' } };
+  assert.deepEqual(await e.hub.syncOutcomes([running]), { noted: 1 });
+  assert.match(t().notes, /Estado: blocked -> running/);
+  assert.deepEqual(await e.hub.syncOutcomes([running]), { noted: 0 }, 'el mismo estado no se repite');
+  fs.writeFileSync(path.join(e.intel, 'results', 'T-0920-result.md'), '# T-0920 - hecho\ncriteria:\n- AC1: pass - evidencia X\n- AC2: pass - evidencia Y\n');
+  const review = { ...running, state: 'review' };
+  assert.deepEqual(await e.hub.syncOutcomes([review]), { noted: 2 }, 'estado nuevo + result nuevo');
+  assert.match(t().notes, /Estado: running -> review/);
+  assert.match(t().notes, /Result: _intel\/results\/T-0920-result\.md/);
+  assert.match(t().notes, /AC1: pass - evidencia X/, 'las primeras lineas del criteria van en la nota');
+  assert.deepEqual(await e.hub.syncOutcomes([review]), { noted: 0 });
+});

@@ -80,7 +80,12 @@ test('POST /act approves: same ruling line as the tablero, task un-gated to read
   assert.ok(line, 'ruling appended');
   assert.strictEqual(line.ruling, 'approved');
   assert.strictEqual(line.source, 'board-app', 'AC2: same source as the tablero');
-  assert.strictEqual(line.by, 'operator', 'AC2: same actor as the tablero');
+  // T-0349: este assert decia 'operator' y afirmaba EL DEFECTO — un enlace
+  // firmado quedaba indistinguible de un tap real, y `by=operator` es el campo
+  // del que cuelgan isOperatorRuling y los gates de "no sin el operador".
+  // La procedencia ahora nombra el canal; la politica (si el enlace vale como
+  // operador) la decide el operador, ver test/board-act-provenance.test.cjs.
+  assert.strictEqual(line.by, 'operator-link', 'AC2: el enlace firmado nombra su canal');
   assert.strictEqual(line.corr, 'corr-T-9201', 'corr comes from the card');
   assert.strictEqual(line.why, 'aprobado desde la bandeja');
 
@@ -135,4 +140,26 @@ test('/act never needs x-board-token but /api/rulings still does', async () => {
     body: JSON.stringify({ task: 'T-9203', verb: 'cancelled', note: 'no token' }),
   });
   assert.strictEqual(res.status, 401);
+});
+
+test('T-0405 F: POST /act avisa al hook onRuling con la decision (task, ruling, at, by, why) y un hook que explota no deshace el ruling', async () => {
+  const calls = [];
+  const spy = async (d) => { calls.push(d); if (d.task === 'T-9203') throw new Error('SP caido'); };
+  const s2 = srv.createServer(TOKEN, { onRuling: spy });
+  await new Promise((r) => s2.listen(0, '127.0.0.1', r));
+  const b2 = `http://127.0.0.1:${s2.address().port}`;
+  try {
+    seedTask('T-9210');
+    let u = new URL(buildActionUrl(b2, TOKEN, { task: 'T-9210', verb: 'cancelled' }));
+    let res = await fetch(`${b2}/act`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: form({ ...Object.fromEntries(u.searchParams), note: 'no va' }) });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(calls.length, 1, 'un ruling => una llamada al hook');
+    assert.deepStrictEqual({ task: calls[0].task, ruling: calls[0].ruling, by: calls[0].by, why: calls[0].why }, { task: 'T-9210', ruling: 'cancelled', by: 'operator-link', why: 'no va' });
+    assert.match(String(calls[0].at), /^2026-/);
+    // hook que explota: el ruling queda escrito igual
+    u = new URL(buildActionUrl(b2, TOKEN, { task: 'T-9203', verb: 'approved' }));
+    res = await fetch(`${b2}/act`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: form({ ...Object.fromEntries(u.searchParams), note: 'ok' }) });
+    assert.strictEqual(res.status, 200);
+    assert.ok(rulings().find((l) => l.task === 'T-9203' && l.ruling === 'approved'), 'el ruling sobrevive al hook roto');
+  } finally { s2.close(); }
 });

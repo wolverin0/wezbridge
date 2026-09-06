@@ -218,6 +218,67 @@ function createHub(client, { intel = INTEL, log = () => {}, boardUrl = BOARD_URL
     try { names = fs.readdirSync(dir).filter((f) => /^T-\d{4}\.json$/.test(f)); } catch { return []; }
     return names.map((f) => { try { return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); } catch { return null; } }).filter(Boolean);
   }
+  // ---------------------------------------------------------------- T-0405 bis
+  // Pedido del operador (06/09): "que el mismo proceso marque la tarea como
+  // completada despues de aprobar o cancelar, y que guarde el estado de lo que
+  // hicimos en el detalle de la tarea". recordDecision lo llama el tablero desde
+  // /act y /api/rulings (board-app/server.cjs onRuling); syncOutcomes corre en
+  // cada sync y vuelca cambios de estado y el result a la nota de la tarea.
+  const fmtAt = (iso) => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? String(iso) : `${d.toISOString().slice(0, 16).replace('T', ' ')}Z`; };
+  const RULING_ES = { approved: 'APROBADA', cancelled: 'CANCELADA', deferred: 'DIFERIDA' };
+  async function recordDecision({ task, ruling, at, by = 'operator', why = '', until = null }) {
+    const ext = `fleet:${task}`;
+    if (!loadMap(intel)[ext]) return { noted: false, completed: false };
+    const key = `ruling:${ruling}:${at}`;
+    const line = `Decision: ${RULING_ES[ruling] || String(ruling).toUpperCase()} ${fmtAt(at)} (${by})`
+      + (until ? ` hasta ${until}` : '') + (why ? ` - ${why}` : '');
+    const noted = await appendNoteOnce(ext, line, key);
+    if (!noted) return { noted: false, completed: false };
+    let completed = false;
+    if (ruling === 'approved' || ruling === 'cancelled') completed = await completeOnce(ext);
+    return { noted, completed };
+  }
+  function findResultFile(id) {
+    const dir = path.join(intel, 'results');
+    let names = [];
+    try { names = fs.readdirSync(dir); } catch { return null; }
+    const hit = names.filter((n) => n.startsWith(`${id}-`) && n.endsWith('-result.md')).sort().pop();
+    return hit ? { rel: `_intel/results/${hit}`, abs: path.join(dir, hit) } : null;
+  }
+  function resultExcerpt(abs) {
+    try {
+      const lines = fs.readFileSync(abs, 'utf8').split('\n');
+      const i = lines.findIndex((l) => /^criteria:/i.test(l.trim()));
+      return (i === -1 ? lines.slice(0, 4) : lines.slice(i + 1, i + 4)).map((l) => l.trim()).filter(Boolean).join('\n');
+    } catch { return ''; }
+  }
+  async function syncOutcomes(cards = readCards()) {
+    const out = { noted: 0 };
+    for (const [ext, e] of Object.entries(loadMap(intel))) {
+      if (!ext.startsWith('fleet:')) continue;
+      const id = ext.slice('fleet:'.length);
+      const card = cards.find((c) => c && c.id === id);
+      if (!card) continue;
+      const prev = e.lastState || 'blocked';
+      if (card.state && card.state !== prev) {
+        const owner = card.lease && card.lease.owner ? ` (${card.lease.owner})` : '';
+        if (await appendNoteOnce(ext, `Estado: ${prev} -> ${card.state}${owner} · ${fmtAt(new Date().toISOString())}`, `state:${prev}:${card.state}`)) out.noted += 1;
+        const m2 = loadMap(intel);
+        if (m2[ext]) { m2[ext].lastState = card.state; saveMap(m2, intel); }
+      }
+      const rf = findResultFile(id);
+      if (rf) {
+        const key = `result:${rf.rel}`;
+        const cur = loadMap(intel)[ext] || {};
+        if (!(cur.notesAppended || []).includes(key)) {
+          const ex = resultExcerpt(rf.abs);
+          if (await appendNoteOnce(ext, `Result: ${rf.rel}${ex ? `\n${ex}` : ''}`, key)) out.noted += 1;
+        }
+      }
+    }
+    return out;
+  }
+
   async function syncDecisions(cards = readCards()) {
     const out = { created: 0, completed: 0 };
     if (boardToken) out.linked = 0;
@@ -283,7 +344,7 @@ function createHub(client, { intel = INTEL, log = () => {}, boardUrl = BOARD_URL
     return out;
   }
 
-  return { ensureProject, ensureProjects, ensureTag, createTaskOnce, completeOnce, appendNoteOnce, syncDecisions, syncIntake, readCards };
+  return { ensureProject, ensureProjects, ensureTag, createTaskOnce, completeOnce, appendNoteOnce, syncDecisions, syncIntake, syncOutcomes, recordDecision, readCards };
 }
 
 // ---------------------------------------------------------------- CLI
@@ -335,12 +396,18 @@ async function main() {
     case 'done': { if (!opts.ext) { console.error('uso: done --ext <id>'); return 2; } console.log(JSON.stringify({ completed: await hub.completeOnce(opts.ext) })); return 0; }
     case 'sync-decisions': console.log(JSON.stringify(await hub.syncDecisions())); return 0;
     case 'sync-intake': console.log(JSON.stringify(await hub.syncIntake())); return 0;
+    case 'sync-outcomes': console.log(JSON.stringify(await hub.syncOutcomes())); return 0;
+    case 'decided': {
+      if (!opts.task || !opts.verb) { console.error('uso: decided --task T-0000 --verb approved|cancelled|deferred [--at ISO] [--by canal] [--why texto] [--until YYYY-MM-DD]'); return 2; }
+      const r = await hub.recordDecision({ task: opts.task, ruling: opts.verb, at: opts.at || stamp(), by: opts.by || 'operator', why: opts.why || '', until: opts.until || null });
+      console.log(JSON.stringify(r)); return 0;
+    }
     case 'sync': {
       const r = await syncOnce({ hub });
       console.log(JSON.stringify(r.record));
       return r.ok ? 0 : 1;
     }
-    default: console.error('uso: sp-bridge.cjs ping|ensure-projects|task|remind|done|sync-decisions|sync-intake|sync'); return 2;
+    default: console.error('uso: sp-bridge.cjs ping|ensure-projects|task|remind|done|decided|sync-decisions|sync-intake|sync-outcomes|sync'); return 2;
   }
 }
 
@@ -367,7 +434,9 @@ async function syncOnce({ hub, logDir = path.join(__dirname, '..', 'logs'), inte
     const decisions = await hub.syncDecisions();
     stage = 'intake';
     const intake = await hub.syncIntake();
-    const record = { ts, decisions, intake };
+    stage = 'outcomes';
+    const outcomes = typeof hub.syncOutcomes === 'function' ? await hub.syncOutcomes() : { noted: 0 };
+    const record = { ts, decisions, intake, outcomes };
     append(path.join(logDir, 'sp-bridge.log'), record);
     writeJson(path.join(stateDir, 'last-success.json'), record);
     return { ok: true, record };

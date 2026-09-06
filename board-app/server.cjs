@@ -655,7 +655,7 @@ function log(line) {
  * THE ruling write path, shared by /api/rulings (tablero, token) and /act
  * (central de avisos, signed link). Returns {status, payload}; never throws.
  */
-async function applyRulingBody(body, { relay } = {}) {
+async function applyRulingBody(body, { relay, onRuling } = {}) {
   const tasks = loadTasks();
   const report = audit(tasks, Date.now(), INTEL);
   const { error, line } = validateRuling(body, report.findings, Date.now(), tasks);
@@ -695,6 +695,16 @@ async function applyRulingBody(body, { relay } = {}) {
       task_transition: transition,
     });
   }
+  // T-0405 bis: la decision viaja a Super Productivity en el mismo proceso
+  // (nota + tarea completada), sin esperar al sync de 5 min. Fail-soft: un hook
+  // roto nunca deshace el ruling (misma regla que el relay).
+  if (typeof onRuling === 'function') {
+    try {
+      await onRuling({ task: line.task, ruling: line.ruling, at: line.at, by: line.by, why: line.why, until: line.until || body.until || null, transition });
+    } catch (e) {
+      log(`onRuling FAILED (the ruling stands): ${String(e && e.message || e)}`);
+    }
+  }
   let relayOut = null;
   if (transition.applied && typeof relay === 'function') {
     try {
@@ -711,6 +721,13 @@ async function applyRulingBody(body, { relay } = {}) {
 // ---------------------------------------------------------------------------
 // /act — signed action links from the central de avisos (T-0334)
 // ---------------------------------------------------------------------------
+
+/**
+ * Quien decide por un enlace firmado (T-0349). NO es 'operator': el tap del
+ * tablero autenticado se escribe 'operator' y estos dos tienen que poder
+ * distinguirse leyendo la linea de rulings.jsonl.
+ */
+const BY_SIGNED_LINK = 'operator-link';
 
 const escHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
@@ -743,7 +760,7 @@ function actConfirmPage(res, v, task) {
 <p class="muted">Enlace firmado por el tablero; vence ${new Date(v.exp * 1000).toLocaleString('es-AR')}.</p>`);
 }
 
-async function handleAct(req, res, url, token, { rateLimiter, relay }) {
+async function handleAct(req, res, url, token, { rateLimiter, relay, onRuling }) {
   let fields;
   if (req.method === 'GET') {
     fields = Object.fromEntries(url.searchParams);
@@ -761,12 +778,23 @@ async function handleAct(req, res, url, token, { rateLimiter, relay }) {
   const task = loadTasks().find((t) => t && t.id === v.task) || null;
   if (req.method === 'GET') return actConfirmPage(res, { ...v, sig: fields.sig }, task);
 
-  const body = { task: v.task, verb: v.verb, note: String(fields.note || '') };
+  // T-0349 PROCEDENCIA. /act se atiende ANTES del chequeo de token porque la
+  // firma ES la credencial, y handleAct no mandaba `by`, asi que validateRuling
+  // lo default-eaba a 'operator': un enlace firmado acuñaba una linea
+  // indistinguible de un tap real en el tablero. Y los que EMITEN esos enlaces
+  // son decision-push y el hub de avisos, o sea que la URL viaja por superficies
+  // que el token nunca toca. La linea ahora NOMBRA el canal.
+  //
+  // Esto fija procedencia, no politica: `isOperatorRuling` sigue contando
+  // source 'board-app' como decision del operador, asi que el gate no cambio de
+  // comportamiento. Si el enlace firmado DEBE o NO valer como el operador es
+  // decision del operador, y esta documentada como tal en el result de T-0349.
+  const body = { task: v.task, verb: v.verb, note: String(fields.note || ''), by: BY_SIGNED_LINK };
   if (v.verb === 'deferred' && fields.until) {
     // A bare date from the phone form means 09:00 ART (12:00Z) of that day.
     body.until = /^\d{4}-\d{2}-\d{2}$/.test(fields.until) ? `${fields.until}T12:00:00.000Z` : fields.until;
   }
-  const out = await applyRulingBody(body, { relay });
+  const out = await applyRulingBody(body, { relay, onRuling });
   const label = ACTION_VERBS[v.verb];
   if (out.status !== 200) {
     return sendHtml(res, out.status, 'No se aplicó', `<h1>No se aplicó</h1><p>${escHtml(out.payload.error || 'error')}</p><p><a href="javascript:history.back()">Volver</a></p>`);
@@ -777,13 +805,13 @@ async function handleAct(req, res, url, token, { rateLimiter, relay }) {
 <p class="muted">Ruling ${escHtml(out.payload.line.ruling)} · by ${escHtml(out.payload.line.by)} · source board-app · ${escHtml(out.payload.line.at)}</p>`);
 }
 
-function createServer(token, { rateLimiter = makeRateLimiter(), censusCache = makeCensusCache(), relay = null } = {}) {
+function createServer(token, { rateLimiter = makeRateLimiter(), censusCache = makeCensusCache(), relay = null, onRuling = null } = {}) {
   return http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x');
     try {
       // Signed action links (T-0334): the signature is the credential, so this
       // path sits BEFORE the token check and outside the static SPA.
-      if (url.pathname === '/act') return await handleAct(req, res, url, token, { rateLimiter, relay });
+      if (url.pathname === '/act') return await handleAct(req, res, url, token, { rateLimiter, relay, onRuling });
       if (!url.pathname.startsWith('/api/')) return serveStatic(res, url.pathname);
 
       if (!tokenOk(req, token)) return sendJson(res, 401, { error: 'missing or wrong x-board-token' });
@@ -817,7 +845,7 @@ function createServer(token, { rateLimiter = makeRateLimiter(), censusCache = ma
       if (req.method === 'POST' && url.pathname === '/api/rulings') {
         let body;
         try { body = JSON.parse(await readBody(req)); } catch { return sendJson(res, 400, { error: 'invalid JSON' }); }
-        const out = await applyRulingBody(body, { relay });
+        const out = await applyRulingBody(body, { relay, onRuling });
         return sendJson(res, out.status, out.payload);
       }
 
@@ -846,7 +874,7 @@ if (require.main === module) {
   let token = null;
   try { token = loadToken(); } catch (e) { log(`token unavailable (${e.message})`); }
   const bind = token ? '0.0.0.0' : '127.0.0.1';
-  const server = createServer(token || crypto.randomBytes(24).toString('base64url'), { relay: liveRelay });
+  const server = createServer(token || crypto.randomBytes(24).toString('base64url'), { relay: liveRelay, onRuling: liveSpDecision });
   server.listen(PORT, bind, () => {
     log(`fleet-board-app listening on ${bind}:${PORT} (intel: ${INTEL})`);
     log(token ? `token file: ${ENV_FILE}` : 'NO TOKEN FILE — loopback only, API unusable until .env.local exists');
@@ -876,3 +904,19 @@ module.exports = {
   validateRuling, validateInboxNote, applyTransition, ungateTask, detailOf, applyRulingBody,
   VERBS, INBOX_KINDS, PAGE_SIZE, TASK_TRANSITION,
 };
+
+/**
+ * T-0405 bis: la decision del operador llega a Super Productivity en el acto:
+ * nota "Decision: APROBADA/CANCELADA/DIFERIDA ..." en la tarea de "Decisiones
+ * del fleet" y, si aprobo o cancelo, la tarea se completa. Se arma perezosamente
+ * (requerir este modulo en tests no toca el puente); si SP no responde, el
+ * ruling ya esta escrito y el sync de 5 min completa la tarea igual.
+ */
+async function liveSpDecision(decision) {
+  const sp = require(path.join(HERE, '..', 'scripts', 'sp-bridge.cjs'));
+  const client = sp.createClient({ timeoutMs: 8000 });
+  const hub = sp.createHub(client, { log });
+  const r = await hub.recordDecision(decision);
+  log(`sp-bridge: ${decision.task} ${decision.ruling} -> noted=${r.noted} completed=${r.completed}`);
+  return r;
+}
