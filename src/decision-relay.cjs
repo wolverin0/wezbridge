@@ -40,6 +40,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const { buildEnvelope } = require('./a2a-intel.cjs');
+const DOUBLE_CLICK_MS = 120_000; // T-0405: dos rulings iguales a < 2 min son un doble clic, no dos decisiones
 const { enqueue } = require('./project-queue.cjs');
 const { resolve: resolvePane } = require('./pane-identity.cjs');
 const { composerHoldsForeignText, classifyDelivery } = require('./verified-send.cjs');
@@ -221,6 +222,7 @@ function createRelay(opts = {}) {
     if (lastNewline === -1) return 0; // linea parcial: queda para la proxima pasada
     const consumed = lastNewline + 1;
     let added = 0;
+    const recentIngested = []; // T-0405: dedupe de doble clic dentro de la misma pasada
     for (const line of chunk.slice(0, consumed).split('\n')) {
       if (!line.trim()) continue;
       let r;
@@ -231,6 +233,14 @@ function createRelay(opts = {}) {
       if (!Number.isFinite(atMs) || atMs < EPOCH_MS) continue; // legacy: nunca
       const id = sha1(`${r.task}|${r.ruling}|${r.at}`).slice(0, 16);
       if (deliveredSet.has(id) || state.pending[id]) continue;
+      // T-0405: doble clic en el enlace firmado = dos lineas de ruling con 1-2 s de
+      // diferencia (medido 06/09 03:18:56 y 03:18:58, T-0362: infra recibio el
+      // sobre dos veces). Misma tarjeta + mismo ruling dentro de 2 min es UNA
+      // decision; la segunda linea queda en rulings.jsonl pero no se relaya.
+      const twin = [...Object.values(state.pending), ...recentIngested].find((p) => p.task === r.task && p.ruling === r.ruling
+        && Math.abs(Date.parse(p.at) - atMs) < DOUBLE_CLICK_MS);
+      if (twin) { markResolved(id); continue; }
+      recentIngested.push({ task: r.task, ruling: r.ruling, at: r.at });
       state.pending[id] = {
         task: r.task, ruling: r.ruling, why: r.why || '', at: r.at, source: r.source || null,
         attempts: 0, notified: null, ledgerNexted: false,
@@ -401,7 +411,7 @@ function createRelay(opts = {}) {
     // SIEMPRE durable: la linea con ok:false es la lista de trabajo de
     // queue-drain, que reintenta gratis lo que este relay no pudo verificar.
     const queued = enqueue({
-      project, corr: entry.task, type: 'request', from_pane: null,
+      project, corr: entry.task, type: 'request', from_pane: null, from_project: 'decision-relay',
       resolved_pane: paneId, submitted: attempt.submitted, delivered: attempt.deliveredCode, ok, body,
     }, { base: intelDir });
     if (!queued.ok) {

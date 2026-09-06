@@ -286,3 +286,25 @@ test('relayOnce nunca lanza: un discoverPanes que tira se reporta, no rompe el r
   assert.deepEqual(out.queued.map((q) => q.task), ['T-0002'], 'sin censo la decision se encola igual');
   assert.equal(queue(intel, 'drillrepo').length, 1);
 });
+
+test('T-0405 H: lo que el relay encola lleva from_project=decision-relay (medido 06/09: infra recibia "[A2A from pane-null ...]")', async () => {
+  const intel = mkIntel();
+  const repoDir = seedRepoCard(intel);
+  const send = mkSend();
+  await relayFor(intel, { panes: [{ ...idlePane(repoDir), status: 'working' }], send }).relayOnce();
+  const q = queue(intel, 'drillrepo');
+  assert.equal(q.length, 1);
+  assert.equal(q[0].from_project, 'decision-relay', `la fila encolada tiene que nombrar al emisor: ${JSON.stringify(q[0]).slice(0, 200)}`);
+  assert.equal(q[0].from_pane, null);
+});
+
+test('T-0405 I: dos clics seguidos (misma tarjeta, mismo ruling, < 2 min) son UNA decision: un solo sobre', async () => {
+  const intel = mkIntel();
+  const repoDir = seedRepoCard(intel);
+  // el seed ya escribio approved@AT; el segundo clic llega 2 s despues
+  appendRuling(intel, { task: 'T-0002', category: 'awaiting-operator', ruling: 'approved', why: 'dale', at: new Date(Date.parse(AT) + 2000).toISOString(), source: 'board-app' });
+  const send = mkSend();
+  const out = await relayFor(intel, { panes: [idlePane(repoDir)], send }).relayOnce();
+  assert.equal(out.ingested, 1, `el doble clic no es una segunda decision: ${JSON.stringify(out)}`);
+  assert.equal(send.sent.length, 1, 'un solo sobre al pane');
+});

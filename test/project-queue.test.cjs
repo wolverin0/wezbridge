@@ -466,3 +466,15 @@ test('W2: un type=request drenado NO se registra como result', async () => {
     assert.strictEqual(resultsLines(base).length, 0);
   } finally { process.env.WEZBRIDGE_INTEL_DIR = prior; }
 });
+
+test('T-0405 G: un sobre encolado por un emisor SIN pane (decision-relay) se entrega con su nombre, nunca "pane-null"', async () => {
+  const base = freshBase();
+  pq.enqueue({ project: 'wezbridge', corr: 'T-d9', type: 'request', from_pane: null, from_project: 'decision-relay', resolved_pane: 3, ok: false, body: '[decision] operator approved T-d9: dale' }, { base });
+  const calls = [];
+  const c = makeConsumer(base, { send: goodSend(calls) });
+  const out = await c.drain();
+  assert.strictEqual(out.delivered, 1);
+  assert.match(calls[0].text, /^\[A2A from decision-relay to wezbridge \| corr=T-d9 \| type=request\]\n/,
+    `el emisor sin pane se nombra por proyecto; texto: ${calls[0].text.slice(0, 90)}`);
+  assert.doesNotMatch(calls[0].text, /pane-null/);
+});

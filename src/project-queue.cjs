@@ -98,6 +98,9 @@ function enqueue(entry, { base } = {}) {
       corr: entry.corr,
       type: entry.type,
       from_pane: entry.from_pane,
+      // T-0405: emisores sin pane (decision-relay, orquestador headless) se nombran
+      // por proyecto; sin este campo el drenaje escribia "[A2A from pane-null ...]".
+      from_project: entry.from_project ?? null,
       resolved_pane: entry.resolved_pane ?? null,
       submitted: entry.submitted ?? null,
       delivered: entry.delivered ?? null,
@@ -264,7 +267,7 @@ function createConsumer(opts) {
         continue;
       }
       state.pending[id] = {
-        corr: entry.corr, type: entry.type, from_pane: entry.from_pane,
+        corr: entry.corr, type: entry.type, from_pane: entry.from_pane, from_project: entry.from_project ?? null,
         body: entry.body, time: entry.time, attempts: 0,
         ...(entry.recorded ? { recorded: true } : {}),
       };
