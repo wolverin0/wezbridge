@@ -122,10 +122,29 @@ const FINDING_CATEGORY = Object.freeze({
 });
 
 /** Rulings que valen como decision DEL OPERADOR: firmadas by=operator, o entradas por un canal que solo el operador opera. */
-const OPERATOR_SOURCES = Object.freeze(['board-app', 'telegram']);
+/**
+ * T-0403: los canales que SOLO opera el humano. `ledger-cli` esta aca a
+ * proposito: es como `scripts/decidir.cjs` registra una orden que el operador
+ * dio TEXTUALMENTE en un pane (regla T-0326, "la decision se escribe ANTES de
+ * actuarla"); sacarlo lo obligaria a usar el tablero para todo. `orchestrator-pane`
+ * y `drill` NO estan: son panes, no el operador.
+ */
+const OPERATOR_SOURCES = Object.freeze(['board-app', 'telegram', 'ledger-cli']);
+
+/**
+ * T-0403 — LA PROCEDENCIA LA DA EL CANAL, NO LA PALABRA. Hasta el 2026-09-06
+ * esta funcion abria con `if (by === 'operator') return true`, y ese early-return
+ * dejaba MUERTO a OPERATOR_SOURCES: cualquier pane que escribiera `by: 'operator'`
+ * se auto-otorgaba la autoridad del operador para require-operator-ruling.cjs y
+ * para todo gate que lea rulings. Medido ese dia: de 30 lineas con `by=operator`,
+ * 20 eran `source=orchestrator-pane`. Lo encontro el verificador adversarial de
+ * T-0325 probando contra el `approved` real de T-0359.
+ *
+ * `by` sigue viajando en la linea porque nombra el canal humano (`operator`,
+ * `operator-link`) y sirve para auditar — pero NO decide autoridad.
+ */
 function isOperatorRuling(r) {
   if (!r || typeof r !== 'object') return false;
-  if (String(r.by || '').trim().toLowerCase() === 'operator') return true;
   return OPERATOR_SOURCES.includes(r.source);
 }
 

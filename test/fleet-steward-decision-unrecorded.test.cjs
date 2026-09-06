@@ -48,18 +48,25 @@ test('AC3 fail-first: tarjeta blocked/operator que paso a done SIN ruling by=ope
 });
 
 test('AC3 el otro sentido: con ruling by=operator (o por tablero/telegram) NO dispara; y el steward ve ready/running/review/cancelled igual que done', () => {
+  // T-0403: la procedencia la da el CANAL, no la palabra en `by`. Solo callan
+  // los canales que el operador opera a mano (y ledger-cli, que es como
+  // decidir.cjs registra su orden textual en un pane, regla T-0326).
   for (const r of [
-    { task: 'T-0801', ruling: 'approved', why: 'dale', at: hoursAgo(6), source: 'orchestrator-pane', by: 'operator' },
     { task: 'T-0801', ruling: 'approved', why: 'tap', at: hoursAgo(6), source: 'board-app' },
     { task: 'T-0801', ruling: 'cancelled', why: 'olvidate', at: hoursAgo(1), source: 'telegram' },
+    { task: 'T-0801', ruling: 'approved', why: 'orden textual en el pane', at: hoursAgo(6), source: 'ledger-cli', by: 'operator' },
   ]) {
     const card = gated();
     assert.deepEqual(findings(intelWith({ rulings: [r], cards: [card] }), [card]), [], `ruling ${r.ruling}/${r.source}: la regla cumplida no puede sonar`);
   }
-  // un ruling firmado por un AGENTE no es la decision del operador
-  const card = gated();
-  const agentRuling = { task: 'T-0801', ruling: 'approved', why: 'lo aprobe yo', at: hoursAgo(6), source: 'orchestrator-pane', by: 'pane-7' };
-  assert.equal(findings(intelWith({ rulings: [agentRuling], cards: [card] }), [card]).length, 1, 'by=pane-7 no es el operador');
+  // Un ruling escrito por un PANE no es la decision del operador, diga lo que
+  // diga `by` — ese early-return era el agujero de T-0403 (un relay se
+  // auto-otorgaba la autoridad; 20 lineas asi medidas el 06/09).
+  for (const by of ['pane-7', 'operator']) {
+    const card = gated();
+    const paneRuling = { task: 'T-0801', ruling: 'approved', why: 'lo aprobe yo', at: hoursAgo(6), source: 'orchestrator-pane', by };
+    assert.equal(findings(intelWith({ rulings: [paneRuling], cards: [card] }), [card]).length, 1, `by=${by} + source=orchestrator-pane no es el operador`);
+  }
   for (const state of ['ready', 'running', 'review', 'cancelled']) {
     const c = gated({ state });
     assert.equal(findings(intelWith({ cards: [c] }), [c]).length, 1, `${state}: salio del gate sin ruling`);
