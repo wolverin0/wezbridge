@@ -7,7 +7,8 @@ Corre cada 1 min desde la tarea programada `wezbridge-gui-watchdog`. Log de
 eventos (solo eventos, sin heartbeat): %LOCALAPPDATA%\WezTerm\gui-watchdog.log.
 Por que existe: 2026-09-01, 4 GUIs colgados en 3 dias; el script de recuperacion
 existia y funcionaba pero nadie lo corria. artifacts/2026-09-01-wezterm-gui-hang-diagnosis.html
-T-0315 (2026-09-05): 3-strike por EPISODIO (ventana EpisodeMinutes) ademas del tope
+T-0315 (2026-09-05): 3-strike por EPISODIO (ventana EpisodeMinutes: dos recovers por
+ventana, el tercer cuelgue se corta y se reintenta al vencer el strike mas viejo) ademas del tope
 por pid - la cascada del 01/09 (5 pids en 5 min) nunca acumulaba 3 por pid porque
 cada reemplazo estrena pid. Cada hung_confirmed registra edad de la GUI + tab; una
 GUI de < YoungGuiSeconds se marca young_gui_hung (solo registro, se recupera igual:
@@ -190,21 +191,33 @@ function Invoke-Watchdog {
       try { if (($now - [datetime]$s).TotalMinutes -lt $EpisodeMinutes) { $strikes += $s } } catch { }
     }
     if ($strikes.Count -eq 0) { $state.episode.alerted = $false }  # ventana vencida: episodio nuevo
-    $strikes += $now.ToString('o')
-    $state.episode.strikes = @($strikes)
-    if ($strikes.Count -ge $MaxStrikesPerEpisode) {
-      Write-Log ("episode_cutoff strike={0}/{1} window_min={2} pid={3} age_s={4} - no se recupera: {1} cuelgues en la ventana = el disparador persiste y reemplazar la GUI solo lo repite (cascada 2026-09-01)" -f $strikes.Count, $MaxStrikesPerEpisode, $EpisodeMinutes, $gui.Id, $age)
+    # Los strikes son RECOVERS lanzados dentro de la ventana. Con Max=3, el
+    # tercer cuelgue confirmado (dos recovers ya hechos) es el que se corta.
+    if (($strikes.Count + 1) -ge $MaxStrikesPerEpisode) {
+      # En corte NO se suma strike: los que hay envejecen y, vencida la ventana,
+      # el watchdog vuelve a intentar UNA tanda. Medido 2026-09-05 23:14-23:20:
+      # sumando strike por minuto la ventana nunca vencia y la GUI quedaba
+      # colgada para siempre con el operador delante.
+      $oldest = [datetime]$strikes[0]
+      $retryAt = $oldest.AddMinutes($EpisodeMinutes).ToString('HH:mm:ss')
+      Write-Log ("episode_cutoff strike={0}/{1} window_min={2} pid={3} age_s={4} retry_at={5} - no se recupera: {1} cuelgues en la ventana = el disparador persiste y reemplazar la GUI solo lo repite (cascada 2026-09-01)" -f ($strikes.Count + 1), $MaxStrikesPerEpisode, $EpisodeMinutes, $gui.Id, $age, $retryAt)
       if (-not $state.episode.alerted) {
-        Write-Event @{ event = 'gui-watchdog.episode_cutoff'; strikes = $strikes.Count; window_min = $EpisodeMinutes; pid = $gui.Id; title = [string]$gui.MainWindowTitle }
+        Write-Event @{ event = 'gui-watchdog.episode_cutoff'; strikes = ($strikes.Count + 1); window_min = $EpisodeMinutes; pid = $gui.Id; title = [string]$gui.MainWindowTitle }
         $state.episode.alerted = $true
       }
+      $state.episode.strikes = @($strikes)
       Save-State $state
       continue
     }
+    $state.episode.strikes = @($strikes)
     Save-State $state
 
     if ($DryRun) { Write-Log "dry_run: no se llama al recover"; continue }
     if (-not (Test-Path -LiteralPath $RecoverScript)) { Write-Log "recover_missing path=$RecoverScript"; continue }
+
+    $strikes += $now.ToString('o')
+    $state.episode.strikes = @($strikes)
+    Save-State $state
 
     $exit = Invoke-Recover -Gui $gui -RecoverScript $RecoverScript
     Write-Log "recover_exit code=$exit"

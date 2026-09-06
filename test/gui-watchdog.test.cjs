@@ -82,3 +82,17 @@ test('AC3: la cascada del 01/09 (5 pids en 5 min) corta en el TERCER cuelgue y v
   assert.strictEqual(pids[pids.length - 1], 2000, `al vencer la ventana el cuelgue nuevo se recupera; recovers=${JSON.stringify(pids)}`);
   assert.strictEqual(pids.length, 3);
 });
+
+test('AC3b: en corte no se suman strikes: al vencer la ventana hay UN reintento por minuto de strike vencido, y despues vuelve el corte', { skip: !HAVE_PS }, () => {
+  // Medido 2026-09-05 23:14-23:20 ART con la primera version: cada hung_confirmed
+  // en corte agregaba un strike, la ventana nunca vencia y la GUI colgada quedaba
+  // sin recuperar indefinidamente con el operador delante.
+  const out = run('cutoff-retry');
+  const pids = out.recovers.map((r) => r.pid);
+  assert.deepStrictEqual(pids.slice(0, 2), [1001, 1002]);
+  // ticks: 1001@22:17 1002@22:18 1003@22:19(corte) 1004@22:20 1005@22:21 | 3001@22:22 ... 3011@22:32
+  // strikes fijos en 22:17/22:18/22:19 -> vencen a las 22:27/22:28/22:29 -> 3006@22:27, 3007@22:28, 3008@22:29 se recuperan
+  // strikes = recovers 22:17/22:18; vencen 22:27/22:28 -> 3006 y 3007 se recuperan; 3008 ya tiene dos en ventana -> corte hasta 22:37
+  assert.deepStrictEqual(pids, [1001, 1002, 3006, 3007], `recovers=${JSON.stringify(pids)}`);
+  assert.strictEqual(lines(out, /episode_cutoff/).filter((l) => /retry_at=/.test(l)).length, lines(out, /episode_cutoff/).length, 'cada corte dice cuando reintenta');
+});

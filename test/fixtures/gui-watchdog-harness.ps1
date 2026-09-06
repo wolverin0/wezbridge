@@ -66,6 +66,22 @@ switch ($Scenario) {
     $script:hung = @(New-Gui -Id 2000 -AgeSeconds 300 -Title '[1/9] Handoff orch-t31-live')
     Tick
   }
+  'cutoff-retry' {
+    # Cascada (3 strikes 22:17/22:18/22:19, cortes 22:20/22:21) y despues UNA GUI colgada
+    # por minuto: a las 22:29 el strike mas viejo cumple 10 min y tiene que haber
+    # exactamente un reintento; a las 22:30 y 22:31 los strikes restantes tambien
+    # vencen (tanda nueva), y a las 22:32 vuelve el corte.
+    foreach ($i in 1..5) {
+      Advance
+      $script:hung = @(New-Gui -Id (1000 + $i) -AgeSeconds 55 -Title '[1/9] Handoff orch-t31-live')
+      Tick
+    }
+    foreach ($i in 1..11) {
+      Advance
+      $script:hung = @(New-Gui -Id (3000 + $i) -AgeSeconds 55 -Title '[1/9] Handoff orch-t31-live')
+      Tick
+    }
+  }
   default { throw "escenario desconocido: $Scenario" }
 }
 
