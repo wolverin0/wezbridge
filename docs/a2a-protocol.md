@@ -133,6 +133,12 @@ WezTerm restart and stored ids are the whole "pane-8/pane-24" misroute class;
 `to_project` resolves the live pane via `pane-identity` at send time AND records
 the envelope durably in `_intel/queues/<project>.jsonl`:
 
+Subdirectory projects (T-0328, 2026-09-06): resolution is by the cwd FOLDER NAME first, then by the
+tab label; a project that lives as a subdirectory of another pane's cwd (infra/, marketing/ under
+Py Apps/) never resolves to a sibling or to the parent — if no pane has that folder or that label,
+the envelope is queued (`resolved_pane: null`), not delivered to a look-alike. Test:
+`test/pane-identity-subdir.test.cjs`.
+
 ```js
 await mcp__wezbridge__a2a_send({ to_project: "wezbridge", corr: "T-019", type: "request", body: "Hello" });
 // -> { ok, submitted, to_project, to_pane: <resolved>, queued: true, corr, ... }
