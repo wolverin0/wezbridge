@@ -1,16 +1,44 @@
-<!-- doc-head: updated 2026-09-01 (W2: corr de Eve `<T-id>:<slug>:<yyyymmdd>`, UN parser `taskIdFromCorr` para gate/lease/linker, corrs con guion deliberadamente no matcheados; un type=result v2=ok mueve la tarjeta running -> review con evidencia a2a-results.jsonl#time=, FAILED/BLOCKED mapeados, NUNCA done; lo no ligable sale como result.unlinked y el steward lo levanta; el result ENCOLADO pasa por shape-check y registro igual). Previo 2026-08-24b (R2: criteria block on type=result now ENFORCED at sender, WEZBRIDGE_RESULT_SHAPE_ENFORCE=0 reverts; M1: dispatch on corr=T-NNNN takes the card lease for the executor; D3: spawn-vs-fork delegation semantics. Same-day earlier: T-0235 pane=transport/project=identity. Previo 2026-08-22: B1 to_project queue + auto-ack; decision ledger). Edit body => update this. -->
-Defines the A2A envelope protocol for peer-to-peer pane communication via wezbridge.
-Envelope syntax: [A2A from pane-N to pane-M | corr=<id> | type=request|ack|progress|result|error].
-Addressing (B1, 2026-08-22): PREFER a2a_send {to_project} — pane resolved via pane-identity at send time,
-envelope ALWAYS queued durably in _intel/queues/<project>.jsonl; failed deliveries retried by scripts/queue-drain.cjs.
-Auto-ack (B1): a VERIFIED type=result delivery closes its awaiting-ack thread automatically (bookkeeping acuse,
-never the judgement). v2 (2026-07-23): criteria block on results, detected ok|partial|missing (WARN-only).
-Decision ledger (2026-08-22): optional "decisions:" block persisted to _intel/a2a-results.jsonl with evidence.
-Gate-state (2026-07-27): progress body first-line GATE:<kind>:<state> parsed into a2a-threads.json.
-Read when: Implementing agents that coordinate across panes, or auditing where each rule is enforced.
+<!-- doc-head: A2A contract and executable fleet rules, T-0327 -->
+2026-09-06: 900-character refusal with explicit opt-in; ticketed cross-repo provenance; registered routine evidence.
+Covers sender guards, steward findings, result criteria and queue/lease identity; read before dispatch or review.
+Transport receipt is not work acceptance. Runtime activation and loaded MCP revision require separate verification.
 <!-- /doc-head -->
 
 # A2A Protocol
+
+## Reglas de flota
+
+| Regla | Cumplimiento ejecutable |
+|---|---|
+| Sobres de hasta **900 caracteres**. Si son mayores, escribir el detalle en `_intel/briefs/` y enviar un puntero. | `src/a2a-length-guard.cjs` y `a2a_send` en `src/mcp-server.cjs`: body de 901 sin `allow_long: true` se rehusa antes de escribir spill, encolar, registrar resultado o enviar. El opt-in conserva el cuerpo, sin anular byte cap ni `criteria:`. `WEZBRIDGE_A2A_SOFT_LIMIT` solo puede reducir el techo. |
+| Trabajo de otro proyecto en una rama `fix/*` exige tarjeta del repo destino y correlacion exacta. Rama/draft PR no conceden permiso de merge. | `scripts/cross-repo-audit.cjs` consume procedencia de `actions.jsonl`; `scripts/fleet-steward.cjs` emite `cross-repo-unticketed` si falta tarjeta con repo+corr. `scripts/steward-gate.cjs` da 24h; repetir actividad no reinicia el plazo. |
+| Todo bot periodico nace registrado con tarea y deja `run-*.json` en `_intel/routine-findings`. Exit 0 del scheduler no demuestra trabajo. | `scripts/routine-registry.cjs` lee declaraciones; `scripts/routine-audit.cjs` emite `routine-void` por ausencia de run en la ventana vencida. Un registro roto se informa localmente y no cancela el resto de la auditoria. |
+
+El rechazo de sobres sustituye el auto-spill-and-send anterior por decision T-0327. `a2aSpill` sigue disponible como utilidad; el handler no la llama automaticamente. Un cuerpo menor al techo sigue necesitando verificacion de entrega: 900 no promete que un composer nunca trunque.
+
+### Procedencia cross-repo
+
+Al comenzar sobre una rama ya creada, registrar la rama real del checkout:
+
+```text
+node wezbridge/scripts/cross-repo-audit.cjs record --from finalorchestra --repo wezbridge --cwd <worktree> --corr <corr-de-la-tarjeta> --task <T-id>
+```
+
+El comando consulta Git, exige `fix/*` y solo declara exito si el action-log se escribio. El registro lleva `action=branch_work`, `project` destino y `extra.source_project`, `extra.branch`, `extra.worktree`. Un `task` declarado tambien debe coincidir con la tarjeta. La identidad no se infiere de un pane actual ni del nombre generico del autor Git. Sin procedencia registrada este guard no puede atribuir ramas creadas por comandos Git directos; no es cobertura de actividad no instrumentada. Una actividad distinta con corr valido no borra el historial de otra sin tarjeta.
+
+### Registro y ventana de rutinas
+
+Declaracion JSON en `_intel/routines/<nombre>.json`:
+
+```json
+{"routine":"bot-roster","repo":"wezbridge","task":"T-0327","cadence_hours":24,"registered_at":"2026-09-01T00:00:00Z","enabled":true}
+```
+
+Tambien se admiten bots (`bot:true`, `kind:bot` o `type:bot`) en `_intel/hidden-tasks.json` (array o `{tasks:[...]}`) o en `_intel/hidden-tasks/*.json`. Los documentos existentes `# Rutina: <nombre>` con `**Cadencia:** diaria|semanal` y `**Host:** ... (<repo>)` cuentan como declaracion; un JSON auxiliar sin `routine` no lo es. JSON especifico prevalece sobre documento para el mismo repo/rutina.
+
+Primera ventana exigible: `registered_at + cadence_hours`. Luego se exige un run del mismo repo/rutina entre `ahora - cadence_hours` y `ahora`, nunca del futuro ni anterior al registro. Sin fecha explicita se usa la mas antigua entre creacion y mtime del archivo. `enabled:false` no arma la ausencia. Un run fresco pasa al clasificador existente: exit real y findings validos siguen siendo obligatorios; la presencia del archivo por si sola no prueba un resultado limpio.
+
+Pruebas ejecutables: `test/a2a-900.test.cjs`, `test/a2a-send-spills-before-refusing.test.cjs` (contrato actualizado), `test/cross-repo-unticketed.test.cjs` y `test/routine-registration.test.cjs`.
 
 **Scope**: any two panes reachable via the `wezbridge` MCP (Claude Code ↔ Claude Code, Claude Code ↔ Codex, Codex ↔ Codex).
 
@@ -79,14 +107,14 @@ first. An item without a `[conf:]` tag still counts (confidence recorded as null
 The server classifies every result body as `v2: ok | partial | missing`:
 `ok` = criteria block with per-criterion pass/fail verdicts; `partial` = a
 criteria heading with no verdicts; `missing` = no criteria block at all.
-Still WARN-only — hard-reject is a future operator call.
+Result shape is enforced by default at submission. `WEZBRIDGE_RESULT_SHAPE_ENFORCE=0` is the explicit legacy warn-only override; it is not the default and does not waive evidence acceptance.
 
 **This is enforced programmatically, not by convention** (principle: prose is
 hope; a rule exists only if something deterministic fails when it's violated):
 
 | Rule | Enforced by | Behavior |
 |---|---|---|
-| v2 shape on results | `src/a2a-intel.cjs` inside `a2a_send` | Response gains `v2: ok\|partial\|missing` + warning note (WARN-only rollout; hard-reject is a future operator call) |
+| v2 shape on results | `src/a2a-intel.cjs` inside `a2a_send` | Default submission rejects missing/partial required result shape via `checkResultShape`; the explicit legacy override permits warning-only submission |
 | Decision ledger on results | `src/a2a-intel.cjs` (`detectDecisions`/`detectEvidence`) inside `a2a_send` | `decisions` (count+items with confidence) + `evidence` (count+items from criteria lines) persisted per result to `_intel/a2a-results.jsonl`; response exposes both counts |
 | Every envelope audited | same, server-side | Metadata (never bodies) appended to `Py Apps/_intel/events.jsonl` |
 | Open-thread tracking | same, server-side | `_intel/a2a-threads.json`: request opens corr → result awaits ack → ack closes; every send response lists `unacked_inbound` corrs the CALLER still owes acks for |

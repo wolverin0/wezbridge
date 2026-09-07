@@ -40,8 +40,11 @@ const OWNER = path.join('scripts', 'routine-audit.cjs');
 const ALLOWED = new Map([
   [OWNER, 'owns the contract — this is the one interpreter'],
   [path.join('scripts', 'orch-ctx-check.cjs'), 'writes the key into a run record; never resolves or reads it'],
+  [path.join('scripts', 'gmail-recordatorios-run.cjs'), 'producer validates its own run identity and writes its fixed artifact path; not an audit interpreter'],
+  [path.join('test', 'gmail-routine-record.test.cjs'), 'tests the producer using its own temporary run and findings fixtures'],
   [path.join('test', 'routine-findings-single-reader.test.cjs'), 'this guard'],
   [path.join('test', 'routine-audit.test.cjs'), 'tests the owner directly'],
+  [path.join('test', 'routine-registration.test.cjs'), 'writes run-record fixtures; calls auditRoutines and never interprets artifact paths'],
   [path.join('test', 'board-server.test.cjs'), 'builds run-record fixtures for the board API'],
   [path.join('test', 'fleet-board-routines.test.cjs'), 'builds run-record fixtures; asserts the resolution behaviour end to end'],
 ]);

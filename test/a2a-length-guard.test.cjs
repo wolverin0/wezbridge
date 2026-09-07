@@ -35,7 +35,7 @@ test('allows a body at or under the soft limit', () => {
 });
 
 test('ANTI-WOLF: ordinary short envelopes are never refused', () => {
-  for (const n of [1, 50, 200, 600, 900, 1199]) {
+  for (const n of [1, 50, 200, 600, 899, 900]) {
     assert.strictEqual(a2aLengthRefusal(body(n), undefined), null, `${n} chars must pass`);
   }
 });

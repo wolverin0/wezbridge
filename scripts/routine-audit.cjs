@@ -215,7 +215,10 @@ function boardVerdict(run) {
 
 /** Entry point used by fleet-steward. */
 function auditRoutines(intelDir, now = Date.now()) {
-  return auditRuns(loadRuns(path.join(intelDir, 'routine-findings')), now);
+  const runs = loadRuns(path.join(intelDir, 'routine-findings'));
+  const missing = require('./routine-registry.cjs').auditRegisteredRoutines(intelDir, runs, now);
+  const superseded = new Set(missing.map(f => `R-silent-${f.routine}-${f.repo}`));
+  return [...auditRuns(runs, now).filter(f => !superseded.has(f.id)), ...missing];
 }
 
 module.exports = {

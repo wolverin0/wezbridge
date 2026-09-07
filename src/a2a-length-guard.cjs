@@ -27,11 +27,14 @@
  *
  * NOT a hard protocol limit (that is INPUT_BYTE_LIMITS.prompt, 16KB). This is
  * where recipient composers were observed truncating in practice. Provisional,
- * from one day's sample: every envelope under ~1000 chars arrived intact; the
- * ones that truncated were ~1400+. Raise it if the evidence changes — but the
- * default must stay refuse.
+ * T-0327 sets the default to 900 characters after shorter envelopes also
+ * truncated. A caller may explicitly opt in with allow_long; the byte cap
+ * still applies. This ceiling reduces risk, not a guarantee of delivery.
  */
-const A2A_BODY_SOFT_LIMIT = Number(process.env.WEZBRIDGE_A2A_SOFT_LIMIT) || 1200;
+const configuredLimit = Number(process.env.WEZBRIDGE_A2A_SOFT_LIMIT);
+// An installation may tighten the ceiling; only the per-call opt-in can exceed 900.
+const A2A_BODY_SOFT_LIMIT = Number.isFinite(configuredLimit) && configuredLimit > 0
+  ? Math.min(configuredLimit, 900) : 900;
 
 /**
  * PURE: the refusal text for an over-long body, or null to allow.

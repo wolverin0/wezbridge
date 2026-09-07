@@ -118,7 +118,7 @@ const MIN_SWITCH_WORKSPACE_WEZTERM_VERSION = 20230408;
 // this file has no exports and requiring it would start a server, so anything
 // defined here can only be "tested" by grepping source — which is how the first
 // version of this guard passed a mutation that disabled it entirely.
-const { a2aLengthRefusal, a2aSpill, A2A_BODY_SOFT_LIMIT } = require('./a2a-length-guard.cjs');
+const { a2aLengthRefusal, A2A_BODY_SOFT_LIMIT } = require('./a2a-length-guard.cjs');
 
 function isValidResumeSession(resume) {
   return resume === 'last' || RESUME_SESSION_RE.test(String(resume || ''));
@@ -1557,34 +1557,10 @@ function handleToolCall(name, args) {
       if (!/^[a-zA-Z0-9._:-]{1,64}$/.test(corr)) {
         return { content: [{ type: 'text', text: 'Error: corr must be 1-64 chars of [a-zA-Z0-9._:-]' }], isError: true };
       }
-      // DERRAMAR ANTES QUE REFUSAR. La refusion tenia razon en el diagnostico y
-      // se quedaba corta en el remedio: le devolvia el trabajo al llamador.
-      // Medido el 2026-08-29 en UNA sesion: se disparo SEIS veces, el emisor
-      // acorto a mano las seis, y DOS de esos reenvios "cortos" volvieron igual
-      // con delivered:truncated. Acortar a ojo no es confiable; derramar si.
-      // La refusion queda como respaldo para cuando el disco no coopera.
-      let spillNote = '';
-      if (args.allow_long !== true) {
-        const sp = a2aSpill({
-          body,
-          corr,
-          dir: require('node:path').join(a2aIntel.intelDir(), 'spill'),
-          writeFile: (f, c) => {
-            const fsx = require('node:fs');
-            fsx.mkdirSync(require('node:path').dirname(f), { recursive: true });
-            fsx.writeFileSync(f, c, 'utf8');
-          },
-        });
-        if (sp.spilled) {
-          body = sp.body;
-          spillNote = ` Cuerpo derramado a ${sp.path} y enviado como puntero (no se trunco nada).`;
-        } else if (sp.error) {
-          const lengthRefusal = a2aLengthRefusal(body, args.allow_long);
-          if (lengthRefusal) return { content: [{ type: 'text', text: `${lengthRefusal}
-
-(el derrame automatico fallo: ${sp.error})` }], isError: true };
-        }
-      }
+      // T-0327: reject before queueing, result registration or transport.
+      // The caller chooses a briefs pointer or an explicit inline opt-in.
+      const lengthRefusal = a2aLengthRefusal(body, args.allow_long);
+      if (lengthRefusal) return { content: [{ type: 'text', text: lengthRefusal }], isError: true };
 
       // R2: a type=result without a criteria: block (per-criterion pass|fail)
       // is refused BEFORE transport — validate the draft, not the delivery

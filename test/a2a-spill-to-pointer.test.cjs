@@ -119,5 +119,5 @@ test('D1: si el disco falla, NO se pierde el mensaje — se devuelve el cuerpo o
 });
 
 test('E1: el límite por defecto sigue siendo el medido, no uno inventado', () => {
-  assert.strictEqual(A2A_BODY_SOFT_LIMIT, 1200);
+  assert.strictEqual(A2A_BODY_SOFT_LIMIT, 900);
 });

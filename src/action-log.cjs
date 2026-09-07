@@ -34,7 +34,7 @@ function resolveActor() {
 
 /**
  * logAction('spawn_pane', { target: cwd, why: corr, extra: {...} })
- * All fields optional except action. Silent no-op on any failure.
+ * All fields optional except action. Returns write success; never throws on failure.
  * v2 (B2, 2026-08-22): creates the _intel dir if missing, and accepts
  * optional attribution fields `corr` / `task` / `project` on the record so
  * lines join against a2a threads and the ledger without parsing `why` prose.
@@ -56,7 +56,8 @@ function logAction(action, { target = '', why = '', corr = null, task = null, pr
       ...(extra ? { extra } : {}),
     });
     fs.appendFileSync(file, line + '\n');
-  } catch { /* never break the caller */ }
+    return true;
+  } catch { return false; /* never break the caller */ }
 }
 
 module.exports = { logAction, logPath, LOG_PATH };

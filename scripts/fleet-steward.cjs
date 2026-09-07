@@ -632,6 +632,7 @@ function audit(tasks, now = Date.now(), dir = intelDir(), opts = {}) {
   const findings = [
     ...tasks.map((t) => classify(t, now, dir, ctx)).filter(Boolean),
     ...auditRoutines(dir, now),
+    ...require('./cross-repo-audit.cjs').auditCrossRepo(tasks, dir, now),
     // W1/W2 hygiene lints (2026-08-16 retro): unspecced dispatches and rulings
     // whose value never landed in a file. Epoch-gated inside the module so the
     // pre-existing backlog is never retro-flagged.
@@ -674,7 +675,7 @@ function audit(tasks, now = Date.now(), dir = intelDir(), opts = {}) {
     // Hygiene before backlog-idle: an unspecced dispatch is about to waste a
     // builder session; an unlanded value is a live near-miss. Both outrank
     // "nobody picked this up yet".
-    'dispatch-unspecced': 8, 'ruling-unlanded': 9, 'proposal-unledgered': 10,
+    'cross-repo-unticketed': 8, 'dispatch-unspecced': 8, 'ruling-unlanded': 9, 'proposal-unledgered': 10,
     // An ungoverned file outranks backlog noise: it is invisible to the board
     // by construction, so nothing else will ever raise it.
     'ungoverned-task-file': 11,
