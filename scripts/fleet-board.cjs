@@ -45,13 +45,14 @@ const OPEN_STATES = ['ready', 'queued', 'running', 'review', 'blocked', 'failed'
 // ---------------------------------------------------------------------------
 
 /**
- * The operator gate lives in EITHER place. T-0072 carries a top-level `gate`
- * with `contract: null`; newer tasks carry `contract.gate`. Reading only one
- * silently under-reports the questions he owes answers to, which is the single
- * thing this page exists to show.
+ * Execution authority can live in either gate field (legacy T-0072 included).
+ * Waiting for the operator is separate: blocked_by can request input without
+ * granting an execution gate. Board and push share the complete predicate below.
  */
 const gateOf = (t) => (t.contract && t.contract.gate) || t.gate || null;
 const isOpen = (t) => OPEN_STATES.includes(t.state);
+const isOperatorWaiting = (t) => isOpen(t)
+  && (t.blocked_by === 'operator' || gateOf(t) === 'operator');
 
 function readRulings() {
   try {
@@ -120,10 +121,10 @@ function build(now = Date.now()) {
   const { unruled } = evaluate({ findings: report.findings, rulings, now });
 
   const open = tasks.filter(isOpen);
-  const waiting = open.filter((t) => gateOf(t) === 'operator')
+  const waiting = open.filter(isOperatorWaiting)
     .sort((a, b) => new Date(a.updated_at || 0) - new Date(b.updated_at || 0));
   const inFlight = open.filter((t) => ['running', 'review'].includes(t.state));
-  const rest = open.filter((t) => gateOf(t) !== 'operator' && !['running', 'review'].includes(t.state));
+  const rest = open.filter((t) => !isOperatorWaiting(t) && !['running', 'review'].includes(t.state));
 
   const byRepo = {};
   for (const t of rest) (byRepo[t.repo] = byRepo[t.repo] || []).push(t);
@@ -141,7 +142,7 @@ function build(now = Date.now()) {
       </summary>
       <div class="qbody">${blockerHtml(t)}</div>
     </details>`).join('')
-    : '<p class="empty">Nothing is waiting on you. This is a real claim: it means zero open tasks carry an operator gate.</p>';
+    : '<p class="empty">Nothing is waiting on you. No open task is waiting for your input or approval.</p>';
 
   const unruledRows = unruled.length ? `<table><thead><tr>
       <th>id</th><th>repo</th><th>why it is on this list</th><th>age</th></tr></thead><tbody>
@@ -303,4 +304,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { build, gateOf, routineRuns, OUT };
+module.exports = { build, gateOf, isOperatorWaiting, OPEN_STATES, routineRuns, OUT };

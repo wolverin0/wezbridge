@@ -11,16 +11,13 @@
  * no daemon. The one always-on loop it rides is telegram-streamer.cjs, which
  * is already allowlisted in src/COORDINATORS.json.
  *
- * THE gate predicate is imported from scripts/fleet-board.cjs. The historical
- * bug (see the comment above gateOf there) was two diverging predicates —
- * `contract.gate` vs top-level `gate`. Do not write a third one here.
+ * The complete waiting predicate, including open states and blocked_by, comes
+ * from scripts/fleet-board.cjs. Visibility must match the board without
+ * converting a request for operator input into an execution gate.
  */
 const fs = require('node:fs');
 const path = require('node:path');
-const { gateOf } = require('../scripts/fleet-board.cjs');
-
-/** Open per the slice contract: a done/cancelled task owes no decision. */
-const OPEN_STATES = ['queued', 'ready', 'running', 'review', 'blocked'];
+const { isOperatorWaiting: isDecision, OPEN_STATES } = require('../scripts/fleet-board.cjs');
 
 const STATE_BASENAME = '.decision-pushed.json';
 
@@ -34,8 +31,6 @@ function intelDir() {
 function boardUrl() {
   return process.env.WEZBRIDGE_BOARD_URL || 'http://127.0.0.1:4272/';
 }
-
-const isDecision = (t) => OPEN_STATES.includes(t.state) && gateOf(t) === 'operator';
 
 /**
  * PURE. Given the current ledger tasks and the pushed-state map, return:
