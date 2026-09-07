@@ -13,6 +13,7 @@ function inject(relative, exports) {
 }
 inject('src/daemon-probe.cjs', { probeDaemon: async () => {
   if (mode === 'during-probe') refresh();
+  if (mode === 'missing-during-probe') fs.unlinkSync(path.join(dir, '.daemon-heartbeat.json'));
   return { up: true };
 } });
 inject('src/pane-discovery.cjs', { discoverPanes: async () => {

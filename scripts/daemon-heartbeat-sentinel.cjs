@@ -186,7 +186,7 @@ async function main() {
   if (decision.recovered) {
     logLine({ ts: new Date().toISOString(), verdict: 'recovered', episode_started_at: state.episodeStartedAt });
   }
-  const recoveredDuringCheck = initialHeartbeat?.ts && heartbeat?.ts !== initialHeartbeat.ts
+  const recoveredDuringCheck = initialHeartbeat?.ts && heartbeat?.ts && heartbeat.ts !== initialHeartbeat.ts
     && Date.now() - Date.parse(initialHeartbeat.ts) > ds.HEARTBEAT_STALE_MS
     && liveness.heartbeatAgeMs <= ds.HEARTBEAT_STALE_MS;
   if (recoveredDuringCheck) logLine({ ts: new Date().toISOString(), verdict: 'recovered-before-alert',

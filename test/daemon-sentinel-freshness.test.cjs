@@ -35,3 +35,10 @@ test('T-0379 AC4 control: a currently stale heartbeat still alerts even if HTTP 
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.pokes, /DAEMON WEDGED/);
 });
+
+test('T-0379 AC4 control: a heartbeat that disappears is not recovery and does not crash the sentinel', t => {
+  const result = runSentinel(t, 'missing-during-probe');
+  assert.equal(result.status, 1, result.stdout + result.stderr);
+  assert.match(result.pokes, /DAEMON WEDGED/);
+  assert.doesNotMatch(result.evidence, /recovered-before-alert/);
+});
