@@ -11,6 +11,8 @@
  * Uso: node scripts/decision-relay.cjs [--once] [--json]
  * Exit: 0 = pasada limpia; 1 = alguna decision llego al cap de intentos EN
  * ESTA CORRIDA (flags nuevos necesitan ojo humano; los viejos no re-alarman).
+ * Fatal errors also exit 1. Every CLI run persists its JSON through
+ * routine-findings; failed runs survive later clean runs for steward/board review.
  */
 
 const path = require('node:path');
@@ -20,6 +22,8 @@ const { createRelay } = require('../src/decision-relay.cjs');
 const { intelDir } = require('../src/a2a-intel.cjs');
 const discovery = require('../src/pane-discovery.cjs');
 const send = require('../src/verified-send.cjs');
+const { recordRun } = require('../src/decision-relay-report.cjs');
+const startedAt = new Date().toISOString();
 
 /** Mismo criterio que a2a-intel.takeDispatchLease, con el override del drill. */
 function ledgerBin() {
@@ -48,8 +52,11 @@ async function main() {
 
   const out = await relay.relayOnce();
   const st = relay.status();
+  const code = out.flagged.length > 0 ? 1 : 0;
+  const report = recordRun(intelDir(), { ...out, status: st, started_at: startedAt,
+    completed_at: new Date().toISOString(), pid: process.pid }, code);
   if (asJson) {
-    console.log(JSON.stringify({ ...out, status: st }));
+    console.log(JSON.stringify(report));
   } else {
     const names = (list) => (list.length ? list.map((e) => e.task).join(',') : '-');
     console.log(`decision-relay: ingested=${out.ingested} delivered=${out.delivered.length} (${names(out.delivered)}) `
@@ -57,10 +64,15 @@ async function main() {
       + `flagged=${out.flagged.length} pending=${st.pending} totalFlagged=${st.flagged}`);
     for (const f of out.flagged) console.log(`decision-relay: FLAG ${f.task} (${f.project}) — ${f.reason}`);
   }
-  return out.flagged.length > 0 ? 1 : 0;
+  return code;
 }
 
 main().then((code) => { process.exitCode = code; }).catch((err) => {
   console.error(`decision-relay: fatal: ${err.message}`);
+  try {
+    const report = recordRun(intelDir(), { error: err.message, started_at: startedAt,
+      completed_at: new Date().toISOString(), pid: process.pid }, 1);
+    if (process.argv.includes('--json')) console.log(JSON.stringify(report));
+  } catch (reportError) { console.error(`decision-relay: report failed: ${reportError.message}`); }
   process.exitCode = 1;
 });
