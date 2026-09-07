@@ -1,0 +1,237 @@
+[
+  {
+    "task": "T-0263",
+    "card": {
+      "id": "T-0263",
+      "repo": "pedrito",
+      "state": "ready",
+      "blocked_by": "agent",
+      "gate": null
+    },
+    "history": [
+      {
+        "task": "T-0263",
+        "ruling": "approved",
+        "at": "2026-09-02T15:05:39.801Z",
+        "source": "orchestrator-pane",
+        "why": "sanitized historical approved"
+      },
+      {
+        "task": "T-0263",
+        "ruling": "dispatched",
+        "at": "2026-09-02T22:09:56.692Z",
+        "source": "orchestrator-pane",
+        "why": "sanitized historical dispatched"
+      },
+      {
+        "task": "T-0263",
+        "ruling": "deferred",
+        "at": "2026-09-03T02:05:58.004Z",
+        "source": "orchestrator-pane",
+        "why": "sanitized historical deferred"
+      }
+    ]
+  },
+  {
+    "task": "T-0330",
+    "card": {
+      "id": "T-0330",
+      "repo": "whatsappbot-final",
+      "state": "review",
+      "blocked_by": "operator",
+      "gate": null
+    },
+    "history": [
+      {
+        "task": "T-0330",
+        "ruling": "approved",
+        "at": "2026-09-03T14:25:13.981Z",
+        "source": "orchestrator-pane",
+        "why": "sanitized historical approved"
+      },
+      {
+        "task": "T-0330",
+        "ruling": "operator-gated",
+        "at": "2026-09-03T18:09:41.590Z",
+        "source": "orchestrator-pane",
+        "why": "sanitized historical operator-gated"
+      },
+      {
+        "task": "T-0330",
+        "ruling": "resolved",
+        "at": "2026-09-03T20:05:50.792Z",
+        "source": "orchestrator-pane",
+        "why": "sanitized historical resolved"
+      },
+      {
+        "task": "T-0330",
+        "ruling": "operator-gated",
+        "at": "2026-09-04T02:05:01.718Z",
+        "source": "orchestrator-pane",
+        "why": "sanitized historical operator-gated"
+      },
+      {
+        "task": "T-0330",
+        "ruling": "resolved",
+        "at": "2026-09-06T18:12:45.529Z",
+        "source": "orchestrator-pane",
+        "why": "sanitized historical resolved"
+      },
+      {
+        "task": "T-0330",
+        "ruling": "operator-gated",
+        "at": "2026-09-06T18:12:45.529Z",
+        "source": "orchestrator-pane",
+        "why": "sanitized historical operator-gated"
+      }
+    ]
+  },
+  {
+    "task": "T-0332",
+    "card": {
+      "id": "T-0332",
+      "repo": "infra",
+      "state": "review",
+      "blocked_by": "operator",
+      "gate": null
+    },
+    "history": [
+      {
+        "task": "T-0332",
+        "ruling": "approved",
+        "at": "2026-09-03T14:25:14.168Z",
+        "source": "orchestrator-pane",
+        "why": "sanitized historical approved"
+      },
+      {
+        "task": "T-0332",
+        "ruling": "resolved",
+        "at": "2026-09-03T20:05:50.792Z",
+        "source": "orchestrator-pane",
+        "why": "sanitized historical resolved"
+      },
+      {
+        "task": "T-0332",
+        "ruling": "dispatched",
+        "at": "2026-09-03T22:11:03.448Z",
+        "source": "orchestrator-pane",
+        "why": "sanitized historical dispatched"
+      },
+      {
+        "task": "T-0332",
+        "ruling": "operator-gated",
+        "at": "2026-09-04T20:10:00.000Z",
+        "source": "orchestrator-pane",
+        "why": "sanitized historical operator-gated"
+      },
+      {
+        "task": "T-0332",
+        "ruling": "operator-gated",
+        "at": "2026-09-07T02:09:04.233Z",
+        "source": "orchestrator-pane",
+        "why": "sanitized historical operator-gated"
+      }
+    ]
+  },
+  {
+    "task": "T-0333",
+    "card": {
+      "id": "T-0333",
+      "repo": "personaldashboard",
+      "state": "review",
+      "blocked_by": "operator",
+      "gate": null
+    },
+    "history": [
+      {
+        "task": "T-0333",
+        "ruling": "approved",
+        "at": "2026-09-03T14:25:13.905Z",
+        "source": "orchestrator-pane",
+        "why": "sanitized historical approved"
+      },
+      {
+        "task": "T-0333",
+        "ruling": "operator-gated",
+        "at": "2026-09-03T18:09:41.590Z",
+        "source": "orchestrator-pane",
+        "why": "sanitized historical operator-gated"
+      },
+      {
+        "task": "T-0333",
+        "ruling": "resolved",
+        "at": "2026-09-03T20:05:50.792Z",
+        "source": "orchestrator-pane",
+        "why": "sanitized historical resolved"
+      },
+      {
+        "task": "T-0333",
+        "ruling": "operator-gated",
+        "at": "2026-09-04T04:08:36.144Z",
+        "source": "orchestrator-pane",
+        "why": "sanitized historical operator-gated"
+      },
+      {
+        "task": "T-0333",
+        "ruling": "resolved",
+        "at": "2026-09-06T18:12:45.529Z",
+        "source": "orchestrator-pane",
+        "why": "sanitized historical resolved"
+      },
+      {
+        "task": "T-0333",
+        "ruling": "operator-gated",
+        "at": "2026-09-06T18:12:45.529Z",
+        "source": "orchestrator-pane",
+        "why": "sanitized historical operator-gated"
+      },
+      {
+        "task": "T-0333",
+        "ruling": "deferred",
+        "at": "2026-09-07T04:07:00.000Z",
+        "source": "orchestrator-pane",
+        "why": "sanitized historical deferred"
+      }
+    ]
+  },
+  {
+    "task": "T-0339",
+    "card": {
+      "id": "T-0339",
+      "repo": "wezbridge",
+      "state": "running",
+      "blocked_by": "agent",
+      "gate": null
+    },
+    "history": [
+      {
+        "task": "T-0339",
+        "ruling": "approved",
+        "at": "2026-09-03T15:34:20.492Z",
+        "source": "orchestrator-pane",
+        "why": "sanitized historical approved"
+      },
+      {
+        "task": "T-0339",
+        "ruling": "resolved",
+        "at": "2026-09-03T22:11:03.448Z",
+        "source": "orchestrator-pane",
+        "why": "sanitized historical resolved"
+      },
+      {
+        "task": "T-0339",
+        "ruling": "deferred",
+        "at": "2026-09-04T12:09:26.134Z",
+        "source": "orchestrator-pane",
+        "why": "sanitized historical deferred"
+      },
+      {
+        "task": "T-0339",
+        "ruling": "deferred",
+        "at": "2026-09-07T00:14:53.728Z",
+        "source": "orchestrator-pane",
+        "why": "sanitized historical deferred"
+      }
+    ]
+  }
+]

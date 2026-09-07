@@ -1,7 +1,8 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const { latestRulingWhere } = require('./rulings.cjs');
+const { latestRulingWhere, RULING_VOCAB } = require('./rulings.cjs');
+const NEUTRAL_RULINGS = Object.freeze(['dispatched']); // assignment does not revoke approval
 
 /** Re-read authority immediately before transport; append order is canonical. */
 function decisionDisposition({ intel, task, ruling, at, why, source, card, allowDuplicate = false }) {
@@ -12,8 +13,9 @@ function decisionDisposition({ intel, task, ruling, at, why, source, card, allow
     }
     const rows = fs.readFileSync(path.join(intel, 'rulings.jsonl'), 'utf8').replace(/^\uFEFF/, '')
       .split('\n').filter(line => line.trim()).map(line => JSON.parse(line));
-    const latest = latestRulingWhere(rows, task, r => ['approved', 'cancelled'].includes(r.ruling));
+    const latest = latestRulingWhere(rows, task, r => !NEUTRAL_RULINGS.includes(r.ruling));
     if (!latest || !Number.isFinite(Date.parse(latest.at))) return { status: 'unknown', reason: 'no-valid-current-ruling' };
+    if (!RULING_VOCAB.includes(latest.ruling)) return { status: 'unknown', reason: 'unrecognized-current-ruling' };
     if (ruling !== latest.ruling) return { status: 'superseded', reason: `replaced-by-${latest.ruling}` };
     if (!at) return { status: 'unknown', reason: 'missing-decision-provenance' };
     const duplicate = allowDuplicate && why === latest.why && source === latest.source

@@ -2,7 +2,7 @@
 Windows scheduler uses the queue-drain hidden-wrapper pattern with PT5M repetition.
 Read for registration, natural-run evidence, persistent exit-1 reports and the AC3 observation gate.
 Registration and a natural delivery do not establish the 24-hour criterion.
-Transport revalidates current rulings; legacy decisions without identity are held.
+Transport checks the latest non-neutral ruling; unknown authority is held.
 <!-- /doc-head -->
 
 # Decision relay scheduling
@@ -25,6 +25,11 @@ the failure immediately. Error evidence is retained until reviewed.
 
 Before producing or draining a decision, the current ruling is checked in
 canonical append order. An approval for a cancelled/done card is suppressed.
+Only `dispatched` is neutral: later deferred, operator-gated or resolved rulings
+make the old notification obsolete, without rewriting or revoking ledger authority.
+Unknown future verbs are held; they never cause fallback to an older approval.
+The producer's duplicate window is 120 seconds with identical why/source, not
+two seconds. The two-second test changes instructions inside that window.
 Queue entries carry `decision_at`; unknown provenance or unreadable authority
 is held in pending and named in `queues/state/<project>/flags.json`. Superseded
 decisions use `suppressed.json`, never a false delivery event. A cancellation's
