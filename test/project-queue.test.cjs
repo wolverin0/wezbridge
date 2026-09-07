@@ -40,6 +40,14 @@ function badSend(calls = []) {
 
 const IDLE_PANE = { paneId: 7, agent: 'claude', status: 'idle', project: 'G:/x/wezbridge', tabTitle: null, title: null };
 
+function currentDecision(base, task) {
+  const at = new Date().toISOString();
+  fs.mkdirSync(path.join(base, 'tasks'), { recursive: true });
+  fs.writeFileSync(path.join(base, 'tasks', `${task}.json`), JSON.stringify({ id: task, repo: 'wezbridge', state: 'ready' }));
+  fs.writeFileSync(path.join(base, 'rulings.jsonl'), `${JSON.stringify({ task, ruling: 'approved', at, why: 'dale', source: 'board-app' })}\n`);
+  return { ruling: 'approved', decision_at: at };
+}
+
 function makeConsumer(base, over = {}) {
   return pq.createConsumer({
     project: 'wezbridge',
@@ -469,19 +477,19 @@ test('W2: un type=request drenado NO se registra como result', async () => {
 
 test('T-0405 G: un sobre encolado por un emisor SIN pane (decision-relay) se entrega con su nombre, nunca "pane-null"', async () => {
   const base = freshBase();
-  pq.enqueue({ project: 'wezbridge', corr: 'T-d9', type: 'request', from_pane: null, from_project: 'decision-relay', resolved_pane: 3, ok: false, body: '[decision] operator approved T-d9: dale' }, { base });
+  pq.enqueue({ project: 'wezbridge', corr: 'T-0405', ...currentDecision(base, 'T-0405'), type: 'request', from_pane: null, from_project: 'decision-relay', resolved_pane: 3, ok: false, body: '[decision] operator approved T-0405: dale' }, { base });
   const calls = [];
   const c = makeConsumer(base, { send: goodSend(calls) });
   const out = await c.drain();
   assert.strictEqual(out.delivered, 1);
-  assert.match(calls[0].text, /^\[A2A from decision-relay to wezbridge \| corr=T-d9 \| type=request\]\n/,
+  assert.match(calls[0].text, /^\[A2A from decision-relay to wezbridge \| corr=T-0405 \| type=request\]\n/,
     `el emisor sin pane se nombra por proyecto; texto: ${calls[0].text.slice(0, 90)}`);
   assert.doesNotMatch(calls[0].text, /pane-null/);
 });
 
 test('T-0329c: un submit falso-negativo cuyo cuerpo YA esta en el pane se cuenta entregado (sin reintentar) y emite decision.delivered', async () => {
   const base = freshBase();
-  pq.enqueue({ project: 'wezbridge', corr: 'T-0329', type: 'request', from_pane: null, from_project: 'decision-relay', ruling: 'approved', resolved_pane: 7, ok: false, body: '[decision] operator approved T-0329: dale' }, { base });
+  pq.enqueue({ project: 'wezbridge', corr: 'T-0329', ...currentDecision(base, 'T-0329'), type: 'request', from_pane: null, from_project: 'decision-relay', resolved_pane: 7, ok: false, body: '[decision] operator approved T-0329: dale' }, { base });
   const calls = [];
   const send = {
     sendPromptDeferredEnter: async (paneId, text) => { calls.push({ paneId, text }); return 'ok'; },
@@ -501,7 +509,7 @@ test('T-0329c: un submit falso-negativo cuyo cuerpo YA esta en el pane se cuenta
 
 test('T-0329b: dos drains sobre un submit falso-negativo entregan el sobre UNA sola vez (no re-aterriza)', async () => {
   const base = freshBase();
-  pq.enqueue({ project: 'wezbridge', corr: 'T-crm', type: 'request', from_pane: null, from_project: 'decision-relay', ruling: 'approved', resolved_pane: 7, ok: false, body: '[decision] operator approved T-crm: dale' }, { base });
+  pq.enqueue({ project: 'wezbridge', corr: 'T-0328', ...currentDecision(base, 'T-0328'), type: 'request', from_pane: null, from_project: 'decision-relay', resolved_pane: 7, ok: false, body: '[decision] operator approved T-0328: dale' }, { base });
   const calls = [];
   const send = {
     sendPromptDeferredEnter: async (paneId, text) => { calls.push({ paneId, text }); return 'ok'; },

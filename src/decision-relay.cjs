@@ -44,6 +44,7 @@ const DOUBLE_CLICK_MS = 120_000; // T-0405: dos rulings iguales a < 2 min son un
 const { enqueue } = require('./project-queue.cjs');
 const { resolve: resolvePane } = require('./pane-identity.cjs');
 const { composerHoldsForeignText, classifyDelivery } = require('./verified-send.cjs');
+const { decisionDisposition } = require('./decision-authority.cjs');
 
 /**
  * Ninguna decision anterior a este instante se relaya. Es una constante, no una
@@ -238,9 +239,10 @@ function createRelay(opts = {}) {
       // sobre dos veces). Misma tarjeta + mismo ruling dentro de 2 min es UNA
       // decision; la segunda linea queda en rulings.jsonl pero no se relaya.
       const twin = [...Object.values(state.pending), ...recentIngested].find((p) => p.task === r.task && p.ruling === r.ruling
+        && (p.why || '') === (r.why || '') && p.source === r.source
         && Math.abs(Date.parse(p.at) - atMs) < DOUBLE_CLICK_MS);
       if (twin) { markResolved(id); continue; }
-      recentIngested.push({ task: r.task, ruling: r.ruling, at: r.at });
+      recentIngested.push({ task: r.task, ruling: r.ruling, at: r.at, why: r.why || '', source: r.source });
       state.pending[id] = {
         task: r.task, ruling: r.ruling, why: r.why || '', at: r.at, source: r.source || null,
         attempts: 0, notified: null, ledgerNexted: false,
@@ -298,7 +300,8 @@ function createRelay(opts = {}) {
     const declared = clean(card && card.next_action);
     return {
       project: repo,
-      nextAction: declared || `retomar ${entry.task} y responder con un type=result con bloque criteria:`,
+      nextAction: entry.ruling === 'cancelled' ? 'No ejecutar ni retomar esta tarea; conservar evidencia y acusar recibo.'
+        : declared || `retomar ${entry.task} y responder con un type=result con bloque criteria:`,
       eve: null,
     };
   }
@@ -386,6 +389,14 @@ function createRelay(opts = {}) {
     let card;
     try { card = readCard(entry.task); } catch { card = null; }
     if (!card) return resolveUndeliverable(id, entry, null, null, 'no-card', out);
+    const authority = decisionDisposition({ intel: intelDir, task: entry.task, ruling: entry.ruling,
+      at: entry.at, why: entry.why, source: entry.source, card, allowDuplicate: true });
+    if (authority.status === 'superseded') return resolveUndeliverable(id, entry, card.repo, null, authority.reason, out);
+    if (authority.status !== 'allow') {
+      out.flagged.push({ task: entry.task, project: card.repo, reason: authority.reason });
+      recordEvent({ event: 'decision.held', task: entry.task, reason: authority.reason });
+      return; // Keep pending: unreadable authority is not permission to send or discard.
+    }
     const worker = resolveWorker(entry, card);
     if (!worker.project) return resolveUndeliverable(id, entry, null, null, 'no-repo', out);
     const project = worker.project;
@@ -413,6 +424,7 @@ function createRelay(opts = {}) {
     const queued = enqueue({
       project, corr: entry.task, type: 'request', from_pane: null, from_project: 'decision-relay',
       ruling: entry.ruling,
+      decision_at: authority.latest.at,
       resolved_pane: paneId, submitted: attempt.submitted, delivered: attempt.deliveredCode, ok, body,
     }, { base: intelDir });
     if (!queued.ok) {

@@ -34,6 +34,7 @@ const crypto = require('node:crypto');
 const { intelDir, updateThreads, autoAckResult, recordResultBody } = require('./a2a-intel.cjs');
 const { logAction } = require('./action-log.cjs');
 const { classifyDelivery } = require('./verified-send.cjs');
+const { decisionDisposition, queuedDecision } = require('./decision-authority.cjs');
 
 const DEFAULTS = {
   maxAttempts: 3, // per entry; cap reached -> flagged and dropped, never retried
@@ -103,6 +104,7 @@ function enqueue(entry, { base } = {}) {
       from_project: entry.from_project ?? null,
       // T-0329a: el ruling viaja para que queue-drain emita decision.delivered.
       ...(entry.ruling ? { ruling: entry.ruling } : {}),
+      ...(entry.decision_at ? { decision_at: entry.decision_at } : {}),
       resolved_pane: entry.resolved_pane ?? null,
       submitted: entry.submitted ?? null,
       delivered: entry.delivered ?? null,
@@ -192,6 +194,7 @@ function createConsumer(opts) {
     pending: path.join(stateDir, 'pending.json'),
     delivered: path.join(stateDir, 'delivered.json'),
     flags: path.join(stateDir, 'flags.json'),
+    suppressed: path.join(stateDir, 'suppressed.json'),
   };
   fs.mkdirSync(stateDir, { recursive: true });
   // T-0329a: decision.delivered lo emite quien ENTREGA — un sobre entregado por
@@ -207,6 +210,7 @@ function createConsumer(opts) {
     cursorTail: savedCursor.tail, // { len, hash } | null — rotation fingerprint
     pending: readJson(FILES.pending, {}), // id -> {entry fields + attempts}
     delivered: readJson(FILES.delivered, []), // ring of entry ids
+    suppressed: readJson(FILES.suppressed, {}), // obsolete decisions, never delivery evidence
     lastAttemptAt: undefined, // in-memory; cron cadence is the real spacing
   };
   const deliveredSet = new Set(state.delivered);
@@ -267,7 +271,7 @@ function createConsumer(opts) {
         if (state.pending[id]) { delete state.pending[id]; persistPending(); }
         continue;
       }
-      if (deliveredSet.has(id) || state.pending[id]) continue; // sha1 dedupe
+      if (deliveredSet.has(id) || state.pending[id] || state.suppressed[id]) continue; // sha1 dedupe
       const t = Date.parse(entry.time || '');
       if (!Number.isNaN(t) && now() - t > cfg.maxAgeMs) {
         // Anti-replay: never resurrect ancient failures into a live pane.
@@ -278,6 +282,7 @@ function createConsumer(opts) {
         corr: entry.corr, type: entry.type, from_pane: entry.from_pane, from_project: entry.from_project ?? null,
         body: entry.body, time: entry.time, attempts: 0,
         ...(entry.ruling ? { ruling: entry.ruling } : {}),
+        ...(entry.decision_at ? { decision_at: entry.decision_at } : {}),
         ...(entry.recorded ? { recorded: true } : {}),
       };
       added += 1;
@@ -323,6 +328,37 @@ function createConsumer(opts) {
   }
 
   // ── 3. deliver: pending entries, verified, capped, cooled down ───────────
+  function clearDecisionHold(id) {
+    const flags = readJson(FILES.flags, {});
+    if (!flags[id]?.decision_held) return;
+    const { [id]: removed, ...remaining } = flags;
+    atomicWriteJson(FILES.flags, remaining);
+  }
+
+  function screenDecision(id, entry) {
+    const decision = queuedDecision(entry);
+    if (!decision) return { allowed: true, flagged: 0 };
+    const verdict = decision.invalid ? { status: 'unknown', reason: 'decision-body-metadata-mismatch' }
+      : decisionDisposition({ intel: base, ...decision });
+    if (verdict.status === 'allow') { clearDecisionHold(id); return { allowed: true, flagged: 0 }; }
+    if (verdict.status === 'superseded') {
+      clearDecisionHold(id);
+      state.suppressed = { ...state.suppressed, [id]: { reason: verdict.reason, at: new Date(now()).toISOString() } };
+      atomicWriteJson(FILES.suppressed, state.suppressed);
+      delete state.pending[id];
+      persistPending();
+      recordEvent({ event: 'decision.suppressed', task: entry.corr, project, id, reason: verdict.reason });
+      return { allowed: false, flagged: 0 };
+    }
+    const flags = readJson(FILES.flags, {});
+    const fresh = flags[id]?.reason !== verdict.reason;
+    if (fresh) {
+      atomicWriteJson(FILES.flags, { ...flags, [id]: { ...entry, decision_held: true, reason: verdict.reason, flagged_at: new Date(now()).toISOString() } });
+      recordEvent({ event: 'decision.held', task: entry.corr, project, id, reason: verdict.reason });
+    }
+    return { allowed: false, flagged: fresh ? 1 : 0 };
+  }
+
   async function deliverPending(panes, { dryRun = false } = {}) {
     const ids = Object.keys(state.pending);
     if (!ids.length) return { delivered: 0, flagged: 0, skipped: 0 };
@@ -368,6 +404,9 @@ function createConsumer(opts) {
     for (const id of ids) {
       const entry = state.pending[id];
       if (!entry) continue;
+      const decision = screenDecision(id, entry);
+      flagged += decision.flagged;
+      if (!decision.allowed) continue;
       // Envelope is REBUILT with the pane resolved NOW — the pane the original
       // send saw may be long dead; the project is the durable address.
       // El destino se direcciona por NOMBRE, que es lo unico estable: esta cola

@@ -2,6 +2,7 @@
 Windows scheduler uses the queue-drain hidden-wrapper pattern with PT5M repetition.
 Read for registration, natural-run evidence, persistent exit-1 reports and the AC3 observation gate.
 Registration and a natural delivery do not establish the 24-hour criterion.
+Transport revalidates current rulings; legacy decisions without identity are held.
 <!-- /doc-head -->
 
 # Decision relay scheduling
@@ -21,6 +22,17 @@ run record. A later clean run cannot erase it. `routine-audit.loadRuns` reads
 these records; fleet-steward, steward-gate and both boards consume that reader.
 The existing gate deadline for `routine-void` is 48 hours; the board can show
 the failure immediately. Error evidence is retained until reviewed.
+
+Before producing or draining a decision, the current ruling is checked in
+canonical append order. An approval for a cancelled/done card is suppressed.
+Queue entries carry `decision_at`; unknown provenance or unreadable authority
+is held in pending and named in `queues/state/<project>/flags.json`. Superseded
+decisions use `suppressed.json`, never a false delivery event. A cancellation's
+next action says not to resume the task rather than copying an old execution step.
+The original queue JSONL is an immutable producer snapshot. A null `delivered`
+field there does not establish missing delivery: inspect the consumer state and
+`decision.delivered` events. T-0262's two conflicting historic messages were both
+delivered; the defect was failure to suppress the obsolete approval.
 
 The engine currently transfers queued work to queue-drain, so its historical
 attempt-cap `flagged` branch is generally bypassed. The regression injects that
