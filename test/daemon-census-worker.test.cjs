@@ -90,6 +90,7 @@ before(async () => {
       WEZBRIDGE_SESSION_SNAPSHOT: '2', // tick cada 2 s: el camino que bloqueaba
       WEZBRIDGE_CENSUS_INTERVAL_MS: '1000',
       WEZBRIDGE_CENSUS_HANG_MS: '4000',
+      WEZBRIDGE_CLI_CONTROL_PANE: '9000',
       WEZBRIDGE_WATCHDOG: '0',
       WEZBRIDGE_ORCH_WAKER: '0',
       STREAMER_MODE: 'decisions',
@@ -162,4 +163,36 @@ test('AC4 (en miniatura): el worker colgado es matado y revive solo, y el beat l
     `el worker colgado nunca fue reiniciado: ${JSON.stringify(beat.census)}\nlog:\n${stderrLines.join('').slice(-1200)}`);
   assert.ok(stderrLines.join('').match(/census.*(colgad|hung|kill|reinici|respawn)/i),
     'el log del daemon debe registrar la muerte y el relanzamiento del worker');
+});
+
+test('T-0379 AC3 killer: residual CLI calls never starve the real daemon heartbeat past 60 seconds', async t => {
+  const control = await get('/api/panes/9000/output');
+  assert.equal(control.status, 200, control.body);
+  assert.equal(JSON.parse(control.body).output, 'T-0379 transport control', 'the worker must really execute a responsive CLI');
+  // Four uncached HTTP reads used to queue 4 * (10s timeout + retry) in the
+  // daemon thread even though census already ran in its own worker.
+  const reads = [8701, 8702, 8703, 8704].map(id =>
+    get(`/api/panes/${id}/output`, 35000).catch(error => ({ error: error.message })));
+  const beatFile = path.join(INTEL, '.daemon-heartbeat.json');
+  const samples = [];
+  const until = Date.now() + 65000;
+  while (Date.now() < until) {
+    let age = Infinity;
+    try { age = Date.now() - Date.parse(JSON.parse(fs.readFileSync(beatFile, 'utf8')).ts); } catch { /* absent is failure */ }
+    let health;
+    try { health = await get('/api/health', 1800); }
+    catch (error) { health = { status: 0, error: error.message }; }
+    samples.push({ age, status: health.status });
+    await new Promise(resolve => setTimeout(resolve, 300));
+  }
+  const outcomes = await Promise.all(reads);
+  const maxAge = Math.max(...samples.map(sample => sample.age));
+  const unavailable = samples.filter(sample => sample.status !== 200).length;
+  t.diagnostic(JSON.stringify({ samples: samples.length, heartbeat_max_age_ms: maxAge, health_unavailable: unavailable }));
+  assert.ok(maxAge <= 60000, `heartbeat starved ${maxAge} ms by residual CLI calls`);
+  assert.equal(unavailable, 0, 'HTTP must stay responsive while those calls hang');
+  for (const outcome of outcomes) {
+    assert.equal(outcome.status, 500, JSON.stringify(outcome));
+    assert.match(outcome.body, /ETIMEDOUT|DAEMON_CLI_TIMEOUT/, 'failed reads must reach the worker and its deadline');
+  }
 });

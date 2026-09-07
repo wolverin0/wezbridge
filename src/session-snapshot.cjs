@@ -238,12 +238,15 @@ function snapshotOnce({ listPanes, capture, logPath, log, ts }) {
  * Start a periodic snapshot watcher. Returns a stop() function.
  * intervalMs default 60s. Skips ticks where listPanes throws.
  */
-function startWatcher({ listPanes, capture, logPath, log, intervalMs }) {
-  const tick = () => {
-    try { snapshotOnce({ listPanes, capture, logPath, log }); }
+function startWatcher({ listPanes, capture, logPath, log, intervalMs, snapshot }) {
+  let running = false;
+  const tick = async () => {
+    if (running) return;
+    running = true;
+    try { await (snapshot ? snapshot() : snapshotOnce({ listPanes, capture, logPath, log })); }
     catch (err) {
       if (typeof log === 'function') log(`session-snapshot tick failed: ${err.message}`);
-    }
+    } finally { running = false; }
   };
   const handle = setInterval(tick, intervalMs || 60_000);
   if (handle && typeof handle.unref === 'function') handle.unref();

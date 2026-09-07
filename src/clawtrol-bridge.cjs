@@ -526,7 +526,7 @@ let injectedDiscoverPanes = null;
 async function buildPanes() {
   try {
     const panes = typeof injectedDiscoverPanes === 'function'
-      ? (injectedDiscoverPanes() || [])
+      ? (await injectedDiscoverPanes() || [])
       : await require('./pane-discovery.cjs').discoverPanes();
     // v1 shipped only 4 fields, so the cockpit could show a pane existed but not
     // whether it was about to die of context exhaustion, which model it was

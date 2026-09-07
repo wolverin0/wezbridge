@@ -2,7 +2,15 @@
  * WezTerm CLI wrapper — low-level pane management and text injection.
  * All interaction with WezTerm happens through its CLI (`wezterm cli`).
  */
-const { execFileSync, execFile, spawn } = require('child_process');
+const { execFileSync: nativeExecFileSync, execFile, spawn } = require('child_process');
+
+function execFileSync(file, args, options) {
+  if (file === WEZTERM && process.env.WEZBRIDGE_DAEMON_OWNER_PID === String(process.pid)) {
+    throw Object.assign(new Error('DAEMON_SYNC_CLI_DISABLED: use the bounded daemon CLI worker'),
+      { code: 'DAEMON_SYNC_CLI_DISABLED' });
+  }
+  return nativeExecFileSync(file, args, options);
+}
 
 /**
  * T-0260 (2026-09-02): UN solo espacio de pane_id — el del mux.

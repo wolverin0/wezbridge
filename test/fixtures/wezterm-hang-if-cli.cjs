@@ -16,6 +16,12 @@
 const path = require('node:path');
 const argv = process.argv.slice(1);
 if (argv.some((a) => path.basename(String(a)) === 'cli')) {
+  const paneFlag = argv.indexOf('--pane-id');
+  if (argv.includes('get-text') && paneFlag >= 0
+      && argv[paneFlag + 1] === process.env.WEZBRIDGE_CLI_CONTROL_PANE) {
+    process.stdout.write('T-0379 transport control');
+    process.exit(0);
+  }
   const sab = new SharedArrayBuffer(4);
   Atomics.wait(new Int32Array(sab), 0, 0); // nunca vuelve
 }

@@ -81,7 +81,7 @@ function createAgentHandlers(ctx) {
         }
       }
 
-      const paneId = wez.spawnPane({ cwd, program, args: undefined });
+      const paneId = await wez.spawnPane({ cwd, program, args: undefined });
       sendJson(res, 200, { ok: true, pane_id: paneId, persona: null });
     } catch (err) {
       sendError(res, err);
@@ -182,7 +182,7 @@ function createAgentHandlers(ctx) {
 
   async function handleGetTeams(req, res) {
     try {
-      const livePanes = collectPanes();
+      const livePanes = await collectPanes();
       const paneStatusMap = new Map();
       for (const p of livePanes) {
         paneStatusMap.set(p.pane_id, p.status || 'unknown');
@@ -273,8 +273,8 @@ function createAgentHandlers(ctx) {
         ].join('\n');
 
         try {
-          wez.sendText(paneId, handoffPrompt);
-          wez.sendTextNoEnter(paneId, '\r');
+          await wez.sendText(paneId, handoffPrompt);
+          await wez.sendTextNoEnter(paneId, '\r');
         } catch (sendErr) {
           log(`bootstrap handoff failed for pane ${paneId}: ${sendErr.message}`);
         }

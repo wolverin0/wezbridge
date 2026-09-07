@@ -35,7 +35,7 @@ function createEventHandlers(ctx) {
         return sendJson(res, 400, { error: 'instruction is required' });
       }
 
-      const panes = discoverPanes ? discoverPanes() : [];
+      const panes = discoverPanes ? await discoverPanes() : [];
       const srcPane = panes.find(p => (p.paneId ?? p.pane_id) === source_pane);
       const tgtPane = panes.find(p => (p.paneId ?? p.pane_id) === target_pane);
       if (!srcPane || !srcPane.isClaude) {
@@ -89,8 +89,8 @@ function createEventHandlers(ctx) {
       ].join('\n');
 
       try {
-        wez.sendText(source_pane, prompt);
-        wez.sendTextNoEnter(source_pane, '\r');
+        await wez.sendText(source_pane, prompt);
+        await wez.sendTextNoEnter(source_pane, '\r');
       } catch (e) {
         return sendJson(res, 500, { error: `failed to send prompt to source pane: ${e.message}` });
       }
@@ -112,7 +112,7 @@ function createEventHandlers(ctx) {
     }
   }
 
-  function translateWatcherEvent(raw) {
+  async function translateWatcherEvent(raw) {
     if (!raw || !raw.event || NOISE_EVENTS.has(raw.event)) return null;
     const typeMap = {
       session_started: 'started',
@@ -134,7 +134,7 @@ function createEventHandlers(ctx) {
     };
     if (['started', 'completed', 'permission'].includes(type) && out.pane_id != null) {
       try {
-        const full = wez.getFullText(out.pane_id, 40) || '';
+        const full = await wez.getFullText(out.pane_id, 40) || '';
         const clean = full.split('\n').filter(l => l.trim()).slice(-15).join('\n');
         if (clean) out.output = clean;
       } catch { /* pane may have disappeared */ }
@@ -182,6 +182,7 @@ function createEventHandlers(ctx) {
     });
 
     let buf = '';
+    let translatedQueue = Promise.resolve();
     child.stdout.on('data', chunk => {
       buf += chunk.toString('utf8');
       let idx;
@@ -192,9 +193,10 @@ function createEventHandlers(ctx) {
         let raw;
         try { raw = JSON.parse(line); } catch { continue; }
         try { recordA2AFromRawEvent(raw); } catch (e) { log(`a2a record error: ${e.message}`); }
-        const translated = translateWatcherEvent(raw);
-        if (!translated) continue;
-        res.write(`data: ${JSON.stringify(translated)}\n\n`);
+        translatedQueue = translatedQueue.then(async () => {
+          const translated = await translateWatcherEvent(raw);
+          if (translated) res.write(`data: ${JSON.stringify(translated)}\n\n`);
+        }).catch(error => log(`watcher translation failed: ${error.message}`));
       }
     });
     child.stderr.on('data', chunk => log(`watcher stderr: ${chunk.toString('utf8').trim()}`));
@@ -237,7 +239,7 @@ function createEventHandlers(ctx) {
       if (!Number.isFinite(paneId)) {
         return sendJson(res, 400, { error: 'pane query param required (integer)' });
       }
-      const panes = discoverPanes ? discoverPanes() : [];
+      const panes = discoverPanes ? await discoverPanes() : [];
       const pane = panes.find(p => (p.paneId ?? p.pane_id) === paneId);
       if (!pane || !pane.project) {
         return sendJson(res, 200, { handoffs: [], note: `pane ${paneId} has no known cwd` });
@@ -291,10 +293,13 @@ function createEventHandlers(ctx) {
   const pendingAutoHandoffEvents = [];
 
   function startAutoHandoffMonitor() {
-    setInterval(() => {
+    let sampling = false;
+    setInterval(async () => {
+    if (sampling) return;
+    sampling = true;
     try {
       if (sseClients.size === 0) return;
-      const panes = collectPanes();
+      const panes = await collectPanes();
       for (const p of panes) {
         if (!p.is_claude) continue;
         if (p.ctx == null || p.ctx < AUTO_HANDOFF_SUGGEST) continue;
@@ -325,6 +330,7 @@ function createEventHandlers(ctx) {
         autoHandoffSuggested.set(p.pane_id, Date.now());
       }
     } catch (e) { log(`[auto-handoff] monitor error: ${e.message}`); }
+    finally { sampling = false; }
     }, 10000);
   }
 
@@ -389,24 +395,7 @@ function createEventHandlers(ctx) {
     } else if (snapEnv !== '0') {
       const intervalMs = snapshotIntervalMs;
       sessionSnapshot.startWatcher({
-        // Enrich raw panes with pane-discovery's AI detection: Claude Code
-        // sets topic titles with no "claude" in them, so the title-regex
-        // classifier alone captures nothing (snapshot gap found 2026-07-02).
-        listPanes: () => {
-          const raw = ipc.wez.listPanes() || [];
-          // Claude Code AND Codex set topic/model titles with no "claude"/"codex"
-          // in them, so title-regex classification misses both. Enrich each pane
-          // with pane-discovery's agent detection (codex support added 2026-07-15).
-          const agentOf = new Map();
-          try {
-            for (const d of ipc.discoverPanes()) {
-              if (d.agent) agentOf.set(d.paneId, d.agent); // 'claude' | 'codex'
-            }
-          } catch (err) {
-            log(`snapshot discovery enrichment failed (falling back to titles): ${err.message}`);
-          }
-          return raw.map((p) => agentOf.has(p.pane_id) ? { ...p, cmdline_hint: agentOf.get(p.pane_id) } : p);
-        },
+        snapshot: () => require('../daemon-cli.cjs').snapshot({}),
         intervalMs,
         log,
       });
@@ -452,8 +441,8 @@ function createEventHandlers(ctx) {
         });
         log(`clawtrol-bridge NOT armed: ${clawtrolDecision.reason}`);
       } else {
-      const notifyOperatorMessage = (message) => {
-        const candidates = (discoverPanes ? discoverPanes() : []).filter((pane) => {
+      const notifyOperatorMessage = async (message) => {
+        const candidates = (discoverPanes ? await discoverPanes() : []).filter((pane) => {
           const projectName = pane.projectName
             || (pane.project ? path.basename(String(pane.project)) : null);
           return pane.isClaude && projectName === 'wezbridge';
@@ -475,12 +464,12 @@ function createEventHandlers(ctx) {
           log(`clawtrol operator message ${message.intent_id} pending: blocked by ${verdict.rule}`);
           return false;
         }
-        wez.sendTextBracketed(paneId, prompt);
-        wez.sendTextNoEnter(paneId, '\r');
+        await wez.sendTextBracketed(paneId, prompt);
+        await wez.sendTextNoEnter(paneId, '\r');
         log(`clawtrol operator message ${message.intent_id} delivered to wezbridge reasoner`);
         return true;
       };
-      const bridgeArmed = bridge.start({ notifyOperatorMessage, discoverPanes: censusHandle ? () => censusHandle.getPanes() : null });
+      const bridgeArmed = bridge.start({ notifyOperatorMessage, discoverPanes: ipc.discoverPanes });
       log(bridgeArmed ? 'clawtrol-bridge armed (outbound sync loop)' : 'clawtrol-bridge disabled (CLAWTROL_URL/TOKEN unset)');
       // The bridge was the ONLY background loop with no entry here, so its
       // health — including the 2026-08-12 flood-containment counters — could
@@ -497,7 +486,7 @@ function createEventHandlers(ctx) {
     }
     try {
       const watchdog = require('../pane0-watchdog.cjs');
-      const wdStarted = watchdog.start({ discoverPanes: censusHandle ? () => censusHandle.getPanes() : null });
+      const wdStarted = watchdog.start({ discoverPanes: ipc.discoverPanes, wezterm: wez });
       log(wdStarted ? `pane0-watchdog armed (30s check, 90s absent-recovery, 10min cooldown, 3-strike disable${censusHandle ? ', censo desde el worker' : ''})` : 'pane0-watchdog disabled (WEZBRIDGE_WATCHDOG=0)');
     } catch (e) {
       log(`pane0-watchdog failed to start: ${e.message}`);
@@ -512,7 +501,7 @@ function createEventHandlers(ctx) {
     // and both LOG — a silent fall-through is what made that outage invisible.
     try {
       const { createWaker, resolveWakerConfig } = require('../orchestrator-waker.cjs');
-      const verifiedSend = require('../verified-send.cjs');
+      const verifiedSend = require('../daemon-cli.cjs').verified;
       const intelDir = process.env.WEZBRIDGE_INTEL_DIR
         || path.join(SRC_DIR, '..', '..', '_intel');
       const wakerCfg = resolveWakerConfig({ env: process.env, intelDir });
@@ -534,7 +523,7 @@ function createEventHandlers(ctx) {
           stateDir: path.join(intelDir, '.orch-waker-state'),
           watchRepos: wakerCfg.repos,
           // T-0321: el waker lee el censo del worker; nunca wezterm sincrono en el loop.
-          discoverPanes: () => (censusHandle ? censusHandle.getPanes() : (discoverPanes ? discoverPanes() : [])),
+          discoverPanes: ipc.discoverPanes,
           send: verifiedSend,
           log,
         });
@@ -566,9 +555,10 @@ function createEventHandlers(ctx) {
         file: path.join(intelDir, '.daemon-heartbeat.json'),
         // T-0321 AC3: el beat lleva la ultima llamada CLI y su antiguedad.
         extra: () => {
-          if (!censusHandle) return {};
-          const st = censusHandle.status();
-          return { last_cli_call: st.last_cli_call, census: st };
+          const cli = require('../daemon-cli.cjs').status();
+          const st = censusHandle ? censusHandle.status() : null;
+          return { last_cli_call: cli.active ? cli.last_cli_call : st?.last_cli_call || cli.last_cli_call,
+            census: st, daemon_cli: cli };
         },
       });
       log(`daemon heartbeat armed (${daemonStatus.HEARTBEAT_INTERVAL_MS / 1000}s beat -> _intel/.daemon-heartbeat.json)`);

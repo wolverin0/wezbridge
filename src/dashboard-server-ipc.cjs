@@ -2,8 +2,8 @@
 
 const path = require('path');
 const { execFileSync } = require('child_process');
-const wez = require('./wezterm.cjs');
-const { discoverPanes } = require('./pane-discovery.cjs');
+const daemonCli = require('./daemon-cli.cjs');
+const wez = daemonCli.wez;
 
 // Validators for shell-arg-derived values (prevent command injection at exec sites).
 const SAFE_BRANCH_RE = /^[a-zA-Z0-9._/-]+$/;
@@ -30,9 +30,12 @@ function assertWorktreePathInside(parentDir, candidate) {
 let paneSource = null;
 function setPaneSource(fn) { paneSource = typeof fn === 'function' ? fn : null; }
 
-function collectPanes() {
-  const raw = paneSource ? paneSource()
-    : (discoverPanes ? discoverPanes() : wez.listPanes().map(p => ({ paneId: p.pane_id })));
+async function discoverPanes() {
+  return paneSource ? paneSource() : daemonCli.discoverPanes();
+}
+
+async function collectPanes() {
+  const raw = await discoverPanes();
   return (raw || []).map(p => ({
     pane_id: p.paneId ?? p.pane_id,
     is_claude: p.isClaude ?? false,
@@ -81,7 +84,7 @@ async function spawnAgentPane({ cwd, persona, permission_mode, worktree }, { res
     worktreeInfo = { path: effectiveCwd, branch: branchName, baseCwd: spawnCwd };
   }
 
-  const paneId = wez.spawnPane({ cwd: effectiveCwd });
+  const paneId = await wez.spawnPane({ cwd: effectiveCwd });
   await new Promise(r => setTimeout(r, 2000));
 
   const validModes = ['default', 'plan', 'acceptEdits', 'bypassPermissions'];
@@ -104,10 +107,10 @@ async function spawnAgentPane({ cwd, persona, permission_mode, worktree }, { res
       permission_mode && validModes.includes(permission_mode)) {
     claudeCmd += ' --permission-mode ' + permission_mode;
   }
-  wez.sendText(paneId, claudeCmd);
+  await wez.sendText(paneId, claudeCmd);
 
   if (persona) {
-    try { wez.setTabTitle(paneId, `[${persona}]`); } catch { /* best effort */ }
+    try { await wez.setTabTitle(paneId, `[${persona}]`); } catch { /* best effort */ }
   }
 
   if (worktreeInfo) {

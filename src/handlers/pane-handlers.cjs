@@ -8,13 +8,13 @@ function createPaneHandlers(ctx) {
   } = ctx;
 
   async function handleGetPanes(req, res) {
-    try { sendJson(res, 200, { panes: collectPanes() }); }
+    try { sendJson(res, 200, { panes: await collectPanes() }); }
     catch (err) { log(`GET /api/panes error: ${err.message}`); sendError(res, err); }
   }
 
   async function handleGetSessions(req, res) {
     try {
-      const sessions = collectPanes().map(p => ({
+      const sessions = (await collectPanes()).map(p => ({
         ...p,
         confidence: Math.round((p.confidence || 0) * (p.confidence > 1 ? 1 : 100)),
       }));
@@ -37,10 +37,10 @@ function createPaneHandlers(ctx) {
           });
         }
       }
-      const all = collectPanes().filter(p => p.is_claude);
+      const all = (await collectPanes()).filter(p => p.is_claude);
       const ids = Array.isArray(targets) && targets.length ? targets : all.map(p => p.pane_id);
       for (const id of ids) {
-        try { wez.sendText(id, text); wez.sendTextNoEnter(id, '\r'); } catch (e) { log(`broadcast pane ${id}: ${e.message}`); }
+        try { await wez.sendText(id, text); await wez.sendTextNoEnter(id, '\r'); } catch (e) { log(`broadcast pane ${id}: ${e.message}`); }
       }
       sendJson(res, 200, { ok: true, sent: ids.length });
     } catch (err) { sendError(res, err); }
@@ -48,7 +48,7 @@ function createPaneHandlers(ctx) {
 
   async function handleGetPaneOutput(res, paneId, lines) {
     try {
-      const text = wez.getFullText(paneId, lines);
+      const text = await wez.getFullText(paneId, lines);
       sendJson(res, 200, { pane_id: paneId, output: text || '', lines: text || '' });
     } catch (err) {
       sendError(res, err);
@@ -68,8 +68,8 @@ function createPaneHandlers(ctx) {
         }
         return sendJson(res, 403, { error: `safety-policy blocked: ${_safety.reason}`, matched: _safety.matched });
       }
-      wez.sendText(paneId, text);
-      wez.sendTextNoEnter(paneId, '\r');
+      await wez.sendText(paneId, text);
+      await wez.sendTextNoEnter(paneId, '\r');
       sendJson(res, 200, { ok: true, pane_id: paneId });
     } catch (err) {
       sendError(res, err);
@@ -90,7 +90,7 @@ function createPaneHandlers(ctx) {
         '1': '1', '2': '2', '3': '3',
       };
       const payload = mapping[key.toLowerCase()] ?? key;
-      wez.sendTextNoEnter(paneId, payload);
+      await wez.sendTextNoEnter(paneId, payload);
       sendJson(res, 200, { ok: true, pane_id: paneId, key });
     } catch (err) {
       sendError(res, err);
@@ -103,7 +103,7 @@ function createPaneHandlers(ctx) {
       if (!_safety.allowed) {
         return sendJson(res, 403, { error: `safety-policy blocked: ${_safety.reason}`, matched: _safety.matched });
       }
-      wez.killPane(paneId);
+      await wez.killPane(paneId);
       const wt = worktreeRegistry.get(paneId);
       if (wt) {
         try {
@@ -123,7 +123,7 @@ function createPaneHandlers(ctx) {
 
   async function handlePostAutoHandoff(req, res, paneId) {
     try {
-      const panes = collectPanes();
+      const panes = await collectPanes();
       const pane = panes.find(p => p.pane_id === paneId);
       if (!pane) return sendJson(res, 404, { error: 'pane not found' });
 
@@ -137,14 +137,14 @@ function createPaneHandlers(ctx) {
       if (!force) {
         const ctxPct = pane.ctx || 'unknown';
         const checkPrompt = `[AUTO-HANDOFF READINESS CHECK] The dashboard is considering a session reset because Ctx is at ${ctxPct}%. Are you at a natural break point where a handoff WOULD NOT lose mid-task context?\n\nReply in exactly this format:\n  READY: <1-line reason>\n  — or —\n  NOT_READY: <what you'd need to finish first>\n\nNothing else.`;
-        wez.sendText(paneId, checkPrompt);
-        wez.sendTextNoEnter(paneId, '\r');
+        await wez.sendText(paneId, checkPrompt);
+        await wez.sendTextNoEnter(paneId, '\r');
 
         const READINESS_POLL_ITERATIONS = 60;
         for (let i = 0; i < READINESS_POLL_ITERATIONS; i++) {
           await sleep(2000);
           try {
-            const text = wez.getFullText(paneId, 20) || '';
+            const text = await wez.getFullText(paneId, 20) || '';
             const match = text.match(/●\s*(READY|NOT_READY):\s*(.+?)(?:\n|$)/);
             if (match) { readinessResult = { status: match[1], reason: match[2].trim() }; break; }
           } catch { /* pane may be transitioning */ }
@@ -170,8 +170,8 @@ function createPaneHandlers(ctx) {
 
       const instruction = `Use the /handoff skill to write a comprehensive session handoff to handoffs/${filename}. Corr: ${corr}. Focus: ${focus || 'general checkpoint'}. Include sections: Context, Current State, Open Threads, Next Steps, Constraints & Gotchas, Relevant Files. Do NOT include credentials, API keys, tokens, or private paths. Write the file, then stop.`;
       log(`[auto-handoff] pane-${paneId} dispatching /handoff skill (corr=${corr})`);
-      wez.sendText(paneId, instruction);
-      wez.sendTextNoEnter(paneId, '\r');
+      await wez.sendText(paneId, instruction);
+      await wez.sendTextNoEnter(paneId, '\r');
 
       const paneCwd = (pane.project || '').replace(/^\//, '');
       const handoffsDir = ctx.path.join(paneCwd, 'handoffs');
@@ -204,7 +204,7 @@ function createPaneHandlers(ctx) {
       for (let i = 0; i < 30; i++) {
         await sleep(2000);
         try {
-          const panesNow = collectPanes();
+          const panesNow = await collectPanes();
           const pNow = panesNow.find(x => x.pane_id === paneId);
           if (pNow && pNow.status === 'idle') {
             settledChecks++;
@@ -216,18 +216,18 @@ function createPaneHandlers(ctx) {
       }
       log(`[auto-handoff] pane-${paneId} settled (idle ${settledChecks}x consecutive), sending /clear`);
 
-      try { wez.sendTextNoEnter(paneId, '\x03'); } catch {}
+      try { await wez.sendTextNoEnter(paneId, '\x03'); } catch {}
       await sleep(500);
-      wez.sendText(paneId, '/clear');
-      wez.sendTextNoEnter(paneId, '\r');
+      await wez.sendText(paneId, '/clear');
+      await wez.sendTextNoEnter(paneId, '\r');
       await sleep(4000);
-      wez.sendTextNoEnter(paneId, '\r');
+      await wez.sendTextNoEnter(paneId, '\r');
 
       log(`[auto-handoff] pane-${paneId} injecting continuation prompt`);
-      wez.sendText(paneId, `Continue your work from the handoff file at handoffs/${filename}. Read it FIRST, then proceed with your next step.`);
-      wez.sendTextNoEnter(paneId, '\r');
+      await wez.sendText(paneId, `Continue your work from the handoff file at handoffs/${filename}. Read it FIRST, then proceed with your next step.`);
+      await wez.sendTextNoEnter(paneId, '\r');
       await sleep(500);
-      wez.sendTextNoEnter(paneId, '\r');
+      await wez.sendTextNoEnter(paneId, '\r');
 
       handoffRegistry.set(corr, {
         corr, paneId, file: 'handoffs/' + filename,

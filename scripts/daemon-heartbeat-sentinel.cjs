@@ -127,15 +127,17 @@ async function findOrchestratorPane() {
   return hit ? hit.paneId ?? hit.pane_id : null;
 }
 
-async function deliverPoke(message) {
+async function deliverPoke(message, recheck) {
   const verified = require(path.join(REPO, 'src', 'verified-send.cjs'));
   const paneId = await findOrchestratorPane();
   if (paneId === null || paneId === undefined) return { delivered: false, reason: 'no orchestrator pane found' };
+  const currentMessage = recheck ? recheck() : message;
+  if (!currentMessage) return { delivered: false, reason: 'daemon recovered before alert delivery' };
   // Two-phase send + read-back verification (verified-send.cjs): a raw
   // sendText('...\r') leaves the poke STUCK in the composer often enough that
   // drill #1 of this very card hit it. An alert that sits unsubmitted in an
   // input box is the daemon's silent death all over again, one layer up.
-  const text = `[daemon-sentinel] ${message} Evidencia: _intel/evidence/wezbridge/daemon-sentinel.jsonl`;
+  const text = `[daemon-sentinel] ${currentMessage} Evidencia: _intel/evidence/wezbridge/daemon-sentinel.jsonl`;
   const sent = await verified.sendPromptDeferredEnter(paneId, text);
   // T-0323: composer con texto ajeno => la primitiva no escribio; no verificar
   // (reintentaria Enter sobre el texto del operador). El poke se reporta como
@@ -144,7 +146,7 @@ async function deliverPoke(message) {
   const submitted = await verified.verifyPromptSubmission(paneId, text);
   try {
     require(path.join(REPO, 'src', 'action-log.cjs')).logAction('sentinel_poke', {
-      target: `pane-${paneId}`, why: message.slice(0, 120), extra: { submitted },
+      target: `pane-${paneId}`, why: currentMessage.slice(0, 120), extra: { submitted },
     });
   } catch { /* attribution is best-effort, delivery already happened */ }
   return { delivered: true, paneId, submitted };
@@ -154,16 +156,25 @@ async function main() {
   const ds = require(path.join(REPO, 'src', 'daemon-status.cjs'));
   const { probeDaemon } = require(path.join(REPO, 'src', 'daemon-probe.cjs'));
 
-  const heartbeat = ds.readHeartbeat(HEARTBEAT_FILE);
+  const initialHeartbeat = ds.readHeartbeat(HEARTBEAT_FILE); // forensic only; never the alert verdict
   const daemon = await probeDaemon({ timeoutMs: SENTINEL_PROBE_TIMEOUT_MS });
-  const liveness = ds.assessLiveness({ heartbeat, daemonReachable: daemon.up });
   const state = readJson(STATE_FILE) || {};
-  const decision = evaluate({ liveness, state });
+  // A slow probe or pane discovery may outlive the outage. Assess the latest
+  // heartbeat after each wait, not the stale record read before it started.
+  const observe = () => {
+    const heartbeat = ds.readHeartbeat(HEARTBEAT_FILE);
+    const liveness = ds.assessLiveness({ heartbeat, daemonReachable: daemon.up });
+    return { heartbeat, liveness, decision: evaluate({ liveness, state }) };
+  };
+  let { heartbeat, liveness, decision } = observe();
 
   let delivery = null;
   if (decision.alert) {
     try {
-      delivery = await deliverPoke(decision.message);
+      delivery = await deliverPoke(decision.message, () => {
+        ({ heartbeat, liveness, decision } = observe());
+        return decision.alert ? decision.message : null;
+      });
     } catch (err) {
       delivery = { delivered: false, reason: String(err && err.message).slice(0, 200) };
     }
@@ -175,6 +186,11 @@ async function main() {
   if (decision.recovered) {
     logLine({ ts: new Date().toISOString(), verdict: 'recovered', episode_started_at: state.episodeStartedAt });
   }
+  const recoveredDuringCheck = initialHeartbeat?.ts && heartbeat?.ts !== initialHeartbeat.ts
+    && Date.now() - Date.parse(initialHeartbeat.ts) > ds.HEARTBEAT_STALE_MS
+    && liveness.heartbeatAgeMs <= ds.HEARTBEAT_STALE_MS;
+  if (recoveredDuringCheck) logLine({ ts: new Date().toISOString(), verdict: 'recovered-before-alert',
+    prior_heartbeat_ts: initialHeartbeat.ts, heartbeat_ts: heartbeat.ts });
 
   writeJson(STATE_FILE, decision.newState);
   // Own heartbeat EVERY run, healthy or not: silence from the sentinel must be
@@ -183,6 +199,7 @@ async function main() {
     ts: new Date().toISOString(), verdict: decision.verdict,
     alerted: decision.alert, daemon_up: daemon.up,
     heartbeat_age_ms: liveness.heartbeatAgeMs,
+    recovered_during_check: Boolean(recoveredDuringCheck),
   });
 
   const line = `daemon-sentinel: ${decision.verdict}${decision.alert ? ` — poked (${JSON.stringify(delivery)})` : ''}`;

@@ -76,7 +76,7 @@ async function orchestratorPaneExists() {
     // T-0321: con el censo en worker, el daemon inyecta discoverPanes desde la
     // cache; la llamada sincrona a wezterm solo queda como fallback fuera del daemon.
     const panes = typeof state.discoverPanes === 'function'
-      ? (state.discoverPanes() || [])
+      ? (await state.discoverPanes() || [])
       : await require('./pane-discovery.cjs').discoverPanes();
     const repo = orchRepo().toLowerCase();
     return panes.some((p) => p.isClaude
@@ -141,12 +141,12 @@ async function check(deps = {}) {
   }
 }
 
-function start({ discoverPanes = null } = {}) {
+function start({ discoverPanes = null, wezterm = null } = {}) {
   if (process.env.WEZBRIDGE_WATCHDOG === '0') return false;
   if (state.running) return true;
   state.running = true;
   state.discoverPanes = discoverPanes;
-  state.timer = setInterval(() => { check().catch(() => { /* fail-soft */ }); }, CHECK_MS);
+  state.timer = setInterval(() => { check({ wezterm }).catch(() => { /* fail-soft */ }); }, CHECK_MS);
   if (state.timer.unref) state.timer.unref();
   return true;
 }

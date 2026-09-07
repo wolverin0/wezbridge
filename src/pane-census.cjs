@@ -18,7 +18,7 @@
  */
 const path = require('node:path');
 const fs = require('node:fs');
-const { fork, spawnSync } = require('node:child_process');
+const { fork } = require('node:child_process');
 
 const DEFAULTS = Object.freeze({
   intervalMs: 20000,  // cada 20 s. Con 9 panes un censo son ~11 procesos wezterm; a 5 s eran ~130/min sobre el mux (medido 04/09: la suite dejo de terminar en 10 min con el daemon vivo al lado). El waker tickea a 60 s y el watchdog a 30 s: 20 s alcanza y sobra.
@@ -44,12 +44,7 @@ function loadCensusConfig({ intelDir, env = process.env } = {}) {
 }
 
 function defaultKillTree(pid) {
-  if (!pid) return;
-  if (process.platform === 'win32') {
-    spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-  } else {
-    try { process.kill(pid, 'SIGKILL'); } catch { /* ya muerto */ }
-  }
+  require('./daemon-cli.cjs').killProcessTree(pid);
 }
 
 function startCensus({
@@ -111,6 +106,7 @@ function startCensus({
         env: { ...process.env, WEZBRIDGE_CENSUS_CFG: JSON.stringify(cfg) },
         stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
         windowsHide: true,
+        detached: process.platform !== 'win32',
       });
       // El hijo NO debe mantener vivo al padre: un test que carga el daemon en
       // proceso (daemon-liveness, orch-waker-arming) no salia nunca porque el
