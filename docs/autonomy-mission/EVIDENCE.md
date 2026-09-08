@@ -1,9 +1,48 @@
-<!-- doc-head: T-0418 local evidence and open live acceptance, 2026-09-07 -->
-Includes final Linux signal-race correction, local commit/index scope, provider, Telegram and supervisor gates.
-Read before acceptance; implementation is locally verified, autonomous live outcomes remain unproved.
+<!-- doc-head: T-0418 current evidence matrix and preserved historical failures, 2026-09-08; frozen intake and remaining live gates -->
+Separates accepted Node, lease, finite-RPC, callback and MemoryMaster evidence from full-scope gates and dated failures.
+MODEL-PILOTS.md contains provider/job/outbox detail; CONTROL.md remains the single mission checklist and pause record.
 <!-- /doc-head -->
 
-# Acceptance matrix
+# Current resumed checkpoint
+
+The runtime remains stopped with four real fictional jobs, ten receipts, four
+repositories and three held pending notices preserved at 10/12 aggregate
+phases. No service, plugin, bot consumer, recurring schedule, new model,
+protected native callback or production action is active.
+
+| Criterion | Result | Evidence and limit |
+|---|---|---|
+| Node kernel | ACCEPTED | `npm test`:179 pass, one explicit model opt-in skip; check/build pass. |
+| DriverLease | ACCEPTED NARROW | 17 tests; Desktop report `9A5C...F3F1`; final VM report `G:/tmp/autonomy-vm-recovery-final-20260908.json`, `B3A832...BA01`; one SQLite effect, four events, exact absence of three containers. Not full driver/supervisor/systemd/reboot recovery. |
+| Finite Docker RPC | ACCEPTED NARROW | 19 tests and six real model-free cases on a restored stopped scratch volume; local Unix socket, immutable image, exact labeled existing volume and fixed root. Original volume was not migrated; disposable restore held ten receipts/four repositories and reported `database=ok`. No decision approval. |
+| Private facade to Docker health | ACCEPTED NARROW | Runtime proof passes with a synthetic identity only; native conversation identity is explicitly `bound-unverified`; this does not authenticate an owner. |
+| Callback backend/service | ACCEPTED PURE BACKEND | 25 cases. Protected native ingress is absent; same-UID model-terminal/Docker provenance remains forgeable. |
+| MemoryMaster parser/native | ACCEPTED BOUNDED | 27 pass and three POSIX skips on Windows from 30 collected; WSL 30/30. |
+| Registered Windows memory intake | ACCEPTED NARROW | Actual MCP-to-Python-wire-to-compiled-JobStore-to-SQLite proof returned `MISSING`, no eligible claims, one source call across the initial and duplicate submission, zero models/workers; artifact `G:/tmp/autonomy-memory-live-intake-proof-20260908.json`, `E47E39BB...FDE94`. Positive `READY` usefulness and configured live source callback remain unproved. |
+| Full memory integration | OPEN | Per-intake source/storage integration is accepted; configured live retrieval and positive `READY` usefulness remain open; VM isolated MCP/Pydantic import is `UNAVAILABLE`. |
+| Protected owner ingress | OPEN | Same-UID callback trust domain requires separate review and protected native ingress. |
+| Full runtime/supervisor | OPEN | Worker replacement, process-group death, systemd/cgroup, reboot and soak remain unproved. |
+| Live owner/provider journey | OPEN | Hermes/plugin activation, live intake/control, owner callback/read and durable live notification remain inactive or unverified. |
+
+Native implementation is committed through `25dd84e`; operating docs through
+`b28c78e`. Independent acceptance is recorded in [RESUME-REVIEW.md](RESUME-REVIEW.md),
+whose retained source report SHA-256 is `CE8643D20A3F743490BD16BA98967F3DB9E1630237E7E12B1CA62D14F95D9C28`.
+Native GitNexus staged checks covered the changed runtime flows; the final index
+matches `b28c78e` with 1308 nodes, 4182 edges and no embeddings. The separate
+Wezbridge mission-doc worktree is not registered in GitNexus: its requested
+staged check returned repository-not-found. Direct Git inspection confirms five
+documentation files only; no result from the other Wezbridge checkout was used.
+
+Final read-only source-volume artifact:
+`G:/tmp/autonomy-original-volume-final-status-copy-20260908.json`.
+The original source hashes stayed unchanged while a tmpfs copy was queried;
+stopped=1, workers=0, four VERIFIED jobs, ten phases, PENDING=3, SENT=1 and
+integrity=ok. The exact probe container was absent afterward. The earlier direct
+read-only SQLite open failed and is retained as `autonomy-original-volume-final-status-20260908.json`.
+
+# Earlier acceptance matrix, before the Docker model runs
+
+The table below retains the earlier checkpoint and its failures. Current model-backed job, delivery and pause evidence is in MODEL-PILOTS.md: four VERIFIED synthetic jobs, one durable Telegram receipt, no active pilot worker. Live intake, scoped memory, supervised recovery and soak remain open.
 
 | Criterion | Result | Evidence/limit |
 |---|---|---|
