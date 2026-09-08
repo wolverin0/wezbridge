@@ -43,7 +43,11 @@ function mkTmpFile(content) {
 function spawnWatcher(file, envOverrides = {}) {
   const events = [];
   const waiters = [];
-  const child = spawn(process.execPath, [ENTRY], {
+  // setup.cjs is inherited through NODE_OPTIONS and installs the general CLI
+  // double before this process starts. Apply this test's deliberately missing
+  // binary AFTER that preload so a nonexistent owner really is unreadable.
+  const launch = 'process.env.WEZBRIDGE_WEZTERM_BIN = process.env.TASKS_TEST_WEZTERM_BIN; require(process.argv[1]);';
+  const child = spawn(process.execPath, ['-e', launch, ENTRY], {
     env: {
       ...process.env,
       ACTIVE_TASKS_FILE: file,
@@ -53,6 +57,7 @@ function spawnWatcher(file, envOverrides = {}) {
       // waiting out wezterm.cjs's real 10s CLI timeout (x2 with its retry)
       // against a mux that doesn't exist in this test environment.
       WEZBRIDGE_WEZTERM_BIN: 'T:/nonexistent-wezterm-binary-for-tests.exe',
+      TASKS_TEST_WEZTERM_BIN: path.join(path.dirname(file), 'nonexistent-wezterm-for-test.exe'),
       ...envOverrides,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
