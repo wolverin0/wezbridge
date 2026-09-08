@@ -256,6 +256,48 @@ function reviewTargetsIn(intelDir, now = Date.now()) {
   return reviewWakeTargets({ tasks, rulings, now });
 }
 
+/** Strict read-only snapshot: uncertainty must never authorize a quiet wake. */
+function readReviewObligations(intelDir, repo, now) {
+  try {
+    const dir = path.join(intelDir, 'tasks');
+    const names = fs.readdirSync(dir).filter(name => name.endsWith('.json'));
+    const states = new Set(['queued', 'ready', 'running', 'review', 'blocked', 'done', 'failed', 'cancelled']);
+    const tasks = names.map(name => {
+      const task = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'));
+      if (!task || task.id !== name.slice(0, -5) || !states.has(task.state))
+        throw new Error('invalid task snapshot');
+      // Historical terminal cards can lack repo. Their state proves there is
+      // no review obligation; no such inference is safe for an active card.
+      if (['done', 'cancelled'].includes(task.state)) return null;
+      if (!/^T-\d{4}\.json$/.test(name)) throw new Error('ungoverned active task file');
+      if (typeof task.repo !== 'string' || !task.repo.trim()) throw new Error('missing active repo');
+      return task;
+    }).filter(Boolean);
+    let rulings = null;
+    try {
+      rulings = fs.readFileSync(path.join(intelDir, 'rulings.jsonl'), 'utf8')
+        .split('\n').filter(line => line.trim()).map(line => JSON.parse(line));
+    } catch { /* unreadable rulings suppress no review obligation */ }
+    const normalize = value => value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    const target = normalize(repo);
+    const matching = tasks.filter(task => {
+      const name = normalize(task.repo);
+      return name === target || target.endsWith('/' + name) || name.endsWith('/' + target);
+    });
+    const ids = reviewWakeTargets({ tasks: matching, rulings, now });
+    const fields = ['id', 'repo', 'state', 'corr', 'next_action', 'blocker', 'blocked_by',
+      'evaluator_evidence', 'context_refs', 'acceptance_criteria'];
+    const keys = ids.map(id => {
+      if (!Array.isArray(rulings)) return null; // uncertainty never earns dedupe silence
+      const task = matching.find(card => card.id === id);
+      const content = { task: Object.fromEntries(fields.map(field => [field, task[field]])),
+        rulings: rulings.filter(ruling => ruling && ruling.task === id) };
+      return 'review:' + require('node:crypto').createHash('sha256').update(JSON.stringify(content)).digest('hex');
+    });
+    return { known: true, ids, keys };
+  } catch { return { known: false, ids: [], keys: [] }; }
+}
+
 function runGate() {
   const r = spawnSync(process.execPath, [path.join(HERE, 'steward-gate.cjs')],
     { encoding: 'utf8', timeout: 180000 });
@@ -608,4 +650,4 @@ async function main() {
 }
 
 if (require.main === module) main().then((code) => process.exit(code), (e) => { log(`turn crashed: ${firstLine(e)}`); process.exit(4); });
-module.exports = { reviewWakeTargets, reviewTargetsIn, deferralIsLive, classifyWake, classifyEvent, shouldWake, turnWasProductive, raiseStall, clearStall, STALL_LIMIT };
+module.exports = { reviewWakeTargets, reviewTargetsIn, readReviewObligations, deferralIsLive, classifyWake, classifyEvent, shouldWake, turnWasProductive, raiseStall, clearStall, STALL_LIMIT };
