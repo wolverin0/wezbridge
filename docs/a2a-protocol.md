@@ -1,6 +1,6 @@
-<!-- doc-head: A2A contract and executable fleet rules, T-0327 -->
+<!-- doc-head: A2A contract and executable fleet rules, T-0327 and T-0377 -->
 2026-09-06: 900-character refusal with explicit opt-in; ticketed cross-repo provenance; registered routine evidence.
-Covers sender guards, steward findings, result criteria and queue/lease identity; read before dispatch or review.
+Covers sender guards, result criteria, queue identity and isolated T-0377 restore evidence; read before dispatch or review.
 Transport receipt is not work acceptance. Runtime activation and loaded MCP revision require separate verification.
 <!-- /doc-head -->
 
@@ -432,3 +432,7 @@ autolimpia: un `decidir` tardío lo apaga. Época 2026-09-01.
 - Globals in `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` include a compressed summary.
 - Watcher implementation: `src/omni-watcher.cjs` (`scanA2AEnvelopes`, `pendingA2A`, `peer_orphaned` emission).
 - OmniClaude's reaction handler: in its `CLAUDE.md` under "Event Reaction Decision Tree".
+
+## T-0377 current-project delivery candidate
+
+See [implementation and restore evidence](T0377-QUEUE-DELIVERY.md). The isolated candidate resolves canonical cwd before each queued message and durably records missing-project discards. Both task criteria passed; shared runtime activation and origin acceptance remain pending.
