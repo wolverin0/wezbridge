@@ -1,7 +1,7 @@
-<!-- doc-head: T-0418 current resumed checkpoint, 2026-09-08; frozen intake and remaining live gates -->
-Single mission checklist and continuation for the paused four-job pilot.
-Accepted evidence now covers Node, narrow DriverLease, finite Docker RPC, pure callbacks and MemoryMaster parser/native plus registered-intake checks.
-Read MODEL-PILOTS.md and EVIDENCE.md; positive memory usefulness, protected ingress, supervisor recovery, owner flow and soak remain open.
+<!-- doc-head: T-0418 outcome-first continuation and local waker delivery, 2026-09-08 -->
+Single mission checklist; the operator requires useful delivery instead of pane-status recaps.
+Local waker correction preserves Fleet review obligations and suppresses proven conversation noise; acceptance status is recorded below.
+The four-job native pilot stays paused; positive memory usefulness, protected ingress, supervisor recovery, owner flow and soak remain open.
 <!-- /doc-head -->
 
 # Autonomy mission control
@@ -23,6 +23,63 @@ Authorized: isolated development worktrees, code/tests/docs, local commits, boun
 - Native docs/AUTONOMY-PILOT.md is the operating interface; integrations/hermes-autonomy/README.md contains staging/rollback. Neither is an active installation.
 
 ## Checklist
+
+### Outcome-first local delivery, 2026-09-08
+
+Operator correction: understanding the north star and relaying panel activity is
+not delivery. Self-request `T-0418-self-deliver-20260908` was sent and received
+in the verified wezbridge pane. It continues this card; no second backlog or
+watcher was created. The retained independent reviewer was reused in the same
+T-0418 acceptance role.
+
+The bounded deliverable is the existing waker's outcome/obligation decision:
+an ordinary turn-end earns silence only after a readable snapshot proves no
+open graph, immediate Fleet review obligation, directed signal or recovery
+warning. It never changes a task, next_action, lease, graph or acceptance state.
+Missing/corrupt inputs keep the wake. Named review cards direct the next action.
+
+- Implemented in this isolated worktree; shared dirty source is preserved.
+- Real saved events from Wabot and MemoryMaster replayed against a copied
+  current ledger: two generic wakes become one named review wake (`T-0330`);
+  MemoryMaster's ordinary turn boundary is silent. Simulated subsequent turns
+  bring the baseline to four wakes while the candidate stays at one; unchanged
+  review obligations reuse a receipt, changed evidence/next_action/rulings wake
+  again. No actual pane messages sent.
+- Forced child-process exits after durable noise and verified-result receipts
+  but before pending removal preserve dedupe and one recorded result effect;
+  the review card and its next_action survive. These are finite local checks, not the full
+  native supervisor or live daemon recovery.
+- Final `npm test`: 1293 passed, 27 skipped, zero failed (1320 total).
+  Two initial gate blockers were repaired: the isolated worktree needed the
+  existing nonsecret affinity seed; a test's missing-WezTerm override had been
+  overwritten by the inherited general test preload. Only that test's launch
+  fixture changed; production tasks-watcher code did not.
+- Independent local acceptance: [WAKER-REVIEW.md](WAKER-REVIEW.md), exact report
+  SHA-256 `F90AB1C9919EF33615D60A01D836006D1DA2D8E43C5ADA56BB292F7F9FD2206D`.
+  All twelve inverse mutations failed; independent focused suites passed.
+  Runtime/test delivery is committed as `f52c797`; the separate test-preload
+  fixture repair is `4e7bf29`. This source has not been loaded into the shared
+  running daemon. Local delivery is accepted; T-0418 as a whole stays open.
+
+Evidence: `G:/tmp/T0418-waker-real-events-final-v2.json`,
+`G:/tmp/T0418-waker-full-accepted-candidate.log`, and executable
+`test/waker-outcome-obligation.test.cjs`. Reproduce saved-event comparison with
+`scripts/waker-outcome-replay.cjs`; it copies inputs and uses a local recording
+sink. The current ledger snapshot is not a reconstruction of historical task
+state, and the replay omits source panes. Neither this delivery nor a successful
+self-message completes the overall autonomy mission. Dedupe is bounded by the
+existing 500-entry receipt ring; a crash before a verified receipt is persisted
+is not an exactly-once delivery guarantee.
+
+The two-file runtime patch is prepared at
+`G:/tmp/T0418-waker-runtime-final.patch` (SHA-256
+`1E93A578D68F84B6D2EB0D09A644FF038552B3C8E281C9487BF50A87EE21091B`).
+`git apply --check` passed against the shared dirty checkout; the patch was not
+applied there. It preserves the separate uncommitted Codex target-resolution
+change. Loading it requires the owning existing daemon to load the updated
+modules; no second watcher or daemon was launched.
+
+### Preserved native pilot checklist
 
 Resume2026-09-08: operator explicitly requested parallel agents chosen by complexity to avoid inherited maximum-model/effort cost. The first wave is exactly three childless agents with fork_turns=none: resume_recovery uses gpt-5.6-terra/high for kernel process ownership; resume_memory uses gpt-5.6-luna/high for the bounded existing-API adapter; resume_review uses gpt-5.6-sol/high for independent security/acceptance judgment. Each has distinct file ownership and a short task brief. No max/ultra or fast profile is used for them. Parent owns integration/runtime and does not duplicate their assigned implementation. Escalate only for a concrete blocker, not by default. Completed four model jobs will not be rerun; deterministic recovery probes use no model. Persisted twelve-phase job limit remains unchanged.
 
@@ -112,5 +169,9 @@ Current accepted commits are `ba8c4ec` (native isolation), `76f706f` (decisions)
 The dated Docker crash-recovery draft was not accepted: three of seven draft tests failed on Windows path mocking and no actual kill/recover proof ran. It remains preserved as failure evidence under `G:/tmp/autonomy-docker-pilot-20260908/recovery-wip`; the later accepted narrow lease and finite-RPC artifacts are recorded in the current checkpoint above. Do not enable workers or drain held notices merely because a new session opens. Live plugin, recurring service, production cutover and soak remain unproved.
 
 ## Reports
+
+WAKER-REVIEW.md: exact local waker source hashes, independent mutations, finite
+real-event replay and bounded receipt-retention/restart limits. Runtime loading
+is a separate, still-unperformed action; the existing daemon retains its old code.
 
 ENGINE-INVENTORY.md and HERMES-INVENTORY.md: exact source/install/runtime and owner evidence. CONTEXT-INVENTORY.md and SPECIALISTS.md: analytics/native contracts. ARCHITECTURE.md and ARCHITECTURE-REVIEW.md: choice and initial review. ISOLATION-SPIKE.md: command probes/corrected constraints. CORE-REVIEW.md: red findings and repaired checks. EVIDENCE.md: final acceptance matrix and measurement limits.

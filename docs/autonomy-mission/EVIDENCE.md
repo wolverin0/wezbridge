@@ -1,7 +1,46 @@
-<!-- doc-head: T-0418 current evidence matrix and preserved historical failures, 2026-09-08; frozen intake and remaining live gates -->
-Separates accepted Node, lease, finite-RPC, callback and MemoryMaster evidence from full-scope gates and dated failures.
+<!-- doc-head: T-0418 native pilot and outcome-first local delivery evidence, 2026-09-08 -->
+Separates the local waker correction from accepted native Node, lease, finite-RPC, callback and MemoryMaster checks and remaining live gates.
 MODEL-PILOTS.md contains provider/job/outbox detail; CONTROL.md remains the single mission checklist and pause record.
 <!-- /doc-head -->
+
+## Outcome-first local delivery
+
+The operator's correction now has an executable regression in
+`test/waker-outcome-obligation.test.cjs`. The existing waker consumes only proven
+bare-turn noise; it retains direct signals, graph work, recovery riders and
+same-repo nondeferred Fleet review cards. No card or next_action is changed by
+transport. A forced child-process interruption covers the receipt/removal gap.
+
+The finite replay of the two actual 2026-09-08 events (12:36:00.110Z Wabot,
+12:40:40.635Z MemoryMaster) used copied current tasks/rulings/graphs and a local
+recording sink. Baseline `b6f8e6c` generated two generic wakes; candidate generated
+one naming Wabot review `T-0330`; MemoryMaster was silent. Reconstruction added
+no wake. Simulated subsequent new turns produced four cumulative baseline wakes
+and one cumulative candidate wake. No real pane received a message. Artifact:
+`G:/tmp/T0418-waker-real-events-final-v2.json`. Review receipts cover meaningful
+card content and same-task rulings; changed evidence wakes again. Receipt-ring
+retention is bounded (500 entries); a pre-receipt crash is not covered by an
+exactly-once guarantee. Both noise and verified-result receipt/removal crash
+windows have child-process killers; the latter records one result effect and
+preserves the card's next_action.
+
+Final complete Wezbridge gate: `npm test`, 1293 passed, 27 skipped, zero failed,
+1320 total; `G:/tmp/T0418-waker-full-accepted-candidate.log`. The initial failure report is
+preserved at `G:/tmp/T0418-waker-full.log`: a new helper filename tripped the
+coordinator guard (resolved by extending the existing turn module), missing
+isolated affinity seed, and a test preload that defeated its intended unreadable
+pane setup. The latter has a scoped test-fixture repair and a failing-before /
+passing-after case; no production tasks-watcher change.
+
+The correct isolated worktree was indexed (538 nodes, 641 edges, no embeddings).
+GitNexus still did not resolve the CJS functions; its file-level diff check is
+not a call-graph proof. Direct callers and complete tests are the impact evidence.
+Independent local acceptance is [WAKER-REVIEW.md](WAKER-REVIEW.md), exact
+SHA-256 `F90AB1C9919EF33615D60A01D836006D1DA2D8E43C5ADA56BB292F7F9FD2206D`.
+The reviewer killed all twelve inverse mutations, including missing stable
+review receipts and restored pending-before-receipt persistence. Source/tests
+are committed in `f52c797`; the separate test fixture repair is `4e7bf29`.
+Shared daemon activation and full autonomy acceptance remain unproved.
 
 # Current resumed checkpoint
 
