@@ -1,7 +1,7 @@
-<!-- doc-head: T-0421 one-lane main adoption; graph ancestors excluded from release -->
+<!-- doc-head: T-0421 one-lane; pinned errors must never enter automatic rescue queues -->
 Operator directive replaces general graph activation with explicit project+pane -> durable receipt -> dispatch -> Jarvis evidence.
 Read for the executable CLI, main adoption, proof artifacts, recovery policy and limits.
-Jarvis acknowledgement 112153 accepts the first real MVP; main release proof is separately recorded in Fleet.
+The real CRM delivery exposed an error-rescue bypass; real-MCP regression tests now assert that no queue entry is created.
 <!-- /doc-head -->
 
 # T-0421 One-Lane MVP
@@ -104,6 +104,22 @@ MCP sessions were not restarted or replaced. The CLI is usable from this worktre
 not a global installation. No graph activation, push, merge or secret configuration occurred.
 
 ## Limits
+
+### Pinned Rescue Incident, 2026-09-09
+
+The live `deploy-guard-check-20260909` request used an intentionally wrong cwd.
+The guard threw, but the generic MCP catch block rescued the request into
+`queues/crm.jsonl` without the pin. CRM later received and answered it.
+The original verification checked only `isError` and therefore missed the actual
+queue side effect; that guard-success claim is invalidated, not recycled as proof.
+
+Any exception on a request carrying `expected_cwd` now returns `queued:false` and
+`retry:manual-only` before generic rescue. This also covers uncertain failures after
+paste, where replay could duplicate delivery. Ordinary unpinned rescue is unchanged.
+`test/pinned-rescue.test.cjs` uses the real stdio MCP server with isolated transport
+fixtures and asserts filesystem effects: two failing regressions before the fix,
+then no queue file after pin rejection or partial-transport failure. Its legacy
+control still creates the expected durable queue record. Evidence: `G:/tmp/pinned-rescue-20260909/`.
 
 - This is a real read-only transport journey, not proof of arbitrary project execution or production readiness.
 - The current strict visible-cwd parser supports the observed Claude status bar; unsupported or unreadable layouts refuse.
