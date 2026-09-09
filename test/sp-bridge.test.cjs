@@ -133,6 +133,10 @@ test('T-0376 fail-first: plugin mudo => sync falla con evidencia durable (log, l
   const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-mute-log-'));
   fs.mkdirSync(path.join(intel, 'tasks'));
   fs.writeFileSync(path.join(intel, 'tasks', 'T-0900.json'), JSON.stringify(card()));
+  fs.mkdirSync(path.join(intel, 'briefs'));
+  for (const bot of ['centinela', 'dep-scout', 'wabot-curador', 'auditor-ronda', 'skill-curator']) {
+    fs.writeFileSync(path.join(intel, 'briefs', `${bot}-mas-reciente.md`), `# ${bot}\nfixture\n`);
+  }
 
   // 1) nadie contesta: cliente con timeout minimo y sin plugin que tickee
   const mute = sp.createClient({ dataDir, timeoutMs: 30, pollMs: 1 });
