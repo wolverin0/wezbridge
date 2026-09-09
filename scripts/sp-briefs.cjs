@@ -102,8 +102,10 @@ async function syncBriefs({ client, intel, ensureProject, ensureTag }) {
     const tasks = await client.getTasks({ projectId, includeDone: true, includeArchived: true });
     const items = [];
     for (const brief of ordered) items.push(await syncOne(brief, { client, stateFile, projectId, tagId, tasks }));
-    return { created: items.filter(x => x.created).length, completed: items.filter(x => x.completed).length,
-      unchanged: items.filter(x => x.unchanged).length, recovered: items.filter(x => x.recovered).length, items };
+    const summary = { created: items.filter(x => x.created).length, completed: items.filter(x => x.completed).length,
+      unchanged: items.filter(x => x.unchanged).length, recovered: items.filter(x => x.recovered).length };
+    writeState(stateFile, { ...readState(stateFile), ts: new Date().toISOString(), last_run: summary });
+    return { ...summary, items };
   } finally { fs.closeSync(fd); fs.unlinkSync(lock); }
 }
 

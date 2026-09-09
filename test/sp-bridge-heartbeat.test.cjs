@@ -14,6 +14,20 @@ function fixture(t) {
   return dir;
 }
 
+test('scheduled healthy check persists its timestamp and observed freshness without stale events', async t => {
+  const dir = fixture(t);
+  const now = Date.now();
+  const ts = new Date(now - 60000).toISOString();
+  fs.writeFileSync(path.join(dir, '.sp-bridge/last-success.json'), JSON.stringify({ ts }));
+  await checkSpHeartbeat({ intelDir: dir, now, send: null });
+  const state = JSON.parse(fs.readFileSync(path.join(dir, '.sp-bridge/heartbeat-state.json'), 'utf8'));
+  assert.equal(state.checked_at, new Date(now).toISOString());
+  assert.equal(state.stale, false);
+  assert.equal(state.last_success_at, ts);
+  assert.equal(state.age_ms, 60000);
+  assert.equal(fs.existsSync(path.join(dir, 'events.jsonl')), false);
+});
+
 test('T-0408 killer: scheduled sentinel writes sp-bridge.stale for an old last-success file', t => {
   const dir = fixture(t);
   const ts = new Date(Date.now() - 16 * 60000).toISOString();

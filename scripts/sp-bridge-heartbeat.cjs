@@ -43,14 +43,15 @@ async function checkSpHeartbeat({ intelDir = INTEL, now = Date.now(), send = hea
   const stateFile = path.join(dir, 'heartbeat-state.json');
   const status = heartbeatStatus(readJson(path.join(dir, 'last-success.json')), now);
   const prior = readJson(stateFile) || {};
-  if (!status.stale) { writeJson(stateFile, {}); return { ...status, notified: false }; }
+  const observation = { checked_at: new Date(now).toISOString(), ...status };
+  if (!status.stale) { writeJson(stateFile, observation); return { ...status, notified: false }; }
   const time = new Date(now).toISOString();
   const episode = prior.episode || time;
   const event = { time, event: 'sp-bridge.stale', source: 'sp-bridge-heartbeat', severity: 'P1',
     threshold_ms: STALE_MS, episode, ...status };
   fs.mkdirSync(dir, { recursive: true });
   if (!prior.episode) fs.appendFileSync(path.join(intelDir, 'events.jsonl'), JSON.stringify(event) + '\n');
-  writeJson(stateFile, { ...prior, episode });
+  writeJson(stateFile, { ...prior, ...observation, episode });
   if (prior.notified) return { ...status, episode, notified: true, duplicate: true };
   let delivery = { ok: false, reason: 'gateway-unconfigured' };
   if (send) {
@@ -61,7 +62,7 @@ async function checkSpHeartbeat({ intelDir = INTEL, now = Date.now(), send = hea
     } catch { delivery = { ok: false, reason: 'gateway-delivery-failed' }; }
   }
   fs.appendFileSync(path.join(intelDir, 'events.jsonl'), JSON.stringify({ time, event: 'sp-bridge.stale_delivery', episode, ...delivery }) + '\n');
-  writeJson(stateFile, { episode, notified: delivery.ok, last_attempt_at: time, delivery });
+  writeJson(stateFile, { ...observation, episode, notified: delivery.ok, last_attempt_at: time, delivery });
   return { ...status, episode, notified: delivery.ok, delivery };
 }
 
