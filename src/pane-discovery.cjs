@@ -143,6 +143,15 @@ function enumerateSockets(wezOps) {
   return [{ socket: null, panes: wezOps.listPanes() }];
 }
 
+function discoverRoutingPanes({ wez: wezOps = wez } = {}) {
+  const socket = typeof wezOps.currentSocket === 'function' ? wezOps.currentSocket() : null;
+  if (!socket) return [];
+  // Numeric pane IDs are meaningful only in the transport's selected socket.
+  const groups = enumerateSockets(wezOps).filter(group => group.socket === socket);
+  if (!groups.length) return [];
+  return discoverPanes({ wez: { ...wezOps, listSockets: () => groups } });
+}
+
 function discoverPanes({ wez: wezOps = wez } = {}) {
   const discovered = [];
   const groups = enumerateSockets(wezOps);
@@ -352,6 +361,7 @@ function getSummary() {
 
 module.exports = {
   discoverPanes,
+  discoverRoutingPanes,
   verifyPaneText,
   enumerateSockets,
   discoverByProject,

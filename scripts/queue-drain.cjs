@@ -36,7 +36,7 @@ async function main() {
   for (const project of projects) {
     const consumer = projectQueue.createConsumer({
       project,
-      discoverPanes: discovery.discoverPanes,
+      discoverPanes: discovery.discoverRoutingPanes,
       send,
       log: (msg) => console.log(msg),
     });

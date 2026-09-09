@@ -2,6 +2,7 @@
 const discovery = require('../../src/pane-discovery.cjs');
 require.cache[require.resolve('../../src/pane-discovery.cjs')].exports = {
   ...discovery, discoverPanes: () => [{ paneId: 1, agent: 'claude', project: '/tmp', tabTitle: 'mock' }],
+  discoverRoutingPanes: () => [{ paneId: 1, agent: 'claude', project: '/tmp', tabTitle: 'mock' }],
 };
 if (process.env.PINNED_TEST_FAILURE === 'after-paste') {
   const pinned = require('../../src/pinned-send.cjs');
