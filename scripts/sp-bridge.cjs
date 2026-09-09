@@ -23,7 +23,8 @@
  *   node scripts/sp-bridge.cjs done --ext <id>
  *   node scripts/sp-bridge.cjs sync-decisions      # tarjetas gateadas -> "Decisiones del fleet"
  *   node scripts/sp-bridge.cjs sync-intake         # Intake -> _intel/intake/<taskId>.json + write-back del T-id
- *   node scripts/sp-bridge.cjs sync                # las dos anteriores (para la schtask)
+ *   node scripts/sp-bridge.cjs sync-briefs        # cinco briefs -> Avisos, SHA idempotente
+ *   node scripts/sp-bridge.cjs sync                # decisions, intake, outcomes, briefs (schtask)
  */
 const fs = require('node:fs');
 const os = require('node:os');
@@ -32,7 +33,7 @@ const path = require('node:path');
 const PROTOCOL_VERSION = 1;
 const AGENT_TAG = 'agente';
 const PROJECTS = Object.freeze({
-  hoy: 'Hoy', intake: 'Intake', recordatorios: 'Recordatorios', decisiones: 'Decisiones del fleet', dieta: 'Dieta',
+  hoy: 'Hoy', intake: 'Intake', recordatorios: 'Recordatorios', decisiones: 'Decisiones del fleet', dieta: 'Dieta', avisos: 'Avisos',
 });
 const INTEL = process.env.WEZBRIDGE_INTEL_DIR || path.join(__dirname, '..', '..', '_intel');
 const BOARD_URL = process.env.WEZBRIDGE_BOARD_URL || 'http://127.0.0.1:4272/';
@@ -364,7 +365,8 @@ function createHub(client, { intel = INTEL, log = () => {}, boardUrl = BOARD_URL
     return out;
   }
 
-  return { ensureProject, ensureProjects, ensureTag, createTaskOnce, completeOnce, appendNoteOnce, syncDecisions, syncIntake, syncOutcomes, recordDecision, readCards };
+  const syncBriefs = () => require('./sp-briefs.cjs').syncBriefs({ client, intel, ensureProject, ensureTag });
+  return { ensureProject, ensureProjects, ensureTag, createTaskOnce, completeOnce, appendNoteOnce, syncDecisions, syncIntake, syncOutcomes, syncBriefs, recordDecision, readCards };
 }
 
 // ---------------------------------------------------------------- CLI
@@ -417,6 +419,7 @@ async function main() {
     case 'sync-decisions': console.log(JSON.stringify(await hub.syncDecisions())); return 0;
     case 'sync-intake': console.log(JSON.stringify(await hub.syncIntake())); return 0;
     case 'sync-outcomes': console.log(JSON.stringify(await hub.syncOutcomes())); return 0;
+    case 'sync-briefs': console.log(JSON.stringify(await hub.syncBriefs())); return 0;
     case 'decided': {
       if (!opts.task || !opts.verb) { console.error('uso: decided --task T-0000 --verb approved|cancelled|deferred [--at ISO] [--by canal] [--why texto] [--until YYYY-MM-DD]'); return 2; }
       const r = await hub.recordDecision({ task: opts.task, ruling: opts.verb, at: opts.at || stamp(), by: opts.by || 'operator', why: opts.why || '', until: opts.until || null });
@@ -427,7 +430,7 @@ async function main() {
       console.log(JSON.stringify(r.record));
       return r.ok ? 0 : 1;
     }
-    default: console.error('uso: sp-bridge.cjs ping|ensure-projects|task|remind|done|decided|sync-decisions|sync-intake|sync-outcomes|sync'); return 2;
+    default: console.error('uso: sp-bridge.cjs ping|ensure-projects|task|remind|done|decided|sync-decisions|sync-intake|sync-outcomes|sync-briefs|sync'); return 2;
   }
 }
 
@@ -456,7 +459,9 @@ async function syncOnce({ hub, logDir = path.join(__dirname, '..', 'logs'), inte
     const intake = await hub.syncIntake();
     stage = 'outcomes';
     const outcomes = typeof hub.syncOutcomes === 'function' ? await hub.syncOutcomes() : { noted: 0 };
-    const record = { ts, decisions, intake, outcomes };
+    stage = 'briefs';
+    const briefs = await hub.syncBriefs();
+    const record = { ts, decisions, intake, outcomes, briefs };
     append(path.join(logDir, 'sp-bridge.log'), record);
     writeJson(path.join(stateDir, 'last-success.json'), record);
     return { ok: true, record };
