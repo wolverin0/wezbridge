@@ -1,10 +1,13 @@
-<!-- doc-head: T-0406 five bot briefs to SP Avisos; SHA idempotency and pending 24-hour acceptance -->
+<!-- doc-head: T-0406 SP Avisos briefs; SHA idempotency, scheduled run timestamps and pending 24-hour acceptance -->
 syncBriefs reads the five canonical latest files, creates one task per content SHA and completes the previous task of that bot.
 State and exclusive lock sit beside .sp-bridge/map.json; ambiguous writes fail closed and can recover via exact SP markers.
 Read for CLI integration, local-link limitations, restart/install requirements and the origin-owned 24-hour measurement.
 <!-- /doc-head -->
 
 # Briefs To Avisos
+
+Every successful brief sync, including an unchanged run, persists a completion
+ts and last_run counters in briefs.json. Failed runs do not advance that marker.
 
 `node scripts/sp-bridge.cjs sync-briefs` synchronizes only briefs. The existing
 `sync` command now includes this phase after decisions, intake and outcomes.

@@ -180,3 +180,19 @@ test('a corrupted predecessor id cannot complete an operator task', async t => {
   assert.deepEqual(e.model.completed, []);
   assert.equal(e.model.tasks.find(x => x.id === 'operator').isDone, false);
 });
+
+test('scheduled unchanged briefs persist a fresh run timestamp without creating tasks', async t => {
+  const e = fixture(t);
+  await e.hub.syncBriefs();
+  const file = path.join(e.intel, '.sp-bridge/briefs.json');
+  const before = JSON.parse(fs.readFileSync(file, 'utf8'));
+  fs.writeFileSync(file, JSON.stringify({ ...before, ts: '2000-01-01T00:00:00Z' }));
+  const start = Date.now();
+  await e.hub.syncBriefs();
+  const after = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.ok(Date.parse(after.ts) >= start, 'unchanged sync must leave proof of this run');
+  assert.equal(after.last_run.created, 0);
+  assert.equal(after.last_run.unchanged, 5);
+  assert.deepEqual(after.active, before.active);
+  assert.equal(e.model.tasks.length, 5);
+});

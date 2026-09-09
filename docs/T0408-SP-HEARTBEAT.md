@@ -1,4 +1,4 @@
-<!-- doc-head: T-0408 SP heartbeat detector; isolated verification, runtime activation pending -->
+<!-- doc-head: T-0408 SP heartbeat detector; durable healthy observations and scheduled activation evidence -->
 Detects last-success.json older than 15 minutes via the existing five-minute DaemonSentinel task.
 Writes sp-bridge.stale and sends a signed P1 through the existing personaldashboard gateway.
 Read for episode deduplication, failure evidence, simulation results and activation boundaries.
@@ -18,6 +18,8 @@ the repository parent's `_intel`). It appends one `sp-bridge.stale` event per
 episode to `events.jsonl`, retaining the observed timestamp and age. State lives
 beside the existing map in `.sp-bridge/heartbeat-state.json`. A fresh success
 resets the local episode; it does not acknowledge an existing inbox alert.
+Every run, including a healthy one, persists checked_at, observed last_success_at,
+age_ms and stale in heartbeat-state.json so scheduler execution is auditable.
 
 The P1 path is the existing `events-gateway.cjs` sender, source `wezbridge`,
 kind `decision`, without signed task actions. The hub maps that pair to P1;
