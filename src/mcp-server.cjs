@@ -1898,6 +1898,11 @@ function handleToolCall(name, args) {
           isError: false,
         };
       } catch (err) {
+        // Pinned orders cannot be replayed by a queue that does not retain their target fence.
+        if (args.expected_cwd !== undefined) {
+          return { content: [{ type: 'text', text: `Pinned send refused or unverified for pane ${toPane}: ${err.message}. NOT queued; inspect the receipt and pane before an explicit new attempt.` }],
+            isError: true, queued: false, retry: 'manual-only' };
+        }
         // T-0233: a transport exception must not vanish the envelope. Before
         // this, only the to_project happy path enqueued — a to_pane ETIMEDOUT
         // left ZERO durable record (mm-455f: results survived that night only
