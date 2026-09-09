@@ -116,7 +116,7 @@ test('cwd VACIO en el censo => unverifiable, NUNCA "id reciclado" (medido en la 
 
 test('owner sin forma pane-N se reporta como ilegible, no se salta en silencio', () => {
   const tasks = [card('T-0500', 'wezbridge', 'running', 'el orquestador', NOW + 1 * H)];
-  const out = reconcileLeases(tasks, CENSUS_OK, NOW);
+  const out = reconcileLeases(tasks, CENSUS_OK, NOW, { projects: {} });
   assert.strictEqual(out.length, 1);
   assert.strictEqual(out[0].category, 'dead-owner-lease');
   assert.match(out[0].why, /ilegible|sin pane/i);

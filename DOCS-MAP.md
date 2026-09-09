@@ -1,7 +1,7 @@
-<!-- doc-head: Wezbridge document map; T-0421 one-lane main adoption excludes graph candidates -->
-Read docs/T0421-ONE-LANE.md for explicit dispatch, durable receipt, main adoption and runtime evidence.
-Only the one-lane change from 0101d9d is adopted; graph ancestors are excluded.
-The command launches a short-lived MCP process; no resident daemon restart or credential change is required.
+<!-- doc-head: Wezbridge document map; T-0417 lease owner parity and read-only reconciliation -->
+Read docs/T0417-LEASE-OWNERS.md for slug liveness, writer/reader contract parity and live measurement counts.
+T0421-ONE-LANE.md covers explicit dispatch; its discarded graph ancestors remain excluded.
+Lease reconciliation observes existing cards and canonical mux cwd; it never releases or rewrites leases.
 <!-- /doc-head -->
 
 # DOCS-MAP — wezbridge
@@ -13,6 +13,7 @@ Read when: you need to know which doc to trust, what replaced what, or what is s
 
 | File | Verdict | Last change | Reason |
 |---|---|---|---|
+| docs/T0417-LEASE-OWNERS.md | CURRENT | 2026-09-09 | Registered project owners, generic executor recognition, contract parity guard and read-only CLI counts. |
 | docs/T0421-ONE-LANE.md | CURRENT | 2026-09-08 | Explicit project+pane, durable receipt, guarded A2A, result return to Jarvis; replaces the graph delivery plan. |
 | docs/_drafts/RESEARCH-BRIEF-fork-target.md | ABANDONED | 2026-04-29 | This is a research brief dated 2026 that documents a proposed migration away from the current stack (Claude Code CLI + wezbridge) to a fork of a different codebase; however, the current project state (wezbridge v3.5, zero-dep Node) indicates the stack described as 'migrating away from' is actually the active reality, meaning this research doc captured a strategy that was never executed or was shelved.  |
 | docs/_drafts/PLAN-managed-agents-backfill.md | ABANDONED | 2026-07-02 | The file is in a '_drafts' directory, targets v2.7.0 (project is now v3.5), and outlines a specific plan backfilling gaps from 'Claude Managed Agents' (a 2026 beta) that was evidently rejected in favor of a local stack, making this a historical proposal rather than active documentation.  |
