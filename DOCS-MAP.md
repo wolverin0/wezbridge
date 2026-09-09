@@ -1,3 +1,9 @@
+<!-- doc-head: Wezbridge document map; T-0421 one-lane main adoption excludes graph candidates -->
+Read docs/T0421-ONE-LANE.md for explicit dispatch, durable receipt, main adoption and runtime evidence.
+Only the one-lane change from 0101d9d is adopted; graph ancestors are excluded.
+The command launches a short-lived MCP process; no resident daemon restart or credential change is required.
+<!-- /doc-head -->
+
 # DOCS-MAP — wezbridge
 Doc triage map generated 2026-07-18 by the docs-curation pipeline (GLM 4.5-air triage, deterministic apply).
 Verdicts: ABANDONED=3 · CURRENT=14 · STUB=1 · SUPERSEDED=1. CURRENT docs carry a greppable 7-line header.
@@ -7,6 +13,7 @@ Read when: you need to know which doc to trust, what replaced what, or what is s
 
 | File | Verdict | Last change | Reason |
 |---|---|---|---|
+| docs/T0421-ONE-LANE.md | CURRENT | 2026-09-08 | Explicit project+pane, durable receipt, guarded A2A, result return to Jarvis; replaces the graph delivery plan. |
 | docs/_drafts/RESEARCH-BRIEF-fork-target.md | ABANDONED | 2026-04-29 | This is a research brief dated 2026 that documents a proposed migration away from the current stack (Claude Code CLI + wezbridge) to a fork of a different codebase; however, the current project state (wezbridge v3.5, zero-dep Node) indicates the stack described as 'migrating away from' is actually the active reality, meaning this research doc captured a strategy that was never executed or was shelved.  |
 | docs/_drafts/PLAN-managed-agents-backfill.md | ABANDONED | 2026-07-02 | The file is in a '_drafts' directory, targets v2.7.0 (project is now v3.5), and outlines a specific plan backfilling gaps from 'Claude Managed Agents' (a 2026 beta) that was evidently rejected in favor of a local stack, making this a historical proposal rather than active documentation.  |
 | docs/_drafts/TERMINAL-DRIVER-ABSTRACTION.md | ABANDONED | 2026-07-02 | The document is explicitly labeled 'Design-only / deferred' with no code changes made, detailing a plan contingent on a Windows 11 upgrade that has not occurred and remains gated by a spike.  |
