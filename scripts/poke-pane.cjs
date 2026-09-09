@@ -210,7 +210,7 @@ function sendViaStdin(paneId, payload, socketEnv, { noPaste = true } = {}) {
 
 // ONE verifier, shared: composer-state.cjs (T-0303 — this file had a private copy).
 const { composerStillHolds, pasteLandedIntact, composerContent } = require('./composer-state.cjs');
-const { composerHoldsForeignText } = require('../src/verified-send.cjs');
+const { composerHoldsForeignText, operatorQuestionVisible } = require('../src/verified-send.cjs');
 const readTail = () => execFileSync(
   WEZTERM,
   [...CLI_BASE, 'get-text', '--pane-id', String(target.pane_id), '--start-line', '-40'],
@@ -222,6 +222,9 @@ const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 
 // Fail-open if the pane cannot be read: a guard that cannot look cannot stop.
 try {
   const before = readTail();
+  if (operatorQuestionVisible(before)) {
+    die(10, `pane ${target.pane_id} operator-question requires an operator response; nothing written`);
+  }
   if (composerHoldsForeignText(before)) {
     die(10, `pane ${target.pane_id} composer already holds unsent text ${JSON.stringify(composerContent(before).slice(0, 80))} — nothing written; a key from the operator unblocks it`);
   }
