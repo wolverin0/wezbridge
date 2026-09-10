@@ -58,7 +58,7 @@ const a2aIntel = require('./a2a-intel.cjs');
  */
 function selfCensusFor() {
   try {
-    return discovery.discoverPanes()
+    return discovery.discoverRoutingPanes()
       .filter((p) => p.agent)
       .map((p) => ({ pane_id: p.paneId, cwd: p.project, tab_title: p.tabTitle || p.title || null }));
   } catch { return []; }
@@ -1532,7 +1532,7 @@ function handleToolCall(name, args) {
       const selfIdentity = require('./pane-identity.cjs');
       let selfCensus = [];
       try {
-        selfCensus = discovery.discoverPanes()
+        selfCensus = discovery.discoverRoutingPanes()
           .filter((p) => p.agent)
           .map((p) => ({ pane_id: p.paneId, cwd: p.project, tab_title: p.tabTitle || p.title || null }));
       } catch { /* census down → resolveSelfPane falls back to env with a warning */ }
@@ -1626,7 +1626,7 @@ function handleToolCall(name, args) {
         const paneIdentity = require('./pane-identity.cjs');
         let mapped = [];
         try {
-          mapped = discovery.discoverPanes()
+          mapped = discovery.discoverRoutingPanes()
             .filter((p) => p.agent) // agent panes only — the daemon shell shares cwds
             .map((p) => ({ pane_id: p.paneId, cwd: p.project, tab_title: p.tabTitle || p.title || null }));
         } catch { /* discovery down -> unresolved, queue-only below */ }
@@ -1792,7 +1792,7 @@ function handleToolCall(name, args) {
             const identity = require('./pane-identity.cjs');
             let senderProject = null;
             try {
-              const senderPane = discovery.discoverPanes().find((p) => p.paneId === fromPane);
+              const senderPane = discovery.discoverRoutingPanes().find((p) => p.paneId === fromPane);
               senderProject = senderPane ? identity.projectFromCwd(senderPane.project) : null;
             } catch { /* discovery down → project unknown → fail-safe no-close */ }
             const lease = lifecycle.findActiveLease({ owner: `pane-${fromPane}` });
@@ -2063,6 +2063,10 @@ async function handleBridgeHealth() {
   } catch (err) {
     health.alerts = [`liveness assessment failed: ${err.message}`];
   }
+  const inbox = require('./inbox-health.cjs').inspectInboxStarvation();
+  health.inbox_starvation = inbox;
+  health.alerts = [...(health.alerts || []), ...inbox.alerts];
+  if (inbox.alerts.length) health.ok = false;
   return { content: [{ type: 'text', text: JSON.stringify(health, null, 2) }] };
 }
 

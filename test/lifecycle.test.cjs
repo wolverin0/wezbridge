@@ -99,11 +99,14 @@ test('resolveAffinity: invalid agent value is reported null, model still usable'
   assert.strictEqual(doctor.model, 'gpt-5');
 });
 
-test('resolveAffinity: the committed _intel seed maps mutual/rifas/doctor → codex', () => {
-  const intelDir = path.join(__dirname, '..', '..', '_intel');
+test('resolveAffinity: a real affinity file maps mutual/rifas/doctor to codex', () => {
+  const intelDir = path.join(TMP, 'affinity-file');
+  fs.mkdirSync(intelDir, { recursive: true });
+  fs.writeFileSync(path.join(intelDir, 'affinity.json'), SEED);
   for (const project of ['mutual', 'rifas', 'doctor']) {
     const hit = lifecycle.resolveAffinity({ project, env: {}, intelDir });
     assert.strictEqual(hit.agent, 'codex', `${project} → codex (got ${hit.agent}; ${hit.reason})`);
+    assert.strictEqual(hit.source, 'file');
   }
 });
 

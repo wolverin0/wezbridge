@@ -1,90 +1,23 @@
-# wezbridge (v3.5.0)
+<!-- doc-head: Claude adapter for the shared Wezbridge contract -->
+Scoped instructions; read for applicable authority, execution and verification rules.
+<!-- /doc-head -->
 
-> **Status 2026-07-02 (v3.5.0):** focused MCP server, not the abandoned theorchestra orchestrator. Zero npm dependencies. The browser dashboard, the orchestrator-worker pane, the React/Vite v3 build, and the orchestra-goose Tier-2 recipes were removed and preserved at the `omniclaude-pre-rollback` git tag (commit `acd3460`). **If you're a Claude Code session reading this, you are a regular dev session — there is no orchestrator-worker convention anymore.**
->
-> **v3.5.0 highlights:** `send_prompt`/`a2a_send` now VERIFY submission (read the input box back, retry enter, return `submitted`) — the manual follow-up `send_key("enter")` rule is obsolete on v3.5+ servers. `spawn_session` starts FRESH sessions by default (`continue: true` to opt back into `--continue`), and gains `agent: claude|codex|shell` + `model`. `read_output` gains delta/cursor polling. `wait_for_idle`/`spawn_session` no longer block the MCP event loop.
+# Wezbridge in Claude Code
 
-## What this repo is
+Read `AGENTS.md` for the shared project contract and `DOCS-MAP.md` before following document references. The selected orchestration owner is determined by the operator and live identity, not by the provider of this session.
 
-An **MCP server** that exposes `mcp__wezbridge__*` tools so any Claude Code or Codex CLI session can spawn, prompt, read, and discover other sessions running in WezTerm panes. **The core MCP tools talk to the WezTerm CLI directly — they do NOT require the `:4200` daemon.** Only `auto_handoff` calls the daemon (`/api/panes/:id/auto-handoff`); every other tool works with the daemon down. The `:4200` HTTP daemon is a separate headless backend (SSE events, telegram-streamer, session-snapshot crash-restore, grades) — start it with `npm run dashboard` when you want those. Call `bridge_health` to see, in one shot, whether wezterm is reachable, the daemon is up, and the snapshot watcher is armed.
->
-> **Security (v3.4.3):** the daemon binds `127.0.0.1` only. To expose it on a LAN set `WEZBRIDGE_BIND` (e.g. `0.0.0.0`) — a `WEZBRIDGE_API_TOKEN` then becomes mandatory or the daemon refuses to start.
-
-## What this repo is NOT
-
-- Not a browser dashboard (the v2.3-v3.1 dashboard UI was deprecated 2026-05-03 and removed in v3.2.1; see [`src/DEPRECATED.md`](src/DEPRECATED.md))
-- Not an autonomous orchestrator (the orchestrator-worker pane / JSON-tick / vault-driven escalation system was reverted 2026-05-03)
-- Not a hosted multi-agent platform
-- Not a replacement for Claude Code / Codex / wezterm
-
-## Repo layout
-
-Mapa de módulos de `src/` + agregados post-v3.3 + endpoints del daemon: **[`docs/repo-layout.md`](docs/repo-layout.md)**.
-Lo esencial: `mcp-server.cjs` (tools MCP) · `wezterm.cjs` (CLI wrapper) · `dashboard-server.cjs` (daemon :4200) ·
-motor 2026-08-23: `project-queue.cjs`, `lifecycle.cjs`, `action-log.cjs`, `orchestrator-waker.cjs`.
-
-## Running it
-
-The core MCP tools (discover/read/send/spawn/kill/…) drive the WezTerm CLI directly and work with **no daemon running**. The `:4200` daemon is only needed for `auto_handoff` and the background services (SSE, telegram-streamer, session-snapshot crash-restore, grades).
-
-```bash
-npm run dashboard          # start the :4200 daemon (binds 127.0.0.1)
-npm run dev                # node --watch — auto-restart on file change
-```
-
-`http://127.0.0.1:4200/` returns 404 — that's intentional. The daemon is headless. Verify it's up with `curl http://127.0.0.1:4200/api/panes`, or from any session call the `bridge_health` MCP tool. It binds loopback only; set `WEZBRIDGE_BIND=0.0.0.0` (plus a `WEZBRIDGE_API_TOKEN`) to expose it on a LAN.
-
-For the OmniClaude-via-Telegram pattern (one Claude Code pane controls the swarm via DMs), see [`docs/SETUP-omniclaude-telegram.md`](docs/SETUP-omniclaude-telegram.md).
-
-## Operations (env vars, restarts, crash, mux-wedge)
-
-Todo el detalle operativo vive en **[`docs/operations.md`](docs/operations.md)**: variables
-`WEZBRIDGE_*` (guards, grader, tope de panes, afinidad), el gotcha de rebind del `:4200`,
-latitud WSL, y el triage completo **mux-lento-vs-wedgeado** (firmas idénticas, remedios
-opuestos — LEELO ANTES de reiniciar WezTerm). Crash de wezterm → `npm run restore-session`
-vía la skill `wezterm-crash-recover`, nunca a mano.
-
-## A2A protocol (when peer panes coordinate)
-
-Every peer-to-peer message uses an envelope:
-
-```
-[A2A from pane-<N> to pane-<M> | corr=<id> | type=request|ack|progress|result|error]
-<body>
-```
-
-Hard rules (mandatory for any pane using these tools):
-
-1. Prefer `a2a_send` — it builds the envelope, sends it, and VERIFIES submission in one call. When using raw `send_prompt` (v3.5+), check the returned `submitted` field: only send `send_key("enter")` if it reports `stuck`. (Pre-v3.5 servers verify nothing — there, always follow `send_prompt` with `send_key("enter")`.)
-2. Never send bash via `send_prompt` into a running TUI — your text becomes a user prompt, not a shell command. (`spawn_session` with `agent: "shell"` gives you a real shell pane.)
-3. Every responder MUST push `type=progress` every ~3 min during long work and `type=result` on completion. Codex cannot subscribe via `Monitor`; Claude can — Codex requesters should poll with `read_output` delta mode (`with_cursor` → `since`).
-4. Before spawning a peer, declare your coordinator role: `parallel-worker` / `qa-verifier` / `pre-stager` / `monitor-only`. Note: `spawn_session` starts FRESH sessions by default since v3.5 (pass `continue: true` for the old `--continue` behavior).
-
-Full spec: [`docs/a2a-protocol.md`](docs/a2a-protocol.md).
-
-## Reviving the abandoned ambition
-
-If you want to bring back the dashboard UI, the orchestrator-worker pane, the orchestra-goose Tier-2 recipes, the React/Vite v3 build, or any of the historical "theorchestra" surface: `git checkout omniclaude-pre-rollback`. That tag (commit `acd3460`) is the frozen pre-revert state with everything intact. It is preserved on both `wolverin0/wezbridge` and `wolverin0/theorchestra` (archived).
-
-## Tests
-
-```bash
-node --test --test-reporter=spec test/*.test.cjs
-```
-
-**~917 pass, 1 fail ambiental, 1 skipped — medido 2026-08-24** (el fail es
-`lifecycle.test` que exige un pane-id real vivo, tarjeteado T-0239; crecieron 5 suites
-nuevas el 24-ago: sentinel/identidad/restore/rescue/dispatch-gate).
-Re-medí antes de citar este número; un conteo sin fecha de medición envejece a mentira.
-
-## Docs map
-
-Doc triage map at `DOCS-MAP.md` (project root): every doc's verdict (CURRENT / SUPERSEDED / ABANDONED / GENERATED) and what replaced what. CURRENT docs carry a greppable 7-line header — grep heads before reading bodies; never base work on a doc the map marks superseded.
+- Claude-specific tools do not define Fleet authority. Preserve the task's existing authorization and repository ownership.
+- Use the existing daemon for durable wake delivery and recovery. A session-local Monitor is not a replacement for that service.
+- Prefer `a2a_send`; verify the returned delivery status and avoid duplicate message effects.
+- `npm test` runs the project suite with the required WezTerm test double. There is no build script.
+- Core MCP tools use the WezTerm CLI directly. The headless daemon on port 4200 provides background services; verify it with `bridge_health`, not a request to its intentionally absent home page.
+- Operational configuration and recovery procedures are in `docs/operations.md`; modules/endpoints are mapped in `docs/repo-layout.md`.
+- Historical architecture and old suite counts are evidence of their dated checkpoints, not current runtime status or permission.
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **wezbridge** (36508 symbols, 88960 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **wezbridge-consolidate-20260910** (589 symbols, 692 relationships, 5 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -100,7 +33,7 @@ This project is indexed by GitNexus as **wezbridge** (36508 symbols, 88960 relat
 
 1. `gitnexus_query({query: "<error or symptom>"})` — find execution flows related to the issue
 2. `gitnexus_context({name: "<suspect function>"})` — see all callers, callees, and process participation
-3. `READ gitnexus://repo/wezbridge/process/{processName}` — trace the full execution flow step by step
+3. `READ gitnexus://repo/wezbridge-consolidate-20260910/process/{processName}` — trace the full execution flow step by step
 4. For regressions: `gitnexus_detect_changes({scope: "compare", base_ref: "main"})` — see what your branch changed
 
 ## When Refactoring
@@ -139,10 +72,10 @@ This project is indexed by GitNexus as **wezbridge** (36508 symbols, 88960 relat
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/wezbridge/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/wezbridge/clusters` | All functional areas |
-| `gitnexus://repo/wezbridge/processes` | All execution flows |
-| `gitnexus://repo/wezbridge/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/wezbridge-consolidate-20260910/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/wezbridge-consolidate-20260910/clusters` | All functional areas |
+| `gitnexus://repo/wezbridge-consolidate-20260910/processes` | All execution flows |
+| `gitnexus://repo/wezbridge-consolidate-20260910/process/{name}` | Step-by-step execution trace |
 
 ## Self-Check Before Finishing
 

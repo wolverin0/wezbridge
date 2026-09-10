@@ -1,0 +1,15 @@
+←  ☐ E6 Mail  ☐ E7 Cortes  ☐ E8 Cobro inst.  ☐ E9 Hold  ✔ Submit  →
+
+│ E6 — Canal de mail: no existe ninguna credencial SMTP, así que el envío de mails (facturas, avisos) no se puede encender. Sin casilla no hay nada que construir. ¿Qué casilla usamos?
+
+❯ 1. Una casilla del dominio de la empresa; me pasás las credenciales por canal seguro (Recomendado)
+     Contraseña de aplicación o SMTP del proveedor del dominio; nunca por el chat.
+  2. Gmail/Workspace existente con contraseña de aplicación
+     Se usa una cuenta que ya tengan.
+  3. No encender mail
+     Se cierra Ola 1 #7.
+  4. Type something.
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

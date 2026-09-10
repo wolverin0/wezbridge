@@ -143,6 +143,15 @@ function enumerateSockets(wezOps) {
   return [{ socket: null, panes: wezOps.listPanes() }];
 }
 
+function discoverRoutingPanes({ wez: wezOps = wez } = {}) {
+  const socket = typeof wezOps.currentSocket === 'function' ? wezOps.currentSocket() : null;
+  if (!socket) return [];
+  // Numeric pane IDs are meaningful only in the transport's selected socket.
+  const groups = enumerateSockets(wezOps).filter(group => group.socket === socket);
+  if (!groups.length) return [];
+  return discoverPanes({ wez: { ...wezOps, listSockets: () => groups } });
+}
+
 function discoverPanes({ wez: wezOps = wez } = {}) {
   const discovered = [];
   const groups = enumerateSockets(wezOps);
@@ -194,7 +203,10 @@ function discoverPanes({ wez: wezOps = wez } = {}) {
     let codexMatch = 0;
     for (const pattern of CODEX_INDICATORS) if (pattern.test(text)) codexMatch++;
     if (/\bcodex\b/i.test(`${tabTitle} ${title}`)) codexMatch++;
-    const isCodex = codexMatch >= 2;
+    const shellPrompt = /^(?:\$(?:\s|$)|PS [^\r\n]*>|[A-Z]:\\[^\r\n]*>)/i.test(lastLines.split('\n').at(-1).trim());
+    const codexPrompt = /^\s*\u203a(?:\s|$)/m.test(lastLines);
+    const compactCodex = codexPrompt && /\b\d+% context left\s*$/i.test(lastLines);
+    const isCodex = !shellPrompt && (codexMatch >= 2 || compactCodex);
 
     // Detect status
     const checkPatterns = (patterns) => patterns.some(p => p.test(lastLines));
@@ -202,6 +214,9 @@ function discoverPanes({ wez: wezOps = wez } = {}) {
     else if (checkPatterns(STATUS_PATTERNS.permission)) status = 'permission';
     else if (checkPatterns(STATUS_PATTERNS.continuation)) status = 'continuation';
     else if (checkPatterns(STATUS_PATTERNS.idle)) status = 'idle';
+    else if (isCodex && codexPrompt
+      && (compactCodex || /\bgpt-[^\r\n]*\u00b7\s*Ready\s*\u00b7/i.test(lastLines))) status = 'idle';
+    if (shellPrompt) status = 'unknown';
 
     // Extract project path from cwd
     let project = null;
@@ -215,7 +230,7 @@ function discoverPanes({ wez: wezOps = wez } = {}) {
       projectName = parts[parts.length - 1] || null;
     }
 
-    const isClaude = confidence >= 30;
+    const isClaude = !shellPrompt && confidence >= 30;
 
     // Extract persona from tab_title (wezterm's user-set title) or title (process title).
     // setTabTitle sets tab_title, but title is the process name (e.g. "bash.exe").
@@ -352,6 +367,7 @@ function getSummary() {
 
 module.exports = {
   discoverPanes,
+  discoverRoutingPanes,
   verifyPaneText,
   enumerateSockets,
   discoverByProject,

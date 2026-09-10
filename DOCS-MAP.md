@@ -1,4 +1,5 @@
-<!-- doc-head: Wezbridge document map; SP heartbeat, lease parity and one-lane delivery -->
+<!-- doc-head: Wezbridge document authority map; September source consolidation -->
+Read docs/CONSOLIDATION-20260910.md for integrated source, verification and private-artifact boundaries.
 Read docs/T0408-SP-HEARTBEAT.md for stale SP detection, live P1 evidence and pending runtime activation.
 T0421-ONE-LANE.md covers explicit dispatch; its discarded graph ancestors remain excluded.
 Lease reconciliation observes existing cards and canonical mux cwd; it never releases or rewrites leases.
@@ -37,3 +38,33 @@ Read when: you need to know which doc to trust, what replaced what, or what is s
 | docs/_drafts/SKILLS-INVENTORY-orchestrator.md | CURRENT | 2026-07-02 | Strong references from root AGENTS.md/README confirm this inventory remains the canonical source for routing orchestration and audit skills across the portfolio.  |
 | docs/_drafts/issue-7527-comment.md | STUB | 2026-05-08 | This is a draft comment located in a `_drafts` directory, explicitly marked as not yet posted, and contains internal notes for the author rather than finalized documentation.  |
 | docs/PLAN-2026-07-02-review-remediation.md | SUPERSEDED | 2026-07-02 | This is a dated review and remediation plan from 2026-07-02 tied to a specific fix branch, and since the file modification time and git commit date are exactly the same without updates, this temporary plan has been executed and archived.  |
+## September Consolidation
+
+| File | Verdict | Use |
+|---|---|---|
+| docs/CONSOLIDATION-20260910.md | CURRENT | Integration scope, local artifact inventory and runtime boundary. |
+| docs/DRILL.md | GENERATED | Literal T31 delivery fixture; not product documentation. |
+| docs/mcp-curation-proposal.md | CURRENT | Historical curation and reversal; not a current process census. |
+| docs/research/2026-08-22-harness-software-factory/README.md | CURRENT | Dated research index; not runtime authority. |
+| docs/research/2026-08-22-harness-software-factory/01-source-map-and-claim-ledger.md | CURRENT | Historical source accounting. |
+| docs/research/2026-08-22-harness-software-factory/02-factory-primitives.md | CURRENT | Historical technical comparisons. |
+| docs/research/2026-08-22-harness-software-factory/03-stack-and-projects.md | CURRENT | Historical stack survey. |
+| docs/research/2026-08-22-harness-software-factory/04-fit-for-snake.md | CURRENT | Dated project fit analysis. |
+| docs/research/2026-08-22-harness-software-factory/05-link-manifest.md | CURRENT | Research source manifest. |
+| docs/research/2026-08-22-harness-software-factory/06-new-sources-2026-08-22.md | CURRENT | Historical expansion sources. |
+| docs/research/2026-08-22-harness-software-factory/07-karpathy-skills-audit.md | CURRENT | Dated skills audit, not current installation proof. |
+| docs/research/2026-08-22-harness-software-factory/08-synthesis-orchestrator-architecture.md | CURRENT | Dated synthesis, not a runtime deployment instruction. |
+| docs/autonomy-mission/CONTROL.md | CURRENT | Existing mission checklist; paused native/graph gates remain open. |
+| docs/autonomy-mission/WAKER-REVIEW.md | CURRENT | Independent local-source review at its recorded revision. |
+| docs/autonomy-mission/ARCHITECTURE.md | CURRENT | Pilot design; no production adoption assertion. |
+| docs/autonomy-mission/ARCHITECTURE-REVIEW.md | CURRENT | Dated architecture review. |
+| docs/autonomy-mission/CONTEXT-INVENTORY.md | CURRENT | Dated context inventory. |
+| docs/autonomy-mission/CORE-REVIEW.md | CURRENT | Pilot core review and limitations. |
+| docs/autonomy-mission/ENGINE-INVENTORY.md | CURRENT | Dated engine inventory. |
+| docs/autonomy-mission/EVIDENCE.md | CURRENT | Pilot evidence and remaining gates. |
+| docs/autonomy-mission/HERMES-INVENTORY.md | CURRENT | Dated integration inventory. |
+| docs/autonomy-mission/ISOLATION-SPIKE.md | CURRENT | Pilot isolation evidence. |
+| docs/autonomy-mission/MODEL-PILOTS.md | CURRENT | Finite model-backed pilot proof, not a live service. |
+| docs/autonomy-mission/NATIVE-REVIEW.md | CURRENT | Native pilot review. |
+| docs/autonomy-mission/RESUME-REVIEW.md | CURRENT | Bounded resumed recovery/memory evidence. |
+| docs/autonomy-mission/SPECIALISTS.md | CURRENT | Pilot roles and boundaries. |

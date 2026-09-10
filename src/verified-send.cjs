@@ -54,8 +54,19 @@ const COMPOSER_PLACEHOLDERS = [
  * resto del camino de entrega. Un guard que falla cerrado sobre un pane que no
  * puede leer paraliza al fleet, y eso es peor que el bug que arregla.
  */
+function operatorQuestionVisible(tail) {
+  const lines = String(tail || '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').split(/\r?\n/);
+  const prompt = lines.findLastIndex(l => /^[\s│|]*[❯>›]/.test(l));
+  const footer = lines.findLastIndex(l => /^\s*Enter to select\b.*\bEsc to cancel\s*$/.test(l));
+  if (prompt < 0 || footer <= prompt || !/^[\s│|]*[❯>›]\s*\d+\.\s+\S/.test(lines[prompt])) return false;
+  // An old menu above a new composer or subsequent output is not the active input surface.
+  return lines.slice(footer + 1).every(l => !l.trim() || /^[\s─━│|]+$/.test(l)
+    || /Model:|Ctx Used:|Context:|bypass permissions|shift\+tab/.test(l));
+}
+
 function composerHoldsForeignText(tail) {
   if (!tail) return false;
+  if (operatorQuestionVisible(tail)) return false;
   const content = inputBoxContent(String(tail).split(/\r?\n/));
   if (!content) return false;
   return !COMPOSER_PLACEHOLDERS.includes(content);
@@ -85,6 +96,7 @@ function classifyDelivery(delivered, submitted) {
 
 /** Motivo unico de rechazo de la primitiva; los llamadores comparan contra esto, no contra prosa. */
 const REFUSED_COMPOSER_FOREIGN_TEXT = 'composer-foreign-text';
+const REFUSED_OPERATOR_QUESTION = 'operator-question';
 const isRefusal = (r) => Boolean(r && typeof r === 'object' && r.refused);
 
 function createVerifiedSend({ wez, sleep, logAction = null }) {
@@ -102,6 +114,7 @@ function createVerifiedSend({ wez, sleep, logAction = null }) {
       } catch {
         return 'unknown';
       }
+      if (operatorQuestionVisible(tailLines.join('\n'))) return 'unknown';
       const content = inputBoxContent(tailLines);
       // MULTI-LINE fix (operator-observed 2026-07-10, new codex composer): with
       // a multi-line prompt the visible composer line is the LAST line of the
@@ -147,18 +160,19 @@ function createVerifiedSend({ wez, sleep, logAction = null }) {
     } catch { return false; }
   }
 
-  function heldForeignText(paneId) {
+  function blockedInput(paneId) {
     try {
       wez.invalidateGetTextCache(paneId);
       const tail = wez.getFullText(paneId, 25);
+      if (operatorQuestionVisible(tail)) return { refused: REFUSED_OPERATOR_QUESTION, pane: paneId };
       if (!composerHoldsForeignText(tail)) return null;
-      return inputBoxContent(String(tail).split(/\r?\n/));
+      return { refused: REFUSED_COMPOSER_FOREIGN_TEXT, pane: paneId, held: inputBoxContent(String(tail).split(/\r?\n/)) };
     } catch { return null; }
   }
 
   // Version ligada al pane: lee el tail y aplica el predicado.
   function paneComposerHoldsForeignText(paneId) {
-    return heldForeignText(paneId) !== null;
+    return blockedInput(paneId)?.refused === REFUSED_COMPOSER_FOREIGN_TEXT;
   }
 
   // Delivery-INTEGRITY verdict, distinct from submission: 'ok' if the composer
@@ -197,7 +211,9 @@ function createVerifiedSend({ wez, sleep, logAction = null }) {
   // Pisar a proposito exige `force: true` + `why`, y queda en action-log como
   // `composer-override` con el texto pisado. Fail-open si el pane no se lee.
   async function sendPromptDeferredEnter(paneId, text, { force = false, why = '' } = {}) {
-    const held = heldForeignText(paneId);
+    const blocked = blockedInput(paneId);
+    if (blocked?.refused === REFUSED_OPERATOR_QUESTION) return blocked;
+    const held = blocked ? blocked.held : null;
     if (held !== null) {
       if (!force) return { refused: REFUSED_COMPOSER_FOREIGN_TEXT, held, pane: paneId };
       if (!String(why || '').trim()) {
@@ -222,9 +238,11 @@ const bound = createVerifiedSend({ wez: require('./wezterm.cjs'), sleep: default
 module.exports = {
   inputBoxContent,
   composerHoldsForeignText,
+  operatorQuestionVisible,
   classifyDelivery,
   COMPOSER_PLACEHOLDERS,
   REFUSED_COMPOSER_FOREIGN_TEXT,
+  REFUSED_OPERATOR_QUESTION,
   isRefusal,
   createVerifiedSend,
   verifyPromptSubmission: bound.verifyPromptSubmission,

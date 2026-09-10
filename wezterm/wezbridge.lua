@@ -132,6 +132,19 @@ end
 -- Spawn helpers
 -- ============================================================
 
+local function watchdog_owns_entry(entry, repo)
+  if not repo then return false end
+  local function normalize(value)
+    return (value or ''):gsub('%%(%x%x)', function(hex) return string.char(tonumber(hex, 16)) end)
+      :gsub('^file://[^/]*', ''):gsub('\\', '/'):gsub('^/([A-Za-z]:/)', '%1'):gsub('/+$', ''):lower()
+  end
+  if normalize(entry.cwd) ~= normalize(repo) then return false end
+  local profile = io.open(repo .. '/../_intel/orchestrator-session.json', 'r')
+  if not profile then return false end
+  profile:close()
+  return true -- The daemon validates and launches the selected session; never replay an old snapshot here.
+end
+
 local function spawn_entries(entries, opts)
   opts = opts or {}
   local stagger_ms = opts.stagger_ms or 2000
@@ -139,9 +152,9 @@ local function spawn_entries(entries, opts)
   local first_window
   for i, e in ipairs(entries) do
     local args = split_cmdline(e.cmdline)
-    if #args > 0 then
+    if #args > 0 and not watchdog_owns_entry(e, opts.wezbridge_dir) then
       local spawn_opts = { args = args, cwd = e.cwd }
-      if i == 1 then
+      if not first_window then
         local _, _, win = mux.spawn_window(spawn_opts)
         first_window = win
       else
@@ -180,7 +193,7 @@ local function setup_auto_restore(opts)
       return
     end
     wezterm.log_info('wezbridge: auto-restoring ' .. #entries .. ' AI panes from snapshot ' .. ts)
-    spawn_entries(entries, { stagger_ms = opts.stagger_ms or 2000 })
+    spawn_entries(entries, { stagger_ms = opts.stagger_ms or 2000, wezbridge_dir = opts.wezbridge_dir })
   end)
 end
 
@@ -249,7 +262,7 @@ local function setup_restore_keybind(config, opts)
           if not id then return end
           for _, g in ipairs(groups) do
             if g.ts == id then
-              spawn_entries(g.entries, { stagger_ms = opts.stagger_ms or 2000 })
+              spawn_entries(g.entries, { stagger_ms = opts.stagger_ms or 2000, wezbridge_dir = opts.wezbridge_dir })
               return
             end
           end

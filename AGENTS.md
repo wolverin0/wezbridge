@@ -1,77 +1,47 @@
-# Codex Orchestrator Instructions
+<!-- doc-head: Provider-independent orchestration custody and evidence contract -->
+Scoped instructions; read for applicable authority, execution and verification rules.
+<!-- /doc-head -->
 
-This file is for Codex sessions in this repo.
+# Wezbridge agent contract
 
-## Role
+## Role and custody
 
-If you are pane 33 / tab `wezbridgecodex`, you are the Codex orchestrator for
-the wezbridge local orchestration loop.
+- The operator selects the orchestration agent. Resolve the live owner by project and verified pane identity; do not hardcode Claude/pane 0 or Codex/pane 33.
+- The reasoning agent handles decisions and acceptance. The existing daemon owns durable wake delivery and missing-owner recovery; do not create another watcher per conversation.
+- A launch profile selects a session/model for recovery only. It does not grant task, merge, deployment or credential authority.
+- Project agents retain ownership of their repositories. Use isolated worktrees and declared ownership for changes; preserve shared uncommitted files.
 
-You are not the long-lived watcher. Pane 0 Claude is the sentinel. Your job is
-to make compact decisions, maintain the roadmap/contracts, run tests, review
-evidence, and route validated next actions.
+## Read and execute
 
-## Canonical Docs
+- Read `DOCS-MAP.md` before document bodies. For operation/recovery read `docs/operations.md`; for peer messages read `docs/a2a-protocol.md`.
+- Use bounded MemoryMaster recall for architectural decisions. Check a relevant code index when useful; current code and runtime evidence resolve disagreements.
+- Keep the current task in its existing roadmap and Fleet card. Use linked attempts for retries, not a second backlog or duplicated operator decision.
+- Infer routine technical steps inside the user's authorized scope. Return questions only for a material unresolved decision, with evidence and a recommendation.
+- Do not spawn subagents without explicit authorization. Existing peer tasks keep their recorded scope; do not widen it from a status message.
 
-Read these before changing orchestration behavior:
+## Delivery and acceptance
 
-- `docs/ROADMAP-claude-sentinel-codex-orchestrator.md`
-- `docs/ORCHESTRATOR-CONTRACT.md`
-- `docs/PANE-ALIASES.md`
-- `docs/SKILLS-INVENTORY-orchestrator.md`
-- `docs/a2a-protocol.md`
+- Prefer `a2a_send` and inspect its submission/delivery result. For raw `send_prompt`, follow the operator's current submission rule; never resend the body to repair an Enter.
+- Verify the target project/pane and an available composer. Never type shell commands into an agent TUI.
+- Track pending work across turns. Codex requesters poll outstanding peers at a bounded cadence; responders ACK, send progress and return a result with criteria, files_changed and next_action.
+- Transport receipt is not acceptance. Open the referenced evidence and match objective, repository, revision and required criteria before accepting work.
+- A failed, missing or contradictory mandatory criterion prevents closure. Preserve failure evidence and request bounded remediation.
+- The implementation author does not independently approve their own change. Keep the review and origin-acceptance roles explicit.
 
-## Pane Roles
+## Verification and runtime
 
-- `codex-orchestrator`: pane 33, this Codex session.
-- `wezbridge-sentinel`: pane 0, Claude launched with the
-  `wezbridge-sentinel.md` appended system prompt.
-- Project panes own their own repository work. Do not silently edit another
-  project from the central wezbridge pane.
-
-## Operating Rules
-
-- Use MemoryMaster bounded recall before architectural decisions.
-- Prefer `query_for_context` or targeted `query_memory`; do not use broad
-  `list_claims` as orchestration context.
-- Treat context as layered, not cumulative. Global preferences live in global
-  instructions/user memory, project rules live in project files, durable
-  decisions/gotchas live in MemoryMaster, and active progress lives in roadmap
-  or state artifacts. See `docs/MEMORYMASTER-PERSONAL-AI-HARNESS.md`.
-- Ingest durable non-obvious findings with
-  `source_agent='codex-orchestrator-pane-33'`.
-- When sending A2A through wezbridge, always follow `send_prompt` with
-  `send_key("enter")`.
-- After sending A2A, verify delivery by reading the target pane tail. If the
-  full envelope is still visible as unsent input, or if no response/progress
-  starts, send a second submit key only. Do not resend the prompt body.
-- Multiline A2A prompts are especially prone to Enter being treated as a
-  newline by the target TUI. For long dispatches, keep the first line as the
-  complete A2A header, keep the body concise, then read back and submit again
-  if needed.
-- When dispatching `/goal`, make it bounded: state the work, the measurable
-  end state, and the constraints that must not be violated. Prefer the shape
-  `/goal <work> until <verifiable end state> without <forbidden drift>`.
-- Point long-running goals at a roadmap/checklist file and require the worker
-  to update progress, tests, docs, and remaining gaps before completion.
-- Before asking pane 0 to wake pane 33, make sure pane 33 is idle. If pane 33
-  is working, the request can queue until the current Codex turn boundary.
-
-## What Not To Do
-
-- Do not spawn a second canonical Codex orchestrator pane.
-- Do not revive the old browser dashboard/orchestrator-worker system.
-- Do not treat pane IDs as stable user-facing names; resolve visible tabs and
-  aliases through the pane identity helpers.
-
-## Docs map
-
-Doc triage map at `DOCS-MAP.md` (project root): every doc's verdict (CURRENT / SUPERSEDED / ABANDONED / GENERATED) and what replaced what. CURRENT docs carry a greppable 7-line header — grep heads before reading bodies; never base work on a doc the map marks superseded.
+- `npm test` is the complete Node test command. It loads `test/setup.cjs`, which replaces WezTerm calls with the test double; use the same preload for focused tests.
+- Focused example: `node --require ./test/setup.cjs --test test/pane0-watchdog.test.cjs`.
+- `package.json` has no build script. Do not invent a build or browser gate for a change that has no such surface.
+- `bridge_health` checks the live bridge. A listener, registration or launcher exit does not establish delivery, recovery or product completion.
+- Changes on disk do not update a running daemon/MCP. Verify the loaded code and restart only the owning component when the task authorizes runtime activation.
+- If GitNexus cannot resolve the actual symbol, record that limitation, inspect direct code references and test affected consumers. Never cite a result for a same-named symbol in another project as this change's impact.
+- Do not revive retired ClawTrol/theorchestra systems or suspended jobs from historical documents.
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **wezbridge** (36508 symbols, 88960 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **wezbridge-consolidate-20260910** (589 symbols, 692 relationships, 5 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -87,7 +57,7 @@ This project is indexed by GitNexus as **wezbridge** (36508 symbols, 88960 relat
 
 1. `gitnexus_query({query: "<error or symptom>"})` — find execution flows related to the issue
 2. `gitnexus_context({name: "<suspect function>"})` — see all callers, callees, and process participation
-3. `READ gitnexus://repo/wezbridge/process/{processName}` — trace the full execution flow step by step
+3. `READ gitnexus://repo/wezbridge-consolidate-20260910/process/{processName}` — trace the full execution flow step by step
 4. For regressions: `gitnexus_detect_changes({scope: "compare", base_ref: "main"})` — see what your branch changed
 
 ## When Refactoring
@@ -126,10 +96,10 @@ This project is indexed by GitNexus as **wezbridge** (36508 symbols, 88960 relat
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/wezbridge/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/wezbridge/clusters` | All functional areas |
-| `gitnexus://repo/wezbridge/processes` | All execution flows |
-| `gitnexus://repo/wezbridge/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/wezbridge-consolidate-20260910/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/wezbridge-consolidate-20260910/clusters` | All functional areas |
+| `gitnexus://repo/wezbridge-consolidate-20260910/processes` | All execution flows |
+| `gitnexus://repo/wezbridge-consolidate-20260910/process/{name}` | Step-by-step execution trace |
 
 ## Self-Check Before Finishing
 
