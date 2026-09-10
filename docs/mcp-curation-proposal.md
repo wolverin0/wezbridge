@@ -1,3 +1,8 @@
+<!-- doc-head: Historical MCP curation and partial reversal, August 2026 -->
+Records the per-project experiment and operator restoration of global GitNexus access.
+Read for the rationale, not as a current process census or instructions to reapply the removed global restriction.
+<!-- /doc-head -->
+
 # Curación de MCP servers por proyecto — APLICADA 2026-08-24 (gitnexus; el resto ya estaba)
 > Qué cubre: por qué hay ~96-300 procesos node, censo 2026-08-22, allowlist por proyecto y el
 > DELTA APLICADO 2026-08-24 con autorización del operador: gitnexus salió del global (era vía
@@ -60,3 +65,12 @@ sesión más rápidos. El tsserver-leak (1,4GB en 6 procesos) es aparte y ya tie
 - Backup completo: `~/.claude.json.bak-20260824-mcp-curation`. Rollback = restaurar ese archivo.
 - Efecto recién al REINICIAR cada sesión (las vivas mantienen sus procesos actuales).
 - PENDIENTE de medir: censo nuevo tras un ciclo de reinicios de flota (paso 4).
+
+## REVERSION PARCIAL 2026-08-24 (ruling del operador)
+- gitnexus VOLVIO AL GLOBAL: `/project-health` corre sobre todos los proyectos importantes y
+  necesita gitnexus en cualquier cwd — quitarlo del global rompia ese flujo. Ruling textual:
+  "it should [be global] because we run /project-health through all our important projects".
+- Lo que SE CONSERVA de la curacion: path directo al binario (sin npx = sin re-resolucion por
+  arranque) tanto en el global como en los 20 bloques por-proyecto (identicos; el de proyecto
+  shadowea al global, no duplica proceso). Backup de la reversion:
+  `~/.claude.json.bak-20260824-gitnexus-global`.
