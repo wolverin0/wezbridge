@@ -822,7 +822,7 @@ function createWaker(opts) {
     // panes stays [] -> the filter fails open and events are kept as before.
     let panes = [];
     let discoveryFailed = false;
-    try { panes = discoverPanes() || []; } catch (err) {
+    try { panes = await discoverPanes() || []; } catch (err) {
       log(`orch-waker: discovery failed: ${err.message}`);
       discoveryFailed = true;
     }
