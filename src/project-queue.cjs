@@ -18,7 +18,7 @@
  *   - tmp+rename atomic state writes (cursor/pending/delivered/flags files)
  *   - attempt cap + flag-and-stop (capped entries are FLAGGED, never retried)
  *   - cooldown between delivery attempts
- *   - anti-replay: entries older than maxAgeMs are expired at ingest, so a
+ *   - anti-replay: entries older than maxAgeMs expire at ingest AND each drain, so a
  *     wiped state dir can never replay ancient history into a live pane
  *     (the waker starts its cursor at EOF for the same reason; a queue must
  *     stay retryable from line one, so age is the guard here instead)
@@ -39,7 +39,7 @@ const { decisionDisposition, queuedDecision } = require('./decision-authority.cj
 const DEFAULTS = {
   maxAttempts: 3, // per entry; cap reached -> flagged and dropped, never retried
   cooldownMs: 5 * 60 * 1000, // between delivery attempts per project
-  maxAgeMs: 24 * 60 * 60 * 1000, // entries older than this expire at ingest
+  maxAgeMs: 24 * 60 * 60 * 1000, // expires both new and previously pending entries
   deliveredKeep: 500, // delivered-id ring buffer size
 };
 
@@ -463,7 +463,6 @@ function createConsumer(opts) {
       let ok = false;
       let submitted = 'unknown';
       let integrity = 'unknown';
-      state.lastAttemptAt = now();
       try {
         integrity = await send.sendPromptDeferredEnter(targetId, envelope);
         // T-0323: el pre-chequeo corre por sobre; la primitiva
@@ -544,7 +543,26 @@ function createConsumer(opts) {
     return { delivered, flagged, dropped, skipped: Object.keys(state.pending).length };
   }
 
-  /** One pass: finish discard audits, ingest, then resolve each current destination. */
+  function expirePending({ dryRun }) {
+    const expired = Object.entries(state.pending).filter(([, entry]) => {
+      const timestamp = Date.parse(entry.time || '');
+      return !Number.isNaN(timestamp) && now() - timestamp > cfg.maxAgeMs;
+    }).map(([id]) => id);
+    if (dryRun) return { wouldExpire: expired.length };
+    if (!expired.length) return { expiredPending: 0 };
+    for (const id of expired) {
+      deliveredSet.add(id);
+      state.delivered.push(id); // anti-replay tombstone, not evidence of delivery
+    }
+    // Persist the tombstone first. An interrupted cleanup repeats expiry on restart.
+    persistDelivered();
+    state.pending = Object.fromEntries(Object.entries(state.pending).filter(([id]) => !expired.includes(id)));
+    persistPending();
+    log(`project-queue[${project}]: ${expired.length} pending entries expired without delivery`);
+    return { expiredPending: expired.length };
+  }
+
+  /** One deterministic pass: ingest, expire aged pending work, then attempt delivery. */
   async function drain({ dryRun = false } = {}) {
     let recoveredDrops = 0;
     if (!dryRun) for (const [id, drop] of Object.entries(state.suppressed)) {
@@ -553,8 +571,11 @@ function createConsumer(opts) {
       recoveredDrops += 1;
     }
     const ingested = dryRun ? { added: 0 } : ingest();
+    const expiry = expirePending({ dryRun });
     const outcome = await deliverPending({ dryRun });
-    return { project, ...ingested, ...outcome, dropped: (outcome.dropped || 0) + recoveredDrops,
+    return { project, ...ingested, ...outcome, ...expiry,
+      dropped: (outcome.dropped || 0) + recoveredDrops,
+      ...(dryRun ? { wouldDeliver: Object.keys(state.pending).length - expiry.wouldExpire } : {}),
       pending: Object.keys(state.pending).length };
   }
 
@@ -580,7 +601,7 @@ function createConsumer(opts) {
 function listQueues({ base } = {}) {
   try {
     return fs.readdirSync(queuesDir(base))
-      .filter((n) => n.endsWith('.jsonl'))
+      .filter((n) => n.endsWith('.jsonl') && !n.startsWith('_dead-letter'))
       .map((n) => n.replace(/\.jsonl$/, ''));
   } catch { return []; }
 }
