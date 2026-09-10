@@ -32,7 +32,7 @@
  */
 
 const fs = require('node:fs');
-const { composerHoldsForeignText, inputBoxContent, classifyDelivery } = require('./verified-send.cjs');
+const { composerHoldsForeignText, operatorQuestionVisible, inputBoxContent, classifyDelivery } = require('./verified-send.cjs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
@@ -215,6 +215,10 @@ function paneHeldComposerDetail(panes, repo, hint) {
     return { paneId: p.paneId ?? p.pane_id ?? null, text: inputBoxContent(tail.split(/\r?\n/)) };
   }
   return null;
+}
+
+function paneOperatorQuestion(panes, repo, hint) {
+  return panesForRepo(panes, repo, hint).some(p => operatorQuestionVisible(p.lastLines || p.text));
 }
 
 /**
@@ -420,7 +424,8 @@ function createWaker(opts) {
       // runs bypass-permissions, its permission-wait never becomes an intent.
       // cfg.isBypassPane overrides for tests/wiring; a throwing predicate or an
       // invisible pane keeps the event (fail open).
-      if (evt.event === 'permission-wait') {
+      const operatorQuestion = paneOperatorQuestion(panes, evt.repo, { pane: evt.pane, cwd: evt.cwd });
+      if (evt.event === 'permission-wait' && !operatorQuestion) {
         let bypass = false;
         try {
           bypass = cfg.isBypassPane
@@ -436,6 +441,7 @@ function createWaker(opts) {
       // produciendo intents identicos. Se guardan solo si son del tipo correcto
       // — un `pane: null` es "no se supo", no un pane.
       const intent = { repo: evt.repo, event: evt.event, time: evt.time, attempts: 0 };
+      if (operatorQuestion) intent.classification = 'operator-question';
       if (Number.isInteger(evt.pane)) intent.pane = evt.pane;
       if (typeof evt.cwd === 'string' && evt.cwd.trim()) intent.cwd = evt.cwd;
       state.pending[id] = intent;
@@ -623,7 +629,12 @@ function createWaker(opts) {
         if (it && it.cwd !== undefined) hint.cwd = it.cwd;
       }
       let group = groupAll;
-      if (paneRunsBypass(panes, repo, hint)) {
+      const operatorQuestion = paneOperatorQuestion(panes, repo, hint);
+      if (operatorQuestion) {
+        for (const id of groupAll) state.pending[id] = { ...state.pending[id], classification: 'operator-question' };
+        persistPending();
+      }
+      if (!operatorQuestion && paneRunsBypass(panes, repo, hint)) {
         const noiseIds = groupAll.filter((id) => isNoiseEvent(state.pending[id], true));
         if (noiseIds.length) {
           for (const id of noiseIds) {
@@ -673,7 +684,9 @@ function createWaker(opts) {
       const nodes = [...new Set(group.map((id) => state.pending[id].node).filter(Boolean))];
       let text = nodes.length
         ? `[orch-waker] ${repo} RESULT FILE(S) written: ${nodes.join(', ')}. Harvest ${repo}/.orchestrator/results/ and advance — ${facts}.`
-        : openGraph(repo)
+        : operatorQuestion
+          ? `[orch-waker] ${repo} operator-question: pane espera respuesta del operador — ${facts}.`
+          : openGraph(repo)
           ? `[orch-waker] Harvest ${repo}/.orchestrator/results/ and advance the graph — ${facts}.`
           : `[orch-waker] ${repo} finished work — ${facts}. No open graph, so no node completed: check what the pane actually did.`;
       // M2: context watermark — the number was always on the pane's status
