@@ -69,6 +69,27 @@ function readVerdict(body) {
   return { verdict: m[2].toUpperCase(), job: m[1], blocker };
 }
 
+// A receipt replay may finish a release interrupted after the durable update.
+// Exact evidence, resulting state and executor identity protect a newer lease.
+function releaseResultLease(card, line, runLedger, recordEvent, replay = false) {
+  if (!card.lease) return false;
+  if (replay) {
+    const { verdict, job } = readVerdict(line.body);
+    const target = verdict === 'FAILED' ? 'failed' : (verdict === 'BLOCKED' ? 'blocked' : 'review');
+    const owner = job ? `eve:${job}` : `pane-${line.from_pane}`;
+    if (card.state !== target || card.lease.owner !== owner
+      || !String(card.evaluator_evidence || '').includes(evidencePointer(line))) return false;
+  }
+  try { runLedger(['release', card.id]); return true; }
+  catch (err) {
+    try {
+      recordEvent({ event: 'result.lease_not_released', corr: String(line.corr), task_id: card.id,
+        detail: String((err && err.message) || err).slice(0, 200) });
+    } catch { /* audit failure must not throw into a2a_send */ }
+    return null; // attempted release failed; consumer must retain its cursor
+  }
+}
+
 /**
  * Liga UNA linea de a2a-results.jsonl a su tarjeta.
  *
@@ -97,6 +118,9 @@ function link(line, { runLedger, readTasks, recordEvent, now = () => Date.now() 
   // `result.unlinked` sobre su propio exito, que es un instrumento que miente.
   const pointer = `a2a-results.jsonl#time=${line.time}`;
   if (String(card.evaluator_evidence || '').includes(pointer)) {
+    if (releaseResultLease(card, line, runLedger, recordEvent, true) === null) {
+      return { ...unlinked('lease-error', { task_id: card.id }), retryable: true };
+    }
     return { linked: false, noop: true, reason: 'already-linked', id: card.id };
   }
   if (card.state !== 'running') return unlinked(`state=${card.state}`, { task_id: card.id });
@@ -123,10 +147,8 @@ function link(line, { runLedger, readTasks, recordEvent, now = () => Date.now() 
     // Un result es el FIN del trabajo del executor: la lease se libera en todos
     // los veredictos (T31 check 8 en vivo: T-0309 quedo blocked con la lease
     // eve:JOB puesta y el steward la reporto dead-owner-lease, con razon).
-    if (card.lease) {
-      try { runLedger(['release', card.id]); } catch (err) {
-        recordEvent({ event: 'result.lease_not_released', corr: String(corr), task_id: card.id, detail: String((err && err.message) || err).slice(0, 200) });
-      }
+    if (releaseResultLease(card, line, runLedger, recordEvent) === null) {
+      return { ...unlinked('lease-error', { task_id: card.id }), retryable: true };
     }
   } catch (err) {
     return unlinked('ledger-error', {

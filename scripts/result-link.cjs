@@ -70,6 +70,7 @@ function runOnce(dir = intelDir()) {
       readTasks: () => linker.defaultReadTasks(dir),
       recordEvent,
     });
+    if (r.retryable) out.retryable = (out.retryable || 0) + 1;
     if (r.linked) out.linked += 1;
     else if (!r.noop) {
       out.unlinked += 1;
@@ -78,7 +79,9 @@ function runOnce(dir = intelDir()) {
   }
   // El cursor avanza DESPUES de ligar: un corte a mitad re-lee las lineas, y
   // ligar dos veces la misma linea ya es no-op (la evidencia la cita).
-  writeCursor(dir, bytes);
+  // A transient release failure leaves the durable receipt for the next existing
+  // scheduled pass. Already completed effects remain idempotent when re-read.
+  if (!out.retryable) writeCursor(dir, bytes);
   return out;
 }
 
