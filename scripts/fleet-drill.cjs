@@ -496,7 +496,8 @@ const CHECKS = [
       const calls = [];
       const orch = paneWithComposer('❯', path.join(ctx.tmp, 'wezbridge'), 0);
       const held = paneWithComposer('❯ dale, hacelo vos', ctx.repoDir, 3);
-      const mk = (submitted) => createWaker({ eventsPath, stateDir: path.join(dir, submitted), intelDir: ctx.intel, discoverPanes: () => [orch, held], send: { sendPromptDeferredEnter: async (p, t) => { calls.push(t); return 'ok'; }, verifyPromptSubmission: async () => submitted }, settleTicks: 1, cooldownMs: 0, maxAttempts: 3, now: () => Date.now(), log: ctx.log, watchRepos: ['drillrepo'], targetProject: 'wezbridge' });
+      // This check measures delivery integrity; debounce has its own clock-based tests.
+      const mk = (submitted) => createWaker({ eventsPath, stateDir: path.join(dir, submitted), intelDir: ctx.intel, discoverPanes: () => [orch, held], send: { sendPromptDeferredEnter: async (p, t) => { calls.push(t); return 'ok'; }, verifyPromptSubmission: async () => submitted }, settleTicks: 1, cooldownMs: 0, debounceMs: 0, maxAttempts: 3, now: () => Date.now(), log: ctx.log, watchRepos: ['drillrepo'], targetProject: 'wezbridge' });
       const w = mk('unknown');
       await w.tick();
       fs.appendFileSync(eventsPath, JSON.stringify({ time: new Date().toISOString(), repo: 'drillrepo', session: 'drill', event: 'turn-end' }) + '\n');
