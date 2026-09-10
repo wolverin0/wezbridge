@@ -17,7 +17,7 @@ Read for historical design context; verify current code and decisions before ado
 - **Recovered context:** reporting about a June 2026 SemiAnalysis experiment says it exhausted paid Anthropic/OpenAI plans with long-horizon agentic coding and converted measured tokens to API list-price equivalents. [Summary](https://pasqualepillitteri.it/en/news/4793/semianalysis-token-value-claude-chatgpt-plans)
 - **Role in the post:** foundation for the author's 70× subsidy framing.
 - **Caveat:** the recovered linked source is [SemiAnalysis post 3/4](https://x.com/SemiAnalysis_/status/2064815045767213400), so its full thread methodology was only partially recoverable. The 70× headline is a maximum API-list-price-equivalent comparison and uses stated gross-margin assumptions; it is neither a promise of capacity nor a reason to create duplicate identities.
-- **Factory lesson:** measure actual success rate, queueing, failure modes, and account policy—not inferred "token value." 
+- **Factory lesson:** measure actual success rate, queueing, failure modes, and account policy—not inferred "token value."
 
 ### [Codex App Server](https://developers.openai.com/codex/app-server) — Codex control protocol
 - **What it is:** OpenAI's experimental JSON-RPC control surface for Codex. It supports stdio by default and experimental WebSocket/Unix-socket transports; it streams thread/turn events and supports rich client integrations.
