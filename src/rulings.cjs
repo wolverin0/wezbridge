@@ -103,7 +103,7 @@ const RULING_VOCAB = ['cancelled', 'operator-gated', 'resolved', 'deferred', 'di
 const RULING_SOURCES = ['board-app', 'ledger-cli', 'telegram', 'orchestrator-pane', 'drill'];
 
 /** Campos que una linea puede tener. Cualquier otro se rechaza, no se ignora. */
-const RULING_FIELDS = ['task', 'category', 'ruling', 'why', 'at', 'until', 'source', 'by', 'corr'];
+const RULING_FIELDS = ['task', 'category', 'ruling', 'why', 'at', 'until', 'source', 'by', 'corr', 'value_landed_in'];
 
 /**
  * Categorias de hallazgo que el steward EMITE y que un ruling puede citar.
@@ -242,7 +242,7 @@ function validateRulingLine(line, now) {
     if (!Number.isFinite(parsed)) return { ok: false, error: `invalid \`at\` ${JSON.stringify(line.at)}` };
     at = line.at;
   }
-  for (const opt of ['by', 'corr']) {
+  for (const opt of ['by', 'corr', 'value_landed_in']) {
     if (line[opt] !== undefined && !nonEmptyString(line[opt])) {
       return { ok: false, error: `${opt}, when present, must be a non-empty string` };
     }
@@ -252,6 +252,7 @@ function validateRulingLine(line, now) {
   out.source = line.source;
   if (line.by !== undefined) out.by = line.by;
   if (line.corr !== undefined) out.corr = line.corr;
+  if (line.value_landed_in !== undefined) out.value_landed_in = line.value_landed_in;
   return { ok: true, line: out };
 }
 
