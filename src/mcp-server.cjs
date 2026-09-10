@@ -549,6 +549,7 @@ const TOOLS = [
         type: { type: 'string', enum: ['request', 'ack', 'progress', 'result', 'error'], description: 'A2A message type. Default: request.' },
         corr: { type: 'string', description: 'Correlation id — keep it stable across a thread. Default: generated (returned in the response; reuse it for follow-ups).' },
         from_pane: { type: 'number', description: 'Sender pane ID. Default: WEZTERM_PANE env (your own pane).' },
+        expected_cwd: { type: 'string', description: 'Optional exact project cwd for to_pane. Refuses if mux/census/visible cwd disagree before any write. No routing or queue fallback.' },
         allow_long: { type: 'boolean', description: `Send a body over ${A2A_BODY_SOFT_LIMIT} chars anyway. Long envelopes are TRUNCATED in transit by the recipient's composer; the fix is almost always to write the content to a repo file and send a short pointer. Only set this when you have a specific reason the payload must go inline.` },
       },
       required: ['body'],
@@ -1497,6 +1498,9 @@ function handleToolCall(name, args) {
         ? null : String(args.to_project).trim();
       let toPane = args.to_pane;
       let body = args.body;
+      if (args.expected_cwd !== undefined && (toProject || typeof args.expected_cwd !== 'string' || !args.expected_cwd.trim())) {
+        return { content: [{ type: 'text', text: 'expected_cwd requires a nonempty cwd and explicit to_pane' }], isError: true };
+      }
       if (toProject && toPane !== undefined && toPane !== null) {
         return { content: [{ type: 'text', text: 'Error: pass EITHER to_project OR to_pane, not both — to_project resolves the pane itself at send time' }], isError: true };
       }
@@ -1735,14 +1739,15 @@ function handleToolCall(name, args) {
       }
 
       try {
-        const delivered = await sendPromptDeferredEnter(toPane, envelope);
+        const pinned = args.expected_cwd ? require('./pinned-send.cjs').createPinnedSend({ paneId: toPane, cwd: args.expected_cwd }) : null;
+        const delivered = await (pinned ? pinned.sendPromptDeferredEnter : sendPromptDeferredEnter)(toPane, envelope);
         if (delivered && delivered.refused) {
           // T-0323: composer con texto ajeno => la primitiva no escribio nada.
           // No verificar (reintentaria Enter sobre el texto del operador).
           log(`a2a_send pane-${fromPane} -> pane-${toPane} corr=${corr} REFUSED ${delivered.refused}: held=${JSON.stringify(String(delivered.held).slice(0, 80))}`);
           return { content: [{ type: 'text', text: `REFUSED (${delivered.refused}): pane ${toPane} (${toProject || 'unknown project'}) composer holds UNSENT text ${JSON.stringify(String(delivered.held).slice(0, 120))} — the envelope was NOT typed (corr=${corr}). Retry after the operator submits or clears it; enqueue via the project queue if it must not be lost.` }], isError: true, submitted: 'refused', delivered: 'refused' };
         }
-        const submitted = await verifyPromptSubmission(toPane, envelope);
+        const submitted = await (pinned ? pinned.verifyPromptSubmission : verifyPromptSubmission)(toPane, envelope);
         log(`a2a_send pane-${fromPane} -> pane-${toPane} corr=${corr} type=${msgType} [submit:${submitted} deliver:${delivered}]`);
         const truncated = delivered === 'truncated';
         // Control-plane enforcement (fail-soft, never blocks delivery):
@@ -1893,6 +1898,11 @@ function handleToolCall(name, args) {
           isError: false,
         };
       } catch (err) {
+        // Pinned orders cannot be replayed by a queue that does not retain their target fence.
+        if (args.expected_cwd !== undefined) {
+          return { content: [{ type: 'text', text: `Pinned send refused or unverified for pane ${toPane}: ${err.message}. NOT queued; inspect the receipt and pane before an explicit new attempt.` }],
+            isError: true, queued: false, retry: 'manual-only' };
+        }
         // T-0233: a transport exception must not vanish the envelope. Before
         // this, only the to_project happy path enqueued — a to_pane ETIMEDOUT
         // left ZERO durable record (mm-455f: results survived that night only

@@ -101,7 +101,7 @@ test('ingest: ok:true lines are never retried; ok:false lines become pending', a
   const base = freshBase();
   pq.enqueue({ project: 'wezbridge', corr: 'T-a', type: 'request', from_pane: 0, ok: true, body: 'delivered already' }, { base });
   pq.enqueue({ project: 'wezbridge', corr: 'T-b', type: 'request', from_pane: 0, ok: false, body: 'failed delivery' }, { base });
-  const c = makeConsumer(base, { discoverPanes: () => [] }); // no panes -> no delivery, pure ingest
+  const c = makeConsumer(base, { discoverPanes: () => [{ ...IDLE_PANE, status: 'working' }] }); // known busy pane -> retain pending, pure ingest (T-0377 drops missing destinations)
   const out = await c.drain();
   assert.strictEqual(out.added, 1, 'only the undelivered line is retry work');
   assert.strictEqual(c.status().pending, 1);
@@ -112,7 +112,7 @@ test('ingest: sha1 dedupe — the same logical message enqueued twice is ONE pen
   const e = { project: 'wezbridge', corr: 'T-dup', type: 'request', from_pane: 0, ok: false, body: 'same' };
   pq.enqueue(e, { base });
   pq.enqueue(e, { base });
-  const c = makeConsumer(base, { discoverPanes: () => [] });
+  const c = makeConsumer(base, { discoverPanes: () => [{ ...IDLE_PANE, status: 'working' }] });
   const out = await c.drain();
   assert.strictEqual(out.added, 1);
 });
@@ -121,7 +121,7 @@ test('ingest: a later verified re-send supersedes the earlier failed copy', asyn
   const base = freshBase();
   const e = { project: 'wezbridge', corr: 'T-sup', type: 'request', from_pane: 0, body: 'same' };
   pq.enqueue({ ...e, ok: false }, { base });
-  const c = makeConsumer(base, { discoverPanes: () => [] });
+  const c = makeConsumer(base, { discoverPanes: () => [{ ...IDLE_PANE, status: 'working' }] });
   await c.drain();
   assert.strictEqual(c.status().pending, 1);
   pq.enqueue({ ...e, ok: true }, { base }); // caller re-sent and it verified
@@ -133,7 +133,7 @@ test('ingest: entries older than maxAgeMs expire instead of replaying (anti-repl
   const base = freshBase();
   pq.enqueue({ project: 'wezbridge', corr: 'T-old', type: 'request', from_pane: 0, ok: false, body: 'ancient' }, { base });
   const future = Date.now() + 25 * 60 * 60 * 1000; // 25h later
-  const c = makeConsumer(base, { discoverPanes: () => [], now: () => future });
+  const c = makeConsumer(base, { discoverPanes: () => [{ ...IDLE_PANE, status: 'working' }], now: () => future });
   const out = await c.drain();
   assert.strictEqual(out.added, 0);
   assert.strictEqual(out.expired, 1);
@@ -146,7 +146,7 @@ test('ingest: a corrupt line is skipped, never crashes, later lines still ingest
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.appendFileSync(file, '{corrupt-not-json\n');
   pq.enqueue({ project: 'wezbridge', corr: 'T-after', type: 'request', from_pane: 0, ok: false, body: 'fine' }, { base });
-  const c = makeConsumer(base, { discoverPanes: () => [] });
+  const c = makeConsumer(base, { discoverPanes: () => [{ ...IDLE_PANE, status: 'working' }] });
   const out = await c.drain();
   assert.strictEqual(out.added, 1);
 });
@@ -154,7 +154,7 @@ test('ingest: a corrupt line is skipped, never crashes, later lines still ingest
 test('atomicity: consumer state is valid JSON with no leftover .tmp files', async () => {
   const base = freshBase();
   pq.enqueue({ project: 'wezbridge', corr: 'T-atom', type: 'request', from_pane: 0, ok: false, body: 'x' }, { base });
-  const c = makeConsumer(base, { discoverPanes: () => [] });
+  const c = makeConsumer(base, { discoverPanes: () => [{ ...IDLE_PANE, status: 'working' }] });
   await c.drain();
   const stateDir = path.join(base, 'queues', 'state', 'wezbridge');
   for (const f of ['cursor.json', 'pending.json']) {
@@ -167,10 +167,10 @@ test('atomicity: consumer state is valid JSON with no leftover .tmp files', asyn
 test('cursor survives across consumer instances — lines are never re-ingested', async () => {
   const base = freshBase();
   pq.enqueue({ project: 'wezbridge', corr: 'T-c1', type: 'request', from_pane: 0, ok: false, body: 'one' }, { base });
-  const c1 = makeConsumer(base, { discoverPanes: () => [] });
+  const c1 = makeConsumer(base, { discoverPanes: () => [{ ...IDLE_PANE, status: 'working' }] });
   const out1 = await c1.drain();
   assert.strictEqual(out1.added, 1);
-  const c2 = makeConsumer(base, { discoverPanes: () => [] }); // fresh instance, same durable state
+  const c2 = makeConsumer(base, { discoverPanes: () => [{ ...IDLE_PANE, status: 'working' }] }); // fresh instance, same durable state
   const out2 = await c2.drain();
   assert.strictEqual(out2.added, 0, 'the durable cursor must prevent re-ingest');
   assert.strictEqual(c2.status().pending, 1, 'pending persisted across instances');

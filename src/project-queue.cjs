@@ -210,7 +210,7 @@ function createConsumer(opts) {
     cursorTail: savedCursor.tail, // { len, hash } | null — rotation fingerprint
     pending: readJson(FILES.pending, {}), // id -> {entry fields + attempts}
     delivered: readJson(FILES.delivered, []), // ring of entry ids
-    suppressed: readJson(FILES.suppressed, {}), // obsolete decisions, never delivery evidence
+    suppressed: readJson(FILES.suppressed, {}), // terminal discards/obsolete decisions, never delivery evidence
     lastAttemptAt: undefined, // in-memory; cron cadence is the real spacing
   };
   const deliveredSet = new Set(state.delivered);
@@ -279,6 +279,7 @@ function createConsumer(opts) {
         continue;
       }
       state.pending[id] = {
+        project: entry.project || project,
         corr: entry.corr, type: entry.type, from_pane: entry.from_pane, from_project: entry.from_project ?? null,
         body: entry.body, time: entry.time, attempts: 0,
         ...(entry.ruling ? { ruling: entry.ruling } : {}),
@@ -309,9 +310,9 @@ function createConsumer(opts) {
   }
 
   // ── 2. target: re-resolve the project's pane AT DELIVERY TIME ────────────
-  function findTarget(panes) {
-    if (cfg.resolveTarget) return cfg.resolveTarget(panes);
-    const { resolve } = require('./pane-identity.cjs');
+  function findTarget(panes, destination) {
+    const { resolve, projectFromCwd } = require('./pane-identity.cjs');
+    const canonical = projectFromCwd(destination);
     const mapped = (panes || [])
       .filter((p) => p.agent) // agent panes only — the daemon's shell shares cwds
       .map((p) => ({
@@ -319,12 +320,44 @@ function createConsumer(opts) {
         cwd: p.project || p.cwd || null,
         tab_title: p.tabTitle || p.title || null,
       }));
-    const hit = resolve(project, mapped);
+    const hit = resolve(canonical, mapped);
+    // A restored tab can retain another project's title. Only a matching cwd
+    // proves that this live pane owns the queued destination.
+    if (hit.matchedBy !== 'cwd') return { paneId: null, missing: true };
+    if (cfg.resolveTarget) {
+      const paneId = cfg.resolveTarget(panes);
+      const chosen = mapped.find(pane => pane.pane_id === paneId);
+      return { paneId: chosen && String(projectFromCwd(chosen.cwd)).toLowerCase() === String(canonical).toLowerCase()
+        ? paneId : null, missing: false };
+    }
     if (hit.paneId === null || hit.ambiguous.length) {
       log(`project-queue[${project}]: ${hit.warning} — not delivering this pass`);
-      return null;
+      return { paneId: null, missing: false };
     }
-    return hit.paneId;
+    return { paneId: hit.paneId, missing: false };
+  }
+
+  /** Durable discard, with audit retry after interruption; never a delivery receipt. */
+  function dropEntry(id, entry, reason) {
+    let drop = state.suppressed[id];
+    if (drop?.event !== 'queue.entry_dropped') {
+      drop = { event: 'queue.entry_dropped', id, project: entry.project || project,
+        corr: entry.corr, reason, time: new Date(now()).toISOString(), reported: false };
+      state.suppressed = { ...state.suppressed, [id]: drop };
+      atomicWriteJson(FILES.suppressed, state.suppressed);
+    }
+    if (!drop.reported) {
+      // Unlike advisory events, this audit is mandatory. A failed append
+      // leaves the tombstone and pending entry for retry, never for sending.
+      const { reported, ...event } = drop;
+      fs.appendFileSync(path.join(base, 'events.jsonl'), JSON.stringify(event) + '\n');
+      state.suppressed = { ...state.suppressed, [id]: { ...drop, reported: true } };
+      atomicWriteJson(FILES.suppressed, state.suppressed);
+    }
+    clearDecisionHold(id);
+    state.pending = Object.fromEntries(Object.entries(state.pending).filter(([key]) => key !== id));
+    persistPending();
+    log(`project-queue[${project}]: entry ${id} dropped: ${drop.reason}`);
   }
 
   // ── 3. deliver: pending entries, verified, capped, cooled down ───────────
@@ -359,20 +392,11 @@ function createConsumer(opts) {
     return { allowed: false, flagged: fresh ? 1 : 0 };
   }
 
-  async function deliverPending(panes, { dryRun = false } = {}) {
+  async function deliverPending({ dryRun = false } = {}) {
     const ids = Object.keys(state.pending);
     if (!ids.length) return { delivered: 0, flagged: 0, skipped: 0 };
     if (dryRun) return { delivered: 0, flagged: 0, skipped: ids.length, wouldDeliver: ids.length };
 
-    const targetId = findTarget(panes);
-    if (targetId == null) return { delivered: 0, flagged: 0, skipped: ids.length };
-    const target = (panes || []).find((p) => (p.paneId ?? p.pane_id) === targetId);
-    if (!target || target.status !== 'idle') {
-      // Busy pane: skip without consuming attempts or cooldown — an A2A retry
-      // typed into a mid-work composer is exactly the interruption class the
-      // orchestrate skill forbids.
-      return { delivered: 0, flagged: 0, skipped: ids.length };
-    }
     // T-0242/AC6: el pane esta idle PERO su composer retiene texto que todavia
     // no envio (tipico: el operador escribio y no dio Enter). Entregar aca no
     // manda el sobre — manda "su texto + el sobre" concatenados como un solo
@@ -386,12 +410,6 @@ function createConsumer(opts) {
     //
     // Fail-open si el `send` inyectado no trae el helper (fakes de tests
     // viejos): un guard que no puede medir no puede frenar.
-    if (typeof send.paneComposerHoldsForeignText === 'function'
-        && send.paneComposerHoldsForeignText(targetId)) {
-      log(`project-queue[${project}]: pane-${targetId} idle pero su composer retiene texto sin enviar `
-        + `— difiriendo ${ids.length} entrada(s), reintento en el proximo drain`);
-      return { delivered: 0, flagged: 0, skipped: ids.length, deferredComposer: ids.length };
-    }
 
     // Cooldown (waker rule): undefined = never attempted, never blocked.
     if (state.lastAttemptAt !== undefined && now() - state.lastAttemptAt < cfg.cooldownMs) {
@@ -399,9 +417,31 @@ function createConsumer(opts) {
     }
     let delivered = 0;
     let flagged = 0;
+    let dropped = 0;
     for (const id of ids) {
       const entry = state.pending[id];
       if (!entry) continue;
+      if (state.suppressed[id]?.event === 'queue.entry_dropped') {
+        dropEntry(id, entry, state.suppressed[id].reason); dropped += 1; continue;
+      }
+      let panes;
+      try {
+        panes = discoverPanes();
+        if (!Array.isArray(panes)) throw new Error('invalid pane census');
+      } catch (err) { log(`project-queue[${project}]: discovery failed: ${err.message}`); break; }
+      const destination = entry.project || project;
+      const targetHit = findTarget(panes, destination);
+      if (targetHit.missing) { dropEntry(id, entry, 'project-not-live'); dropped += 1; continue; }
+      const targetId = targetHit.paneId;
+      const target = panes.find(pane => (pane.paneId ?? pane.pane_id) === targetId);
+      if (!target || target.status !== 'idle') break;
+      if (typeof send.paneComposerHoldsForeignText === 'function'
+          && send.paneComposerHoldsForeignText(targetId)) {
+        log(`project-queue[${project}]: pane-${targetId} idle pero su composer retiene texto sin enviar `
+          + `— difiriendo ${Object.keys(state.pending).length} entrada(s), reintento en el proximo drain`);
+        return { delivered, flagged, dropped, skipped: Object.keys(state.pending).length,
+          deferredComposer: Object.keys(state.pending).length };
+      }
       const decision = screenDecision(id, entry);
       flagged += decision.flagged;
       if (!decision.allowed) continue;
@@ -415,7 +455,7 @@ function createConsumer(opts) {
         fromPane: entry.from_pane,
         fromProject: entry.from_project,
         toPane: targetId,
-        toProject: project,
+        toProject: destination,
         corr: entry.corr,
         type: entry.type,
         body: entry.body,
@@ -423,10 +463,11 @@ function createConsumer(opts) {
       let ok = false;
       let submitted = 'unknown';
       let integrity = 'unknown';
+      state.lastAttemptAt = now();
       try {
         integrity = await send.sendPromptDeferredEnter(targetId, envelope);
-        // T-0323: el pre-chequeo de arriba corre una vez por drain; la primitiva
-        // vuelve a mirar en cada sobre (el operador pudo tipear entre medio) y
+        // T-0323: el pre-chequeo corre por sobre; la primitiva
+        // vuelve a mirar antes de escribir (el operador pudo tipear entre medio) y
         // rehusa sin escribir. Sin verify: reintentaria Enter sobre ese texto.
         if (integrity && integrity.refused) {
           log(`project-queue[${project}]: pane-${targetId} composer retiene texto sin enviar ${JSON.stringify(String(integrity.held).slice(0, 60))} — sobre ${id} diferido`);
@@ -498,20 +539,23 @@ function createConsumer(opts) {
         break;
       }
     }
-    if (delivered) log(`project-queue[${project}]: delivered ${delivered} entr(y/ies) to pane ${targetId}`);
+    if (delivered) log(`project-queue[${project}]: delivered ${delivered} entr(y/ies) using current project identity`);
     if (flagged) log(`project-queue[${project}]: ${flagged} entr(y/ies) hit the attempt cap and were FLAGGED`);
-    return { delivered, flagged, skipped: Object.keys(state.pending).length };
+    return { delivered, flagged, dropped, skipped: Object.keys(state.pending).length };
   }
 
-  /** One deterministic pass: ingest new lines, then attempt delivery. */
+  /** One pass: finish discard audits, ingest, then resolve each current destination. */
   async function drain({ dryRun = false } = {}) {
-    let panes = [];
-    try { panes = discoverPanes() || []; } catch (err) {
-      log(`project-queue[${project}]: discovery failed: ${err.message}`);
+    let recoveredDrops = 0;
+    if (!dryRun) for (const [id, drop] of Object.entries(state.suppressed)) {
+      if (drop.event !== 'queue.entry_dropped' || drop.reported) continue;
+      dropEntry(id, state.pending[id] || drop, drop.reason);
+      recoveredDrops += 1;
     }
     const ingested = dryRun ? { added: 0 } : ingest();
-    const outcome = await deliverPending(panes, { dryRun });
-    return { project, ...ingested, ...outcome, pending: Object.keys(state.pending).length };
+    const outcome = await deliverPending({ dryRun });
+    return { project, ...ingested, ...outcome, dropped: (outcome.dropped || 0) + recoveredDrops,
+      pending: Object.keys(state.pending).length };
   }
 
   function status() {

@@ -1,7 +1,7 @@
 'use strict';
 /**
  * lease-reconcile.cjs — ¿el owner de cada lease abierta sigue EXISTIENDO?
- * Dos formas de owner: `pane-N` (se verifica contra el censo de WezTerm, con
+ * Tres formas de owner: slug registrado, `pane-N` (censo de WezTerm, con
  * cwd coincidente) y `eve:<jobId>` (W5: se verifica con `executorLiveness`
  * inyectado; sin funcion o sin respuesta => lease-owner-unverifiable, jamas
  * "sano"). Categorias: dead-owner-lease · lease-owner-unverifiable ·
@@ -29,25 +29,45 @@
  * que responde "todo sano" cuando en realidad no pudo mirar es el instrumento
  * mentiroso que este repo vino cazando toda la semana.
  */
-const { spawnSync } = require('node:child_process');
+const { spawnSync, execFileSync } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const TERMINAL = new Set(['done', 'cancelled']);
 
 /**
- * Dos formas de owner, dos reconciliadores distintos:
+ * Contrato canonico compartido con el ledger, mas lectura de panes historicos:
  *   "pane-33 (wezbridge)" -> { paneId: 33 }   (censo de WezTerm)
  *   "eve:<jobId>"         -> { executor: 'eve', jobId }   (vivacidad inyectada)
+ *   "codex:<id>"          -> executor reconocido, vivacidad no presumida
+ *   "wezbridge"           -> { project: 'wezbridge' }   (slug declarado, cwd vivo)
  * Cualquier otra cosa -> null (ilegible, y se dice).
  *
  * W5: un job de FinalOrchestra NO tiene pane. Hasta hoy su lease caia en
  * "owner ilegible" y producia un hallazgo falso por cada tarjeta despachada a
  * Eve — que es exactamente como se entrena a todo el mundo a ignorar al steward.
  */
-function parseOwner(owner) {
-  const eve = /^eve:(\S+)$/.exec(String(owner || '').trim());
-  if (eve) return { executor: 'eve', jobId: eve[1] };
-  const m = /pane-(\d+)/.exec(String(owner || ''));
-  return m ? { paneId: Number(m[1]) } : null;
+const LEASE_OWNER_FORMS = [/^pane-\d+$/, /^[a-z]+:[A-Za-z0-9._-]{1,80}$/];
+
+function loadProjects(dir = process.env.WEZBRIDGE_INTEL_DIR || path.join(__dirname, '../..', '_intel')) {
+  try {
+    const registry = JSON.parse(fs.readFileSync(path.join(dir, 'repos.json'), 'utf8'));
+    const projects = registry.repos || registry;
+    return projects && typeof projects === 'object' && !Array.isArray(projects) ? projects : null;
+  } catch { return null; }
+}
+
+function parseOwner(owner, projects = loadProjects()) {
+  if (typeof owner !== 'string') return null;
+  if (LEASE_OWNER_FORMS[0].test(owner)) return { paneId: Number(owner.slice(5)) };
+  if (LEASE_OWNER_FORMS[1].test(owner)) {
+    const [executor, jobId] = owner.split(':');
+    return { executor, jobId };
+  }
+  if (projects && Object.hasOwn(projects, owner)) return { project: owner };
+  // Read-only compatibility with historical decorated pane owners; ledger no longer writes these.
+  const legacy = /^pane-(\d+) \([^()\r\n]+\)$/.exec(owner);
+  return legacy ? { paneId: Number(legacy[1]) } : null;
 }
 
 /**
@@ -72,10 +92,13 @@ function repoMatchesCwd(repo, cwd) {
  * medir — y null se REPORTA, no se traga (ver el hallazgo census-unavailable).
  */
 function liveCensus() {
-  const res = spawnSync('wezterm', ['cli', '--prefer-mux', '--no-auto-start', 'list', '--format', 'json'], { encoding: 'utf8', timeout: 15000 });
-  if (res.error || res.status !== 0) return null;
   try {
-    return JSON.parse(res.stdout).map((p) => ({ pane_id: p.pane_id, cwd: p.cwd || '' }));
+    const wez = require('../src/wezterm.cjs');
+    const invocation = wez.buildCliInvocation(['list', '--format', 'json']);
+    const panes = JSON.parse(execFileSync(wez.WEZTERM, invocation.cliArgs,
+      { env: invocation.env, encoding: 'utf8', timeout: 15000, windowsHide: true }));
+    if (!Array.isArray(panes)) return null;
+    return panes.map((p) => ({ pane_id: p.pane_id, cwd: p.cwd || '' }));
   } catch { return null; }
 }
 
@@ -92,6 +115,7 @@ function liveCensus() {
 function reconcileLeases(tasks, census, now = Date.now(), opts = {}) {
   const open = (tasks || []).filter((t) => t && t.lease && t.lease.owner && !TERMINAL.has(t.state));
   if (open.length === 0) return [];
+  const projects = 'projects' in opts ? opts.projects : loadProjects();
 
   // La vivacidad de un executor remoto no se adivina: se INYECTA (drill:
   // stub.isAlive; vivo: task_get de FinalOrchestra). Sin funcion no hay
@@ -100,8 +124,8 @@ function reconcileLeases(tasks, census, now = Date.now(), opts = {}) {
   // Las leases de Eve no dependen del censo de WezTerm: se reconcilian aunque
   // el censo no se haya podido obtener.
   const needsCensus = open.filter((t) => {
-    const p = parseOwner(t.lease.owner);
-    return !(p && p.executor === 'eve');
+    const p = parseOwner(t.lease.owner, projects);
+    return !(p && p.executor);
   });
 
   if (needsCensus.length > 0 && !Array.isArray(census)) {
@@ -121,13 +145,28 @@ function reconcileLeases(tasks, census, now = Date.now(), opts = {}) {
       owner: t.lease.owner, age_hours: Math.max(0, ageH),
       category: 'dead-owner-lease',
     };
-    const parsed = parseOwner(t.lease.owner);
+    const parsed = parseOwner(t.lease.owner, projects);
     if (parsed && parsed.executor === 'eve') {
       const finding = reconcileEveLease(t, common, parsed.jobId, executorLiveness);
       if (finding) findings.push(finding);
       continue;
     }
+    if (parsed && parsed.executor) {
+      findings.push({ ...common, category: 'lease-owner-unverifiable',
+        why: `${t.id}: executor ${parsed.executor}:${parsed.jobId} reconocido pero sin verificador de vivacidad; no se pudo mirar` });
+      continue;
+    }
+    if (parsed && parsed.project) {
+      const finding = reconcileProjectLease(t, common, parsed.project, projects, census);
+      if (finding) findings.push(finding);
+      continue;
+    }
     if (!parsed) {
+      if (projects === null) {
+        findings.push({ ...common, category: 'lease-owner-unverifiable',
+          why: `${t.id}: registro de proyectos no disponible; no se puede clasificar el owner ${t.lease.owner}` });
+        continue;
+      }
       findings.push({ ...common, why: `${t.id}: owner de lease ilegible ("${t.lease.owner}") — sin pane-N no hay a quien reconciliar; corregir el owner o liberar la lease` });
       continue;
     }
@@ -153,6 +192,16 @@ function reconcileLeases(tasks, census, now = Date.now(), opts = {}) {
     // detector — esa semántica es de abandoned-lease y NO se fusiona acá.
   }
   return findings;
+}
+
+function reconcileProjectLease(t, common, slug, projects, census) {
+  const repo = projects[slug]?.path || slug;
+  if (census.some(pane => repoMatchesCwd(repo, pane.cwd))) return null;
+  if (census.some(pane => !String(pane.cwd || '').trim())) {
+    return { ...common, category: 'lease-owner-unverifiable',
+      why: `${t.id}: slug ${slug} sin pane vivo identificado; hay cwd vacio en el censo, no se pudo mirar completamente` };
+  }
+  return { ...common, why: `${t.id}: slug ${slug} sin pane vivo con cwd correspondiente a ${repo}; liberar la lease o re-despachar` };
 }
 
 /**
@@ -185,12 +234,8 @@ function reconcileEveLease(t, common, jobId, executorLiveness) {
   };
 }
 
-// NOTA PARA EL CABLEADO (scripts/fleet-steward.cjs, que es de otro dueño):
-// `audit(tasks, now, dir, { census, executorLiveness })` tiene que REENVIAR
-// executorLiveness a esta funcion — hoy su call site llama
-// `reconcileLeases(tasks, opts.census, now)` y come el cuarto argumento, con lo
-// cual toda lease de Eve sale 'lease-owner-unverifiable'. Es una linea:
-// `reconcileLeases(tasks, opts.census, now, { executorLiveness: opts.executorLiveness })`.
+// fleet-steward forwards executorLiveness; project registry defaults to the
+// same WEZBRIDGE_INTEL_DIR used by the ledger. The CLI is read-only.
 /**
  * T31 check 8 (2026-09-01): vivacidad de un job de Eve leida del control plane
  * (GET /api/jobs/<id>, sin auth, 200 con {job:{status}}). Vivo mientras el job
@@ -225,4 +270,6 @@ function eveLivenessFromControlPlane({ baseUrl = process.env.FINALORCHESTRA_URL 
   };
 }
 
-module.exports = { reconcileLeases, liveCensus, repoMatchesCwd, parseOwner, classifyEveStatus, eveLivenessFromControlPlane };
+module.exports = { reconcileLeases, liveCensus, repoMatchesCwd, parseOwner, loadProjects, LEASE_OWNER_FORMS, classifyEveStatus, eveLivenessFromControlPlane };
+
+if (require.main === module) require('./lease-reconcile-cli.cjs').run();

@@ -44,7 +44,7 @@ async function main() {
     const st = consumer.status();
     newFlags += out.flagged || 0;
     console.log(`queue-drain[${project}]${dryRun ? ' (dry-run)' : ''}: ` +
-      `ingested=${out.added || 0} delivered=${out.delivered || 0} flagged=${out.flagged || 0} ` +
+      `ingested=${out.added || 0} delivered=${out.delivered || 0} dropped=${out.dropped || 0} flagged=${out.flagged || 0} ` +
       `pending=${st.pending} oldest=${st.pendingOldestMinutes}min totalFlagged=${st.flagged}`);
   }
   return newFlags > 0 ? 1 : 0;

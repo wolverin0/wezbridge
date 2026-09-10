@@ -153,6 +153,11 @@ async function deliverPoke(message, recheck) {
 }
 
 async function main() {
+  // Independent of the SP plugin and checked before potentially slow daemon/pane probes.
+  try {
+    const sp = await require('./sp-bridge-heartbeat.cjs').checkSpHeartbeat();
+    console.log(`sp-bridge-heartbeat: ${JSON.stringify(sp)}`);
+  } catch { console.error('sp-bridge-heartbeat: check failed; inspect file access'); }
   const ds = require(path.join(REPO, 'src', 'daemon-status.cjs'));
   const { probeDaemon } = require(path.join(REPO, 'src', 'daemon-probe.cjs'));
 
