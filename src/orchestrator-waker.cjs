@@ -35,6 +35,7 @@ const fs = require('node:fs');
 const { composerHoldsForeignText, operatorQuestionVisible, inputBoxContent, classifyDelivery } = require('./verified-send.cjs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { readReviewObligations } = require('../scripts/orchestrator-turn.cjs');
 
 const DEFAULTS = {
   watchRepos: ['walksim'],
@@ -311,6 +312,13 @@ function createWaker(opts) {
     debounceCollapsed: 0,
   };
   const deliveredSet = new Set(state.delivered);
+  // A crash after receipt persistence but before pending removal must not
+  // resurrect an already consumed intent when the next process starts.
+  const consumedIds = Object.keys(state.pending).filter(id => deliveredSet.has(id));
+  if (consumedIds.length) {
+    state.pending = Object.fromEntries(Object.entries(state.pending).filter(([id]) => !deliveredSet.has(id)));
+    atomicWriteJson(FILES.pending, state.pending);
+  }
   // T-0268: override por env solo cuando el llamador no fijo la ventana.
   if (opts.debounceMs === undefined && process.env.WEZBRIDGE_ORCH_WAKER_DEBOUNCE_MS !== undefined) {
     const v = Number(process.env.WEZBRIDGE_ORCH_WAKER_DEBOUNCE_MS);
@@ -582,17 +590,19 @@ function createWaker(opts) {
     let files;
     try {
       files = fs.readdirSync(dir).filter((f) => /^graph.*\.json$/i.test(f));
-    } catch {
-      return false; // no .orchestrator dir -> not a graph-driven repo
+    } catch (err) {
+      return err.code === 'ENOENT' ? false : null;
     }
     for (const f of files) {
       try {
         const g = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+        if (!g || typeof g !== 'object' || Array.isArray(g)) return null;
         if (g.graph_state === 'closed') continue; // explicitly sealed
         const nodes = g.nodes;
-        if (!Array.isArray(nodes) || !nodes.length) continue;
+        if (!Array.isArray(nodes)) return null;
+        if (!nodes.length) continue;
         if (nodes.some((n) => !TERMINAL_NODE_STATES.has(n && n.state))) return true;
-      } catch { /* unreadable graph file is not an open graph */ }
+      } catch { return null; /* unknown must not authorize suppressing a wake */ }
     }
     return false;
   }
@@ -664,6 +674,28 @@ function createWaker(opts) {
         delete state.debounceHeld[repo];
         state.debounceCollapsed += Math.max(0, group.length - 1);
       }
+      const graphOpen = openGraph(repo);
+      const ctxPct = paneContextPct(panes, repo, hint);
+      const heldDetail = paneHeldComposerDetail(panes, repo, hint);
+      const obligations = readReviewObligations(heldLogDir, repo, now());
+      const reviewIds = obligations.ids.filter((_id, index) => !obligations.keys[index]
+        || !deliveredSet.has(obligations.keys[index]));
+      // A turn boundary is not an outcome. Only a positively empty immediate
+      // obligation snapshot earns silence; Fleet cards/deadlines stay intact.
+      if (group.every(id => state.pending[id].event === 'turn-end')
+          && !operatorQuestion && graphOpen === false && obligations.known && !reviewIds.length
+          && !(ctxPct !== null && ctxPct >= cfg.ctxAlertPct) && !heldDetail) {
+        for (const id of group) {
+          deliveredSet.add(id);
+          state.delivered.push(id);
+        }
+        // Receipt before removal: interruption can re-read pending safely.
+        persistDelivered();
+        for (const id of group) delete state.pending[id];
+        persistPending();
+        log(`orch-waker: ${repo}: ${group.length} turn-end noise intent(s) consumed; no immediate obligation; no task changed`);
+        continue;
+      }
       // undefined = never attempted — a first attempt is never cooldown-blocked
       const last = state.lastAttemptAt[repo];
       if (last !== undefined && now() - last < cfg.cooldownMs) continue;
@@ -686,20 +718,22 @@ function createWaker(opts) {
         ? `[orch-waker] ${repo} RESULT FILE(S) written: ${nodes.join(', ')}. Harvest ${repo}/.orchestrator/results/ and advance — ${facts}.`
         : operatorQuestion
           ? `[orch-waker] ${repo} operator-question: pane espera respuesta del operador — ${facts}.`
-          : openGraph(repo)
+          : graphOpen
           ? `[orch-waker] Harvest ${repo}/.orchestrator/results/ and advance the graph — ${facts}.`
-          : `[orch-waker] ${repo} finished work — ${facts}. No open graph, so no node completed: check what the pane actually did.`;
+          : `[orch-waker] ${repo}: ${facts}. ${graphOpen === null ? 'Graph status unavailable.' : 'No open graph confirmed.'} ${reviewIds.length
+            ? `Review pending task(s): ${reviewIds.join(', ')}; read their next_action and verify evidence before closure.`
+            : !obligations.known || graphOpen === null
+              ? 'Obligation snapshot unavailable; inspect durable task/graph state before deciding.'
+              : 'Inspect the directed signal or recovery warning; a turn boundary proves no outcome.'}`;
       // M2: context watermark — the number was always on the pane's status
       // bar; wabot hit 97% before anyone looked. ≥ threshold rides the poke
       // so the orchestrator can arm handoff→/clear BEFORE the cliff.
-      const ctxPct = paneContextPct(panes, repo, hint);
       if (ctxPct !== null && ctxPct >= cfg.ctxAlertPct) {
         text += ` CONTEXT ${ctxPct}% — arm the handoff→/clear recycle for this pane before it hits the wall.`;
       }
       // T-0242: "finished work" es FALSO si el composer retiene texto que el
       // pane nunca envio. Medido el 2026-08-29 en tres panes a la vez. Se cita
       // el texto porque sin el, el operador sabe que algo se trabo pero no QUE.
-      const heldDetail = paneHeldComposerDetail(panes, repo, hint);
       if (heldDetail) {
         text += ` OJO: su composer RETIENE texto sin enviar (${JSON.stringify(heldDetail.text.slice(0, 80))}) — no proceso eso; una tecla del operador lo destraba.`;
         // El poke es efimero; el archivo no. Sin esto, el unico registro de lo
@@ -747,12 +781,20 @@ function createWaker(opts) {
         continue;
       }
       if (verdict === 'delivered') {
+        // Only a prompt that actually named these review cards acknowledges
+        // their current obligation. Direct results/graph wakes remain distinct.
+        if (!nodes.length && !operatorQuestion && graphOpen !== true && reviewIds.length) {
+          for (const key of obligations.keys.filter(Boolean)) {
+            if (!deliveredSet.has(key)) { deliveredSet.add(key); state.delivered.push(key); }
+          }
+        }
         for (const id of group) {
-          delete state.pending[id];
           deliveredSet.add(id);
           state.delivered.push(id);
         }
-        persistPending(); persistDelivered();
+        persistDelivered();
+        for (const id of group) delete state.pending[id];
+        persistPending();
         state.idleStreak = 0;
         state.lastPokeAt = new Date(now()).toISOString();
         log(`orch-waker: poked pane ${targetId} for ${repo} (${group.length} intent(s) delivered)`);
