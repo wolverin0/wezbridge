@@ -28,6 +28,7 @@
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const snap = require(path.resolve(__dirname, '..', 'src', 'session-snapshot.cjs'));
+const { orchestratorResumeCommand, isOrchestratorCwd } = require('../src/agent-launch-profile.cjs');
 
 function parseArgs(argv) {
   const out = { dryRun: false, staggerMs: 2000, filter: null, domain: null };
@@ -85,7 +86,9 @@ function normalizeSnapshotCwd(value) {
 // corrupt/oversized session kills the pane, e.g. pedrito 2026-07-15). Use
 // `codex resume --yolo`: full-access (bypass approvals/sandbox) and codex picks
 // the right session for the pane's cwd (its picker defaults to the Cwd filter).
-function resumeCommandFor(ai) {
+function resumeCommandFor(ai, cwd) {
+  const selected = isOrchestratorCwd(cwd) && orchestratorResumeCommand();
+  if (selected) return selected;
   if (ai === 'codex') return 'codex resume --yolo';
   return 'claude --continue --dangerously-skip-permissions';       // default: claude
 }
@@ -114,7 +117,8 @@ function paneStillAlive(paneId) {
 
 function spawnPane(entry, opts = {}) {
   const cwd = normalizeSnapshotCwd(entry.cwd);
-  const parts = splitCmdline(entry.cmdline);
+  const selected = isOrchestratorCwd(cwd) && orchestratorResumeCommand();
+  const parts = selected ? [] : splitCmdline(entry.cmdline);
 
   // WINDOWS: `claude` y `codex` son shims .cmd/.ps1, no ejecutables. Pasarlos
   // como programa del pane (`spawn -- claude`) los hace salir con codigo 1 al
@@ -140,7 +144,7 @@ function spawnPane(entry, opts = {}) {
   }
 
   // Path B: no cmdline → spawn a shell, then type the agent's resume command.
-  const cmd = resumeCommandFor(entry.ai);
+  const cmd = selected || resumeCommandFor(entry.ai);
   if (opts.dryRun) { console.log(`[dry-run] spawn shell @ ${cwd} → "${cmd}"`); return true; }
   const spawnArgs = ['cli', '--prefer-mux', '--no-auto-start', 'spawn'];
   if (cwd) spawnArgs.push('--cwd', cwd);
@@ -185,6 +189,8 @@ async function sleep(ms) {
  */
 function excludeAlreadyLive(entries, livePanes) {
   const identity = require(path.resolve(__dirname, '..', 'src', 'pane-identity.cjs'));
+  const selectedLive = (livePanes || []).some(p => (p.agent || p.ai) && isOrchestratorCwd(p.cwd || p.project))
+    && Boolean(orchestratorResumeCommand());
   const liveKeys = new Set();
   for (const p of livePanes || []) {
     const proj = identity.projectFromCwd(p.cwd || p.project || '');
@@ -196,7 +202,7 @@ function excludeAlreadyLive(entries, livePanes) {
   for (const e of entries) {
     const proj = identity.projectFromCwd(e.cwd || '');
     const key = proj && e.ai ? `${e.ai}:${proj.toLowerCase()}` : null;
-    if (key && liveKeys.has(key)) skipped.push(e);
+    if ((selectedLive && isOrchestratorCwd(e.cwd)) || (key && liveKeys.has(key))) skipped.push(e);
     else keep.push(e);
   }
   return { keep, skipped };
@@ -258,4 +264,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { parseArgs, splitCmdline, normalizeSnapshotCwd, excludeAlreadyLive };
+module.exports = { parseArgs, splitCmdline, normalizeSnapshotCwd, excludeAlreadyLive, resumeCommandFor };

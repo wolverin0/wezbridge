@@ -8,9 +8,9 @@
  * with a live pane is a busy/idle session, not a death; a missing pane with a
  * fresh beacon is a race — neither triggers.
  *
- * Recovery: spawn a pane in the orchestrator cwd and send
- * `claude --continue --dangerously-skip-permissions` (context restored by the
- * orchestrator-autoload SessionStart hook; target <2 min). Guard rails:
+ * Recovery: spawn a pane in the orchestrator cwd and resume the exact Codex
+ * session/model selected in orchestrator-session.json. With no profile, retain
+ * legacy Claude recovery through its SessionStart hook. Guard rails:
  *   - 10-minute cooldown between recovery attempts (no respawn loop)
  *   - after 3 CONSECUTIVE failed recoveries: disable and surface unhealthy
  *   - a successful recovery (fresh beacon observed) resets the failure count
@@ -20,6 +20,7 @@
  */
 const fs = require('node:fs');
 const path = require('node:path');
+const { orchestratorResumeCommand } = require('./agent-launch-profile.cjs');
 
 const CHECK_MS = 30_000;
 // Recovery timing (P1 gate: <2 min recovery): when the orchestrator pane is
@@ -70,7 +71,7 @@ function lastOrchBeaconMs({ now = Date.now() } = {}) {
   return newest;
 }
 
-/** True when a Claude pane whose project basename matches the orchestrator repo exists. */
+/** A present supported agent owns orchestration regardless of its provider. */
 async function orchestratorPaneExists() {
   try {
     // T-0321: con el censo en worker, el daemon inyecta discoverPanes desde la
@@ -79,19 +80,20 @@ async function orchestratorPaneExists() {
       ? (await state.discoverPanes() || [])
       : await require('./pane-discovery.cjs').discoverPanes();
     const repo = orchRepo().toLowerCase();
-    return panes.some((p) => p.isClaude
+    return panes.some((p) => (p.isClaude || p.isCodex || p.agent === 'codex' || p.agent === 'claude')
       && String(p.project || '').toLowerCase().replace(/\\/g, '/').split('/').filter(Boolean).pop() === repo);
   } catch { return true; } // discovery failure → assume alive (never respawn blind)
 }
 
 async function attemptRecovery(deps) {
   const wez = deps.wezterm || require('./wezterm.cjs');
+  const command = orchestratorResumeCommand(intelDir()) || 'claude --continue --dangerously-skip-permissions';
   // capExempt: recovery REPLACES the dead orchestrator pane — the lifecycle
   // pane cap (B2) must never block re-seating the decision layer.
   const pane = await wez.spawnPane({ cwd: orchCwd(), capExempt: true, why: 'pane0-watchdog orchestrator recovery' });
   const paneId = typeof pane === 'object' ? pane.paneId ?? pane.pane_id ?? pane : pane;
   await deps.sleep(2500); // let the shell come up (crash-recover skill pacing)
-  await wez.sendText(paneId, 'claude --continue --dangerously-skip-permissions\r');
+  await wez.sendText(paneId, command);
   return paneId;
 }
 
