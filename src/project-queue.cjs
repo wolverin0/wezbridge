@@ -397,8 +397,6 @@ function createConsumer(opts) {
     if (state.lastAttemptAt !== undefined && now() - state.lastAttemptAt < cfg.cooldownMs) {
       return { delivered: 0, flagged: 0, skipped: ids.length };
     }
-    state.lastAttemptAt = now();
-
     let delivered = 0;
     let flagged = 0;
     for (const id of ids) {
@@ -432,6 +430,8 @@ function createConsumer(opts) {
         // rehusa sin escribir. Sin verify: reintentaria Enter sobre ese texto.
         if (integrity && integrity.refused) {
           log(`project-queue[${project}]: pane-${targetId} composer retiene texto sin enviar ${JSON.stringify(String(integrity.held).slice(0, 60))} — sobre ${id} diferido`);
+          // No write took place: retain the attempt budget and next-idle eligibility.
+          break;
         } else {
           submitted = await send.verifyPromptSubmission(targetId, envelope);
         }
@@ -443,6 +443,7 @@ function createConsumer(opts) {
       } catch (err) {
         log(`project-queue[${project}]: send failed: ${err.message}`);
       }
+      state.lastAttemptAt = now();
       // T-0329c: submit no verificado PERO el cuerpo ya en el pane = aterrizo,
       // falso negativo. Se cuenta entregado en vez de reintentar y duplicar.
       if (!ok && (integrity == null || !integrity.refused)

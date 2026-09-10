@@ -2053,6 +2053,10 @@ async function handleBridgeHealth() {
   } catch (err) {
     health.alerts = [`liveness assessment failed: ${err.message}`];
   }
+  const inbox = require('./inbox-health.cjs').inspectInboxStarvation();
+  health.inbox_starvation = inbox;
+  health.alerts = [...(health.alerts || []), ...inbox.alerts];
+  if (inbox.alerts.length) health.ok = false;
   return { content: [{ type: 'text', text: JSON.stringify(health, null, 2) }] };
 }
 
