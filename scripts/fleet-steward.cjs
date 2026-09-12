@@ -105,7 +105,7 @@ function auditTaskFiles(dir = intelDir(), now = Date.now()) {
     let age = 0;
     try { age = hours(now - fs.statSync(path.join(tasksDir, f)).mtimeMs); } catch { /* unstattable */ }
     findings.push({
-      category: 'ungoverned-task-file',
+      category: FINDING_CATEGORY.ungovernedTaskFile,
       id: f.replace(/\.json$/, ''),
       repo: 'fleet',
       age_hours: age,
@@ -325,7 +325,7 @@ function auditProposals(dir = intelDir(), now = Date.now()) {
     findings.push({
       id: `proposal:${p.slug}`, repo: p.repo, state: null,
       title: `PROPOSAL:${p.slug}`, owner: null, age_hours: hours(now - p.at),
-      category: 'proposal-unledgered',
+      category: FINDING_CATEGORY.proposalUnledgered,
       why: `a report proposed work (PROPOSAL:${p.slug}) and no task has been created for ${p.repo} since — file it or rule it dead`,
     });
   }
@@ -385,7 +385,7 @@ function archivedResultFinding(results, now) {
     id: 'result:unlinked-archive', repo: 'unknown', state: null,
     title: `${results.length} results sin tarjeta, ultimos 7 dias`, owner: null,
     age_hours: Math.min(...results.map((r) => hours(now - r.at))),
-    category: 'result-unlinked',
+    category: FINDING_CATEGORY.resultUnlinked,
     why: `${results.length} results sin tarjeta, ultimos 7 dias; ver a2a-results.jsonl para el contenido persistido`,
     collapsed: results.map(({ corr, reason }) => ({ corr, reason })),
   }];
@@ -399,7 +399,7 @@ function individualResultFinding(result, card, now) {
     title: card ? card.title : `result corr=${result.corr}`,
     owner: (card && card.lease && card.lease.owner) || null,
     age_hours: hours(now - result.at),
-    category: 'result-unlinked',
+    category: FINDING_CATEGORY.resultUnlinked,
     why: `un type=result llego y NO movio ninguna tarjeta (${result.reason}) — el trabajo puede estar terminado y el tablero no lo sabe; nombra la tarjeta en el corr o corregi el estado`,
   };
 }
@@ -497,7 +497,7 @@ function auditDecisions(dir = intelDir(), now = Date.now()) {
       title: card ? card.title : d.task,
       owner: (card && card.lease && card.lease.owner) || null,
       age_hours: hours(now - d.at),
-      category: "decision-unheard",
+      category: FINDING_CATEGORY.decisionUnheard,
       why: d.ruling + " by " + d.source + " at " + d.rawAt + "; no decision.delivered since — el dueno (y Eve) no se enteraron: corre scripts/decision-relay.cjs --once o avisale a mano",
     });
   }
@@ -574,10 +574,10 @@ function classify(task, now, dir = intelDir(), ctx = null) {
   switch (task.state) {
     case 'blocked':
       if (gated && age > HOURS(RULES.awaitingOperator)) {
-        return { ...common, category: 'awaiting-operator', why: task.blocker || 'operator gate, no ruling recorded' };
+        return { ...common, category: FINDING_CATEGORY.awaitingOperator, why: task.blocker || 'operator gate, no ruling recorded' };
       }
       if (!gated && age > HOURS(RULES.idleQueued)) {
-        return { ...common, category: 'blocked-not-gated', why: task.blocker || 'blocked with no gate and no stated blocker' };
+        return { ...common, category: FINDING_CATEGORY.blockedNotGated, why: task.blocker || 'blocked with no gate and no stated blocker' };
       }
       return null;
     case 'running': {
@@ -600,11 +600,11 @@ function classify(task, now, dir = intelDir(), ctx = null) {
         // evidence anywhere this still goes RED, because a genuinely dead
         // worker is exactly what this category is for.
         return quiet > HOURS(RULES.staleRunning)
-          ? { ...common, age_hours: hours(quiet), category: 'abandoned-lease', why: `lease expired ${hours(now - until)}h ago (owner ${task.lease.owner || '?'}) and no progress on any channel since: no FSM transition, no run log, no ruling, no declared child task moved` }
+          ? { ...common, age_hours: hours(quiet), category: FINDING_CATEGORY.abandonedLease, why: `lease expired ${hours(now - until)}h ago (owner ${task.lease.owner || '?'}) and no progress on any channel since: no FSM transition, no run log, no ruling, no declared child task moved` }
           : null;
       }
       if (until !== null) return null;   // live lease: someone is on it
-      if (quiet > HOURS(RULES.staleRunning)) return { ...common, age_hours: hours(quiet), category: 'stale-running', why: 'running with no lease and no progress on ledger, run log, rulings or declared child tasks' };
+      if (quiet > HOURS(RULES.staleRunning)) return { ...common, age_hours: hours(quiet), category: FINDING_CATEGORY.staleRunning, why: 'running with no lease and no progress on ledger, run log, rulings or declared child tasks' };
       return null;
     }
     case 'review':
@@ -612,11 +612,11 @@ function classify(task, now, dir = intelDir(), ctx = null) {
         ? { ...common, category: FINDING_CATEGORY.staleReview, why: 'work finished, review never happened' } : null;
     case 'failed':
       return age > HOURS(RULES.staleFailed)
-        ? { ...common, category: 'stale-failed', why: 'failed and neither retried nor triaged' } : null;
+        ? { ...common, category: FINDING_CATEGORY.staleFailed, why: 'failed and neither retried nor triaged' } : null;
     case 'queued':
     case 'ready':
       return age > HOURS(RULES.idleQueued)
-        ? { ...common, category: 'idle', why: 'nobody has picked this up' } : null;
+        ? { ...common, category: FINDING_CATEGORY.idle, why: 'nobody has picked this up' } : null;
     default:
       return null; // done / cancelled are terminal
   }
@@ -669,17 +669,17 @@ function audit(tasks, now = Date.now(), dir = intelDir(), opts = {}) {
   const rank = {
     // result-unlinked va arriba a proposito: trabajo TERMINADO que el tablero no
     // registro es una mentira activa del instrumento, no backlog.
-    'awaiting-operator': 0, 'decision-unheard': 1, 'decision-unrecorded': 1, 'result-unlinked': 1, 'dead-owner-lease': 1, 'lease-census-unavailable': 1, 'lease-owner-unverifiable': 1,
-    'abandoned-lease': 2, 'routine-silent': 2, 'stale-running': 3,
-    'routine-void': 4, 'routine-findings': 5, 'stale-review': 6, 'stale-failed': 7,
+    [FINDING_CATEGORY.awaitingOperator]: 0, [FINDING_CATEGORY.decisionUnheard]: 1, [FINDING_CATEGORY.decisionUnrecorded]: 1, [FINDING_CATEGORY.resultUnlinked]: 1, [FINDING_CATEGORY.deadOwnerLease]: 1, [FINDING_CATEGORY.leaseCensusUnavailable]: 1, [FINDING_CATEGORY.leaseOwnerUnverifiable]: 1,
+    [FINDING_CATEGORY.abandonedLease]: 2, [FINDING_CATEGORY.routineSilent]: 2, [FINDING_CATEGORY.staleRunning]: 3,
+    [FINDING_CATEGORY.routineVoid]: 4, [FINDING_CATEGORY.routineFindings]: 5, [FINDING_CATEGORY.staleReview]: 6, [FINDING_CATEGORY.staleFailed]: 7,
     // Hygiene before backlog-idle: an unspecced dispatch is about to waste a
     // builder session; an unlanded value is a live near-miss. Both outrank
     // "nobody picked this up yet".
-    'cross-repo-unticketed': 8, 'dispatch-unspecced': 8, 'ruling-unlanded': 9, 'proposal-unledgered': 10,
+    [FINDING_CATEGORY.crossRepoUnticketed]: 8, [FINDING_CATEGORY.dispatchUnspecced]: 8, [FINDING_CATEGORY.rulingUnlanded]: 9, [FINDING_CATEGORY.proposalUnledgered]: 10,
     // An ungoverned file outranks backlog noise: it is invisible to the board
     // by construction, so nothing else will ever raise it.
-    'ungoverned-task-file': 11,
-    'blocked-not-gated': 12, idle: 13,
+    [FINDING_CATEGORY.ungovernedTaskFile]: 11,
+    [FINDING_CATEGORY.blockedNotGated]: 12, [FINDING_CATEGORY.idle]: 13,
   };
   const order = (f) => (rank[f.category] === undefined ? 99 : rank[f.category]);
   findings.sort((a, b) => (order(a) - order(b)) || (b.age_hours - a.age_hours));

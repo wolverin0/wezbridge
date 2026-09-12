@@ -114,6 +114,25 @@ const RULING_FIELDS = ['task', 'category', 'ruling', 'why', 'at', 'until', 'sour
  * (turnos 02:00Z y 04:00Z del 2026-09-02 despertados por T-0312 diferida).
  */
 const FINDING_CATEGORY = Object.freeze({
+  awaitingOperator: 'awaiting-operator',
+  blockedNotGated: 'blocked-not-gated',
+  abandonedLease: 'abandoned-lease',
+  staleRunning: 'stale-running',
+  staleFailed: 'stale-failed',
+  idle: 'idle',
+  ungovernedTaskFile: 'ungoverned-task-file',
+  proposalUnledgered: 'proposal-unledgered',
+  resultUnlinked: 'result-unlinked',
+  decisionUnheard: 'decision-unheard',
+  routineVoid: 'routine-void',
+  routineFindings: 'routine-findings',
+  routineSilent: 'routine-silent',
+  crossRepoUnticketed: 'cross-repo-unticketed',
+  dispatchUnspecced: 'dispatch-unspecced',
+  rulingUnlanded: 'ruling-unlanded',
+  leaseCensusUnavailable: 'lease-census-unavailable',
+  deadOwnerLease: 'dead-owner-lease',
+  leaseOwnerUnverifiable: 'lease-owner-unverifiable',
   staleReview: 'stale-review',
   // T-0326: una tarjeta gateada por el operador salio de blocked (o se cerro)
   // sin un ruling con by=operator — el operador decidio DENTRO de un pane y el
@@ -214,8 +233,8 @@ function validateRulingLine(line, now) {
     };
   }
   const category = line.category === undefined ? null : line.category;
-  if (category !== null && !nonEmptyString(category)) {
-    return { ok: false, error: 'category must be a non-empty string or null' };
+  if (category !== null && !Object.values(FINDING_CATEGORY).includes(category)) {
+    return { ok: false, error: `category must be null or one of ${Object.values(FINDING_CATEGORY).join('|')}, got ${JSON.stringify(category)}` };
   }
   if (line.ruling === 'approved' && !APPROVED_CATEGORIES.includes(category)) {
     return {
