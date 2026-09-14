@@ -24,6 +24,10 @@
  *              8 composer unreadable · 9 paste did not land as ONE prompt (Enter NOT sent) ·
  *              10 composer already held someone else's unsent text (nothing written) ·
  *              11 --role: no valid registry for that role (missing, pane dead, cwd changed, pid dead, ambiguous)
+ *              12 attempt audit unavailable; no terminal write performed
+ * T-0469: attempted/failed/submitted metadata uses the existing actions.jsonl.
+ * Full bodies are not logged; hash + corr + attempt UUID join retry observations.
+ * A final audit failure is loud but does not turn a sent prompt into a replay request.
  *
  * --role <r> (T-0322): resolve by the per-session registry a SessionStart hook
  * writes (~/.local/share/wezterm/panes/<mux pane id>.json, src/pane-registry.cjs),
@@ -44,6 +48,22 @@ const fs = require('fs');
 const path = require('path');
 
 const WEZTERM = process.env.WEZTERM_BIN || 'wezterm';
+let auditState = null;
+
+function auditPoke(outcome, code) {
+  if (!auditState) return true;
+  const { text: body, pane, project: destination, attempt } = auditState;
+  const header = body.split(']')[0];
+  const corr = header.match(/\bcorr=([A-Za-z0-9_.:-]+)/)?.[1] || null;
+  const ok = require('../src/action-log.cjs').logAction('pane_poke', {
+    target: pane === null ? '' : `pane-${pane}`, project: destination, corr,
+    why: 'manual/scheduled poke transport; not work acceptance',
+    extra: { attempt_id: attempt, message_hash: require('node:crypto').createHash('sha256').update(body).digest('hex'),
+      outcome, exit_code: code, transport: 'poke-pane' },
+  });
+  if (!ok) console.log('poke-pane AUDIT_FAILED: transport outcome not persisted; do not infer delivery or replay automatically');
+  return ok;
+}
 
 function arg(name) {
   const i = process.argv.indexOf(`--${name}`);
@@ -56,6 +76,7 @@ function die(code, msg) {
   // indistinguishable from one that ran and found nothing to do — that is the
   // failure mode this whole script exists to avoid.
   console.log(`${new Date().toISOString()} poke-pane FAIL(${code}): ${msg}`);
+  auditPoke('failed', code);
   process.exit(code);
 }
 
@@ -69,6 +90,10 @@ const tabTitle = arg('tab-title');
 // (pane-register-hook.cjs), it does not depend on cwd nor on tab titles.
 const role = arg('role');
 const text = arg('file') ? fs.readFileSync(arg('file'), 'utf8') : arg('text');
+if (require.main === module && !has('dry-run')) {
+  auditState = { text: text || '', pane: null, project, attempt: require('node:crypto').randomUUID() };
+  if (!auditPoke('attempted', null)) die(12, 'cannot record attempt; nothing written to terminal');
+}
 if (require.main === module && ((!project && !tabTitle && !role) || !text)) {
   die(2, 'usage: (--role <r> | --project <name> | --tab-title <exact-name> | combinations) (--text "..." | --file <path>) [--dry-run]');
 }
@@ -188,6 +213,7 @@ if (matches.length > 1) {
 }
 
 const target = matches[0];
+if (auditState) auditState = { ...auditState, pane: target.pane_id, project: target.name };
 if (space === 'gui-only') {
   console.log(`${new Date().toISOString()} poke-pane NOTE: pane ${target.pane_id} exists only on a GUI socket (not in the mux): id is NOT in the canonical space`);
 }
@@ -302,3 +328,4 @@ try {
 }
 
 console.log(`${new Date().toISOString()} poke-pane OK: ${text.length} chars -> pane ${target.pane_id} (${target.name}, win${target.window_id}/tab${target.tab_id}) — ${verified}`);
+auditPoke(landed === 'empty' ? 'unverified' : 'submitted', 0);

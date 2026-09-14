@@ -1,3 +1,8 @@
+<!-- doc-head: Existing orchestrator turn: judge, dispatch and service registered learning reviews -->
+Gate and review queue drive work. Weekly fleet-retrospective uses the same routine registry and turn machinery.
+Read for dispatch, evidence acceptance and periodic review; no additional scheduler or service.
+<!-- /doc-head -->
+
 # Routine: orchestrator-turn
 
 **Cadence:** every 2h, but only when triggered · **Mode:** decide and dispatch · **Host:** live pane, or headless if none
@@ -69,6 +74,12 @@ If the honest answer is "nothing should change", **write that as a ruling** — 
    `node wezbridge/scripts/poke-pane.cjs --project <repo> --file <msg>`, which drives the WezTerm CLI
    directly and needs no MCP at all.
 6. **Regenerate the board:** `node wezbridge/scripts/fleet-board.cjs`.
+
+7. **Periodic learning, when due:** if a registered `fleet-retrospective` finding
+   is present or the operator requested a review, follow `routines/fleet-retrospective.md`.
+   Review retained outcomes and failures, apply/test a bounded correction in its
+   owning task, and write the normal routine receipt. Reuse existing work cards;
+   do not spawn another system or treat a written ruling as an improved outcome.
 
 ## Hard rules
 

@@ -16,6 +16,7 @@ function runPoke(tail) {
   const module = { exports: {} };
   const localRequire = createRequire(POKE);
   const fakeRequire = name => {
+    if (name === '../src/action-log.cjs') return { logAction: () => true };
     if (name === 'fs') return { ...fs, readdirSync: () => [] };
     if (name !== 'child_process') return localRequire(name);
     return { execFileSync: (file, args, options) => {
