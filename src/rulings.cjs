@@ -285,6 +285,7 @@ function appendRuling(intelDir, line, { now } = {}) {
   if (!verdict.ok) throw new Error(`appendRuling refused this line: ${verdict.error}`);
   const text = `${JSON.stringify(verdict.line)}\n`;
   fs.appendFileSync(path.join(intelDir, 'rulings.jsonl'), text);
+  require('./decision-self-delivery.cjs').recordSelfDelivery(intelDir, verdict.line, toMs(now));
   return verdict.line;
 }
 
