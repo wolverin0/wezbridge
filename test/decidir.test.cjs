@@ -1,7 +1,7 @@
 'use strict';
 /**
  * T-0326 AC2 — scripts/decidir.cjs: tarjeta + veredicto + textual del operador =>
- * una linea en rulings.jsonl con source=orchestrator-pane y by=operator (y el
+ * una linea en rulings.jsonl con source=ledger-cli y by=operator (y el
  * corr de la tarjeta si no se pasa), escrita por `ledger decide` — el mismo
  * camino del tablero: ruling primero, FSM despues, des-gate.
  */
@@ -17,11 +17,11 @@ const REPO = path.join(__dirname, '..');
 const DECIDIR = path.join(REPO, 'scripts', 'decidir.cjs');
 const LEDGER = path.join(REPO, '..', '_docs-curation', 'ledger.cjs');
 
-test('AC2 puro: aprobar/cancelar/diferir (y letras) arman el decide con source orchestrator-pane, by operator y el corr de la tarjeta', () => {
+test('AC2 puro: aprobar/cancelar/diferir (y letras) arman el decide con source ledger-cli, by operator y el corr de la tarjeta', () => {
   const card = { id: 'T-0303', corr: 'T-0303' };
   const a = buildDecideArgs({ task: 'T-0303', verdict: 'aprobar', why: 'dale, hacelo', card });
   assert.equal(a.ruling, 'approved');
-  assert.deepEqual(a.args, ['decide', 'T-0303', '--ruling', 'approved', '--why', 'dale, hacelo', '--source', 'orchestrator-pane', '--by', 'operator', '--corr', 'T-0303']);
+  assert.deepEqual(a.args, ['decide', 'T-0303', '--ruling', 'approved', '--why', 'dale, hacelo', '--source', 'ledger-cli', '--by', 'operator', '--corr', 'T-0303']);
   assert.equal(buildDecideArgs({ task: 'T-0253', verdict: 'c', why: 'olvidate de eso' }).ruling, 'cancelled');
   const d = buildDecideArgs({ task: 'T-0312', verdict: 'diferir', why: 'despues del deploy', until: '2026-09-03T14:00:00Z', corr: 'X:r2' });
   assert.equal(d.ruling, 'deferred');
@@ -31,7 +31,7 @@ test('AC2 puro: aprobar/cancelar/diferir (y letras) arman el decide con source o
   assert.throws(() => buildDecideArgs({ task: 'T-0303', verdict: 'quizas', why: 'x' }), /aprobar \| cancelar \| diferir/);
 });
 
-test('AC2 e2e: corre ledger decide y la linea escrita en rulings.jsonl lleva by=operator, source=orchestrator-pane, corr y el textual; la tarjeta gateada sale de blocked', { skip: !fs.existsSync(LEDGER) && '_docs-curation/ledger.cjs no esta al lado' }, () => {
+test('AC2 e2e: corre ledger decide y la linea escrita en rulings.jsonl lleva by=operator, source=ledger-cli, corr y el textual; la tarjeta gateada sale de blocked', { skip: !fs.existsSync(LEDGER) && '_docs-curation/ledger.cjs no esta al lado' }, () => {
   const intel = fs.mkdtempSync(path.join(os.tmpdir(), 'decidir-'));
   fs.mkdirSync(path.join(intel, 'tasks'));
   fs.writeFileSync(path.join(intel, 'kinds.json'), JSON.stringify({ kinds: { deploy: { class: 'work', fallback_mode: 'scoped_write', fallback_gate: 'operator' } }, rules: {} }));
@@ -50,7 +50,7 @@ test('AC2 e2e: corre ledger decide y la linea escrita en rulings.jsonl lleva by=
   assert.equal(line.task, 'T-0801');
   assert.equal(line.ruling, 'approved');
   assert.equal(line.by, 'operator', 'sin by=operator el steward no lo cuenta como decision del operador');
-  assert.equal(line.source, 'orchestrator-pane');
+  assert.equal(line.source, 'ledger-cli', 'T-0485: si no es ledger-cli, isOperatorRuling la descarta y el guard de deploy no ve la decision');
   assert.equal(line.corr, 'wabot-restart-20260902', 'el corr sale de la tarjeta');
   assert.equal(line.why, 'si, reinicialo ahora');
   assert.equal(line.category, 'awaiting-operator', 'la tarjeta estaba gateada: lo que se respondio fue la pregunta del operador');
