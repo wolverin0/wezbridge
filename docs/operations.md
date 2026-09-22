@@ -1,3 +1,9 @@
+<!-- doc-head: Runtime operation, recovery and removal of pane-count limiting -->
+Read for environment settings, MCP reload boundaries, mux identity and GUI recovery.
+Pane-count limiting was removed by operator decision 2026-09-10; legacy env limits are ignored.
+Source edits do not update already-loaded MCP processes.
+<!-- /doc-head -->
+
 # Operations — env vars, restart, crash recovery, mux-wedge + GUI-hang triage (wezbridge)
 > Qué cubre: variables de entorno útiles, el gotcha de rebind del daemon :4200, latitud WSL,
 > recuperación de crash de wezterm, el triage mux-lento-vs-mux-wedgeado (firmas idénticas,
@@ -40,8 +46,9 @@ misma pane era 11 en `sock` y 4 en la GUI). Resolver un id contra "la GUI viva d
   bypass-de-una-vez para los guards v3.2
 - `WEZBRIDGE_MM_INBOX=1` — habilita escrituras del memory-inbox
 - `WEZBRIDGE_GRADER_BACKEND=stub|claude|codex` — backend del outcome-grader
-- `WEZBRIDGE_MAX_PANES` — tope de panes vivos del spawn path (default 5; `0`/`off` desactiva;
-  seteado a 20 por el operador 2026-08-23)
+- `WEZBRIDGE_MAX_PANES` — retirado (decision del operador 2026-09-10): no limita panes.
+  Se ignoran tambien valores heredados como `20`; el tope no vuelve al recargar un MCP.
+  Los MCP ya cargados necesitan recarga para adoptar cambios de codigo o entorno.
 - `WEZBRIDGE_AFFINITY=0` / `WEZBRIDGE_AFFINITY_JSON` — control de la afinidad proyecto→agente
   (default: lee `_intel/affinity.json`)
 - **Censo de panes en worker (T-0321, 2026-09-04)** — el daemon `:4200` ya NO ejecuta wezterm de

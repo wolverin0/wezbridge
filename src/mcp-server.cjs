@@ -1640,6 +1640,7 @@ function handleToolCall(name, args) {
           recordAndLinkResult(null);
           const q = projectQueue.enqueue({
             project: toProject, corr, type: msgType, from_pane: fromPane,
+            from_project: selfRes.project || null,
             resolved_pane: null, submitted: null, delivered: null, ok: false, body,
             // W4 handshake: el cuerpo YA quedo en a2a-results.jsonl, asi que
             // deliverPending no vuelve a registrarlo al drenar. Sin la marca el
@@ -1771,6 +1772,7 @@ function handleToolCall(name, args) {
         const queued = toProject
           ? projectQueue.enqueue({
             project: toProject, corr, type: msgType, from_pane: fromPane,
+            from_project: selfRes.project || null,
             resolved_pane: toPane, submitted, delivered, ok: verified, body,
             ...(recordedResult ? { recorded: true } : {}),
           })
@@ -1912,6 +1914,7 @@ function handleToolCall(name, args) {
         try {
           const rescue = require('./project-queue.cjs').rescueFailedSend({
             toProject, toPane, census: selfCensus, corr, type: msgType, fromPane, body,
+            fromProject: selfRes.project || null,
           });
           rescueNote = rescue.queued
             ? ` Envelope RESCUED to _intel/queues/${rescue.project}.jsonl (id ${rescue.id}) — scripts/queue-drain.cjs will retry; do not hand-retry unless urgent (the queue dedupes by corr+type+body).`

@@ -1,8 +1,8 @@
 'use strict';
 /**
  * lifecycle.cjs — pane lifecycle enforcement (B2, frente 3). Three concerns:
- * CAP: evaluateSpawnCap — WEZBRIDGE_MAX_PANES (default 5, '0'/'off' disables);
- *   enforced at the src/wezterm.cjs spawn chokepoints (spawnPane + splits).
+ * CAP: retired by operator decision; compatibility helpers always allow spawning.
+ *   Legacy WEZBRIDGE_MAX_PANES values inherited by existing shells are ignored.
  * AFFINITY: resolveAffinity — project→{agent,model} from _intel/affinity.json
  *   (env WEZBRIDGE_AFFINITY_JSON > file > none; WEZBRIDGE_AFFINITY=0 disables).
  * AUTO-CLOSE: decideAutoClose is PURE and SHADOW-ONLY — callers log
@@ -20,43 +20,24 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const DEFAULT_MAX_PANES = 5;
+const DEFAULT_MAX_PANES = Infinity;
 
 function defaultIntelDir(env = process.env) {
   return env.WEZBRIDGE_INTEL_DIR || path.join(__dirname, '..', '..', '_intel');
 }
 
 /**
- * Resolve the pane cap. Returns a positive integer, or Infinity when the cap
- * is explicitly disabled (WEZBRIDGE_MAX_PANES=0 or 'off'). Garbage values fall
- * back to the default — a typo must never silently disable enforcement.
+ * Compatibility export: pane-count limiting was removed, including legacy env overrides.
  */
-function resolveMaxPanes(env = process.env) {
-  const raw = env.WEZBRIDGE_MAX_PANES;
-  if (raw === undefined || raw === null || String(raw).trim() === '') return DEFAULT_MAX_PANES;
-  const s = String(raw).trim().toLowerCase();
-  if (s === '0' || s === 'off') return Infinity;
-  const n = parseInt(s, 10);
-  return Number.isInteger(n) && n > 0 ? n : DEFAULT_MAX_PANES;
+function resolveMaxPanes() {
+  return DEFAULT_MAX_PANES;
 }
 
 /**
- * safetyPolicy-shaped verdict for a spawn attempt: { allowed, reason, max }.
- * Pure — the caller supplies the live pane count.
+ * Keep the former verdict shape for existing callers without enforcing a pane limit.
  */
-function evaluateSpawnCap({ paneCount, env = process.env } = {}) {
-  const max = resolveMaxPanes(env);
-  if (!Number.isFinite(max)) {
-    return { allowed: true, max: null, reason: 'pane cap disabled (WEZBRIDGE_MAX_PANES=0/off)' };
-  }
-  const count = Number.isInteger(paneCount) ? paneCount : 0;
-  if (count < max) return { allowed: true, max, reason: null };
-  return {
-    allowed: false,
-    max,
-    reason: `pane cap reached: ${count} live panes >= max ${max} `
-      + `(WEZBRIDGE_MAX_PANES, default ${DEFAULT_MAX_PANES}). Close an idle pane or raise the cap explicitly.`,
-  };
+function evaluateSpawnCap() {
+  return { allowed: true, max: null, reason: 'pane-count limit removed by operator policy' };
 }
 
 const VALID_AFFINITY_AGENTS = new Set(['claude', 'codex', 'shell']);

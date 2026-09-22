@@ -135,7 +135,7 @@ function enqueue(entry, { base } = {}) {
  * the "needs a human look" — visible-but-stuck beats silent-and-gone.
  * Returns { queued, project, id | error }.
  */
-function rescueFailedSend({ toProject, toPane, census, corr, type, fromPane, body }, enqueueFn = enqueue) {
+function rescueFailedSend({ toProject, toPane, census, corr, type, fromPane, body, fromProject = null }, enqueueFn = enqueue) {
   let project = toProject || null;
   if (!project && Array.isArray(census)) {
     const hit = census.find((p) => p.pane_id === toPane);
@@ -147,6 +147,7 @@ function rescueFailedSend({ toProject, toPane, census, corr, type, fromPane, bod
   const q = enqueueFn({
     project: project || '_dead-letter',
     corr, type, from_pane: fromPane,
+    from_project: fromProject,
     resolved_pane: toPane ?? null, submitted: null, delivered: null, ok: false, body,
   });
   return q.ok

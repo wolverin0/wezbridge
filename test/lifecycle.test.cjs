@@ -1,7 +1,7 @@
 'use strict';
 /**
  * lifecycle.test.cjs — B2 lifecycle enforcement: pane cap (WEZBRIDGE_MAX_PANES
- * default 5, refusal at the wezterm.cjs chokepoints incl. splits), project
+ * retired, legacy environment values ignored at spawn/split chokepoints), project
  * affinity resolution (env > _intel/affinity.json > none, invalid agents
  * ignored), lease detection against _intel/tasks/, and the PURE auto-close
  * SHADOW decision (orchestrator/lease/unknown-project/unverified exclusions).
@@ -18,34 +18,30 @@ const lifecycle = require('../src/lifecycle.cjs');
 
 // ── pane cap ─────────────────────────────────────────────────────────────────
 
-test('evaluateSpawnCap: default cap 5 — under allowed, at-or-over refused with reason', () => {
-  assert.strictEqual(lifecycle.evaluateSpawnCap({ paneCount: 4, env: {} }).allowed, true);
-  const refused = lifecycle.evaluateSpawnCap({ paneCount: 5, env: {} });
-  assert.strictEqual(refused.allowed, false);
-  assert.strictEqual(refused.max, 5);
-  assert.match(refused.reason, /pane cap reached: 5 live panes >= max 5/);
-  assert.match(refused.reason, /WEZBRIDGE_MAX_PANES/);
+test('evaluateSpawnCap: no default pane-count limit', () => {
+  for (const paneCount of [0, 5, 20, 1000]) {
+    const verdict = lifecycle.evaluateSpawnCap({ paneCount, env: {} });
+    assert.strictEqual(verdict.allowed, true);
+    assert.strictEqual(verdict.max, null);
+  }
 });
 
-test('evaluateSpawnCap: WEZBRIDGE_MAX_PANES raises the cap; 0/off disables it', () => {
-  const env8 = { WEZBRIDGE_MAX_PANES: '8' };
-  assert.strictEqual(lifecycle.evaluateSpawnCap({ paneCount: 7, env: env8 }).allowed, true);
-  assert.strictEqual(lifecycle.evaluateSpawnCap({ paneCount: 8, env: env8 }).allowed, false);
-  for (const off of ['0', 'off']) {
-    const v = lifecycle.evaluateSpawnCap({ paneCount: 999, env: { WEZBRIDGE_MAX_PANES: off } });
+test('evaluateSpawnCap: inherited legacy env cannot restore the removed limit', () => {
+  for (const value of ['1', '8', '20', '0', 'off']) {
+    const v = lifecycle.evaluateSpawnCap({ paneCount: 999, env: { WEZBRIDGE_MAX_PANES: value } });
     assert.strictEqual(v.allowed, true);
     assert.strictEqual(v.max, null);
   }
 });
 
-test('evaluateSpawnCap: garbage values fall back to the default, never disable', () => {
+test('evaluateSpawnCap: invalid values fall back to unlimited default', () => {
   for (const bad of ['banana', '-3', '2.5x is not parsed as 2? yes it is', '']) {
     const max = lifecycle.resolveMaxPanes({ WEZBRIDGE_MAX_PANES: bad });
-    assert.ok(max === 5 || (Number.isInteger(max) && max > 0), `"${bad}" -> ${max}`);
+    assert.strictEqual(max, Infinity, `"${bad}" -> ${max}`);
   }
-  assert.strictEqual(lifecycle.resolveMaxPanes({ WEZBRIDGE_MAX_PANES: 'banana' }), 5);
-  assert.strictEqual(lifecycle.resolveMaxPanes({ WEZBRIDGE_MAX_PANES: '-3' }), 5);
-  assert.strictEqual(lifecycle.resolveMaxPanes({}), 5);
+  assert.strictEqual(lifecycle.resolveMaxPanes({ WEZBRIDGE_MAX_PANES: 'banana' }), Infinity);
+  assert.strictEqual(lifecycle.resolveMaxPanes({ WEZBRIDGE_MAX_PANES: '-3' }), Infinity);
+  assert.strictEqual(lifecycle.resolveMaxPanes({}), Infinity);
 });
 
 // ── affinity ─────────────────────────────────────────────────────────────────
@@ -180,7 +176,7 @@ test('decideAutoClose: an EXPIRED lease no longer protects the pane', () => {
 
 // ── chokepoint integration (mock wezterm via test/setup.cjs) ─────────────────
 
-test('wezterm chokepoint: split past the cap throws, logs spawn_refused, and never creates the pane', () => {
+test('wezterm chokepoint: inherited legacy cap never refuses spawn or split', () => {
   const intelDir = path.join(TMP, 'chokepoint');
   const savedIntel = process.env.WEZBRIDGE_INTEL_DIR;
   const savedMax = process.env.WEZBRIDGE_MAX_PANES;
@@ -188,32 +184,12 @@ test('wezterm chokepoint: split past the cap throws, logs spawn_refused, and nev
   process.env.WEZBRIDGE_MAX_PANES = '1'; // mock mux reports exactly 1 live pane
   try {
     const wez = require('../src/wezterm.cjs');
-    assert.throws(() => wez.splitHorizontal(1, { cwd: 'G:/x/mutual' }), /pane cap reached/);
-    const lines = fs.readFileSync(path.join(intelDir, 'actions.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
-    const refusal = lines.find((l) => l.action === 'spawn_refused');
-    assert.ok(refusal, 'spawn_refused was logged');
-    assert.strictEqual(refusal.target, 'G:/x/mutual');
-    assert.strictEqual(refusal.extra.max, 1);
-
-    // Disabled cap → the CAP no longer refuses. T-0239: this used to assert
-    // doesNotThrow, which quietly made a live pane with id 1 a precondition —
-    // `splitHorizontal` calls the real mux once the gate lets it through, and
-    // wezterm renumbers panes after every crash. The suite then went red with
-    // no bug, which is the verifier-accuses-the-subject class (mm-151b).
-    //
-    // What is under test here is `assertPaneCap`, not the mux. So the assertion
-    // is now on the CAP error specifically: whether the split then succeeds or
-    // fails against whatever panes happen to exist is none of this test's
-    // business. The count check below is the real proof the gate stayed shut.
-    process.env.WEZBRIDGE_MAX_PANES = '0';
-    try {
-      wez.splitHorizontal(1, { cwd: 'G:/x/mutual' });
-    } catch (e) {
-      assert.doesNotMatch(String(e && e.message), /pane cap reached/,
-        'with the cap disabled the refusal must not come from the cap');
-    }
+    // test/setup.cjs provides the mux double; no real pane is created.
+    assert.doesNotThrow(() => wez.splitHorizontal(1, { cwd: 'G:/x/mutual' }));
+    assert.doesNotThrow(() => wez.splitVertical(1, { cwd: 'G:/x/mutual' }));
+    assert.doesNotThrow(() => wez.spawnPane({ cwd: 'G:/x/mutual' }));
     const after = fs.readFileSync(path.join(intelDir, 'actions.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
-    assert.strictEqual(after.filter((l) => l.action === 'spawn_refused').length, 1, 'no second refusal once the cap is off');
+    assert.strictEqual(after.filter((l) => l.action === 'spawn_refused').length, 0, 'no pane-count refusal');
   } finally {
     if (savedIntel === undefined) delete process.env.WEZBRIDGE_INTEL_DIR;
     else process.env.WEZBRIDGE_INTEL_DIR = savedIntel;
