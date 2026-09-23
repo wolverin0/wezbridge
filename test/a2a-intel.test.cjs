@@ -239,20 +239,36 @@ test('recordResultBody: fail-soft — unwritable intel dir never throws', () => 
   process.env.WEZBRIDGE_INTEL_DIR = prev;
 });
 
-test('call-site gate: mcp-server persists bodies ONLY for type=result', () => {
-  // mcp-server.cjs exports nothing (top-level server script), so the gate is
-  // enforced at source level: the ONE call must sit behind the result guard.
-  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'mcp-server.cjs'), 'utf8');
-  const calls = src.match(/recordResultBody\(/g) || [];
-  assert.strictEqual(calls.length, 1, 'exactly one recordResultBody call site');
-  // W2 (2026-09-01): la llamada ahora CAPTURA el retorno (`{ time }`), que es lo
-  // que le permite al linker apuntar la evidencia a la línea exacta de
-  // a2a-results.jsonl. El guard que este test protege es el mismo — UN solo
-  // sitio, detrás de msgType === 'result' — así que el regex acepta la
-  // asignación y sigue rechazando una llamada sin guard o una segunda copia
-  // (que es como se llega a registrar el mismo result dos veces).
-  assert.match(src, /if \(msgType === 'result'\) (?:\w+ = )?a2aIntel\.recordResultBody\(/,
-    'the call must be guarded by msgType === \'result\'');
+// T-0400: was a source-regex check ("recordResultBody( appears exactly once,
+// guarded by msgType === 'result'") — an `if (false)` around the guarded
+// block left it green because the regex only ever inspected TEXT, never
+// whether the call actually ran. Rewritten to invoke the REAL mcp-server
+// (test/helpers/mcp-call.cjs) and read a2a-results.jsonl for the effect: a
+// type=result send must persist exactly one line; a type=request send with
+// the same shape must persist NONE.
+test('call-site gate: mcp-server persists bodies ONLY for type=result', async (t) => {
+  const { callA2aSend, textOf, fixture } = require('./helpers/mcp-call.cjs');
+  const dir = fixture(t, 'a2a-intel-callsite-');
+  const body = 'criteria:\n- G1: pass — evidence here';
+
+  const resultRes = await callA2aSend(
+    { from_pane: 401, to_pane: 402, corr: 'cs-result-1', type: 'result', body },
+    { WEZBRIDGE_INTEL_DIR: dir },
+  );
+  assert.notEqual(resultRes.isError, true, `unexpected error: ${textOf(resultRes)}`);
+  const lines = fs.readFileSync(path.join(dir, 'a2a-results.jsonl'), 'utf8').trim().split('\n');
+  assert.strictEqual(lines.length, 1, 'exactly one recordResultBody call site: one result in, one line out');
+  const rec = JSON.parse(lines[0]);
+  assert.strictEqual(rec.corr, 'cs-result-1');
+  assert.strictEqual(rec.body, body);
+
+  const reqRes = await callA2aSend(
+    { from_pane: 401, to_pane: 402, corr: 'cs-request-1', type: 'request', body: 'not a result' },
+    { WEZBRIDGE_INTEL_DIR: dir },
+  );
+  assert.notEqual(reqRes.isError, true, `unexpected error: ${textOf(reqRes)}`);
+  const linesAfter = fs.readFileSync(path.join(dir, 'a2a-results.jsonl'), 'utf8').trim().split('\n');
+  assert.strictEqual(linesAfter.length, 1, 'a request must never add a second a2a-results.jsonl line — the call site must stay guarded by msgType === \'result\'');
 });
 
 test('an error still closes the thread outright', () => {
@@ -389,10 +405,42 @@ test('recordResultBody: a legacy result (sin decisions) persiste count 0 y sigue
   assert.deepStrictEqual(rec.decisions, { count: 0, items: [] });
 });
 
-test('call-site gate: mcp-server computes decisions/evidence ONLY for type=result', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'mcp-server.cjs'), 'utf8');
-  assert.match(src, /msgType === 'result' \? a2aIntel\.detectDecisions\(body\) : undefined/);
-  assert.match(src, /msgType === 'result' \? a2aIntel\.detectEvidence\(body\) : undefined/);
+// T-0400: was a source-regex check for the ternary literal — an `if (false)`
+// around the ternary's true branch left this green (the text still matched
+// even when the branch could never run). Rewritten to invoke the real
+// mcp-server and read the TOOL RESPONSE, not a2a-results.jsonl: the response
+// JSON's decisions/evidence COUNT fields come straight from mcp-server.cjs's
+// own local `decisions`/`evidence` variables — recordResultBody separately
+// (and unconditionally, once called) recomputes decisions/evidence from the
+// body itself, so reading the persisted record would test recordResultBody,
+// not this call site's guard.
+test('call-site gate: mcp-server computes decisions/evidence ONLY for type=result', async (t) => {
+  const { callA2aSend, textOf, fixture } = require('./helpers/mcp-call.cjs');
+  const dir = fixture(t, 'a2a-intel-decisions-');
+  const body = [
+    'criteria:',
+    '- G1: pass — suite 10/10',
+    'decisions:',
+    '- elegí sha1 para dedupe [conf: media] — habría preguntado el algoritmo',
+  ].join('\n');
+
+  const res = await callA2aSend(
+    { from_pane: 411, to_pane: 412, corr: 'cs-dec-1', type: 'result', body },
+    { WEZBRIDGE_INTEL_DIR: dir },
+  );
+  assert.notEqual(res.isError, true, `unexpected error: ${textOf(res)}`);
+  const out = JSON.parse(textOf(res));
+  assert.strictEqual(out.decisions, 1, 'the response must report the computed decisions count for type=result');
+  assert.strictEqual(out.evidence, 1, 'the response must report the computed evidence count for type=result');
+
+  const reqRes = await callA2aSend(
+    { from_pane: 411, to_pane: 412, corr: 'cs-dec-2', type: 'request', body },
+    { WEZBRIDGE_INTEL_DIR: dir },
+  );
+  assert.notEqual(reqRes.isError, true, `unexpected error: ${textOf(reqRes)}`);
+  const reqOut = JSON.parse(textOf(reqRes));
+  assert.strictEqual(reqOut.decisions, undefined, 'a request must not compute/report decisions — the guard is on msgType, not body shape');
+  assert.strictEqual(reqOut.evidence, undefined, 'a request must not compute/report evidence — the guard is on msgType, not body shape');
 });
 
 // ── Auto-ack bookkeeping (B1, 2026-08-22) ────────────────────────────────
@@ -431,10 +479,43 @@ test('autoAckResult: fail-soft — unwritable intel dir never throws', () => {
   process.env.WEZBRIDGE_INTEL_DIR = prev;
 });
 
-test('call-site gate: mcp-server auto-acks ONLY verified type=result deliveries', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'mcp-server.cjs'), 'utf8');
-  assert.match(src, /if \(msgType === 'result' && submitted === 'submitted' && !truncated\) \{\s*\n\s*autoAcked = a2aIntel\.autoAckResult\(/,
-    'auto-ack must sit behind the verified-result guard — closing an ack obligation on an unproven delivery silently drops it');
+// T-0400: was a source-regex check on the guard's literal shape — an
+// `if (false)` around it left this green regardless of whether autoAckResult
+// ever actually ran. Rewritten to invoke the real mcp-server against
+// test/mocks/wezterm-echo-mock.cjs, the ONE double in this suite that echoes
+// pasted text back (test/mocks/wezterm-mock.cjs is static, so a real
+// verified delivery — submitted==='submitted', delivered!=='truncated' — can
+// never happen against it): open a thread with a request, close it with a
+// result, and assert the thread is gone iff the delivery the echo mock
+// produced was actually verified.
+test('call-site gate: mcp-server auto-acks ONLY verified type=result deliveries', async (t) => {
+  const { callA2aSend, textOf, fixture } = require('./helpers/mcp-call.cjs');
+  const dir = fixture(t, 'a2a-intel-autoack-');
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-intel-echo-'));
+  t.after(() => fs.rmSync(stateDir, { recursive: true, force: true }));
+  const env = {
+    WEZBRIDGE_INTEL_DIR: dir,
+    WEZBRIDGE_WEZTERM_BIN: path.join(__dirname, 'mocks', 'wezterm-echo-mock.cjs'),
+    WEZBRIDGE_MOCK_ECHO_STATE: path.join(stateDir, 'state.json'),
+  };
+  const corr = 'cs-autoack-1';
+
+  const reqRes = await callA2aSend({ from_pane: 555, to_pane: 1, corr, type: 'request', body: 'do the thing' }, env);
+  assert.notEqual(reqRes.isError, true, `unexpected error opening thread: ${textOf(reqRes)}`);
+  let threads = JSON.parse(fs.readFileSync(path.join(dir, 'a2a-threads.json'), 'utf8')).threads;
+  assert.strictEqual(threads[corr].state, 'open', 'sanity: the thread must actually be open before the result');
+
+  const resultRes = await callA2aSend({ from_pane: 1, to_pane: 555, corr, type: 'result', body: 'criteria:\n- G1: pass — done' }, env);
+  assert.notEqual(resultRes.isError, true, `unexpected error sending result: ${textOf(resultRes)}`);
+  const out = JSON.parse(textOf(resultRes));
+  assert.strictEqual(out.submitted, 'submitted', 'the echo mock must produce a verified submission, or this test proves nothing');
+  assert.notStrictEqual(out.delivered, 'truncated', 'the echo mock must produce non-truncated delivery, or this test proves nothing');
+  assert.strictEqual(out.auto_acked, true, 'a verified type=result delivery must auto-ack');
+
+  threads = JSON.parse(fs.readFileSync(path.join(dir, 'a2a-threads.json'), 'utf8')).threads;
+  assert.strictEqual(threads[corr], undefined, 'the auto-ack must close the thread');
+  const events = fs.readFileSync(path.join(dir, 'events.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.ok(events.some((e) => e.event === 'a2a.thread-auto-acked' && e.corr === corr), 'the closure must be auditable');
 });
 
 test('recordResultBody persists abandons so surrender survives the scrollback', () => {
