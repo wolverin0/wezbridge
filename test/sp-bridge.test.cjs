@@ -295,3 +295,62 @@ test('T-0405 J: una tarjeta que vuelve a bloquearse en el operador DESPUES de ap
   assert.ok(out.noted >= 1);
   assert.match(e.plugin.model.tasks.filter((t) => t.title.startsWith('T-0262')).pop().notes, /Estado: blocked -> running/);
 });
+
+// ---------------------------------------------------------------------------
+// T-0492 — isOperatorGated exigia c.state === 'blocked': una tarjeta gateada
+// por el operador que vive en review (finished work esperando su juicio, T-0332/
+// T-0333/T-0418/T-0462/T-0483 medidas 2026-09-20) nunca llegaba a SP porque
+// blocked_by='operator' no alcanzaba solo. La pregunta es del operador sin
+// importar el estado FSM (evidence: _intel/evidence/wezbridge/2026-09-20-
+// preguntas-al-operador-sin-canal.md). done/cancelled quedan afuera siempre:
+// son terminales, no hay nada que decidir.
+test('T-0492 A fail-first: tarjeta state=review blocked_by=operator (sin gate) tiene que crear la tarea en SP', async () => {
+  const e = env();
+  const c = card({ id: 'T-0332', state: 'review', gate: null });
+  const r = await e.hub.syncDecisions([c]);
+  assert.equal(r.created, 1, `review + blocked_by=operator tiene que ser una decision del operador: ${JSON.stringify(r)}`);
+  const t = e.plugin.model.tasks[0];
+  assert.match(t.title, /^T-0332 · /);
+  const map = sp.loadMap(e.intel);
+  assert.ok(map['fleet:T-0332'] && !map['fleet:T-0332'].doneAt, 'entrada activa en el map, sin doneAt');
+});
+
+test('T-0492 B: la misma tarjeta gateada en review no se duplica en un segundo sync (idempotente)', async () => {
+  const e = env();
+  const c = card({ id: 'T-0333', state: 'review', gate: null });
+  await e.hub.syncDecisions([c]);
+  const r2 = await e.hub.syncDecisions([c]);
+  assert.deepEqual(r2, { created: 0, completed: 0 });
+  assert.equal(e.plugin.model.tasks.length, 1);
+});
+
+test('T-0492 C: camino de vuelta — la tarjeta deja de estar gateada (blocked_by ya no operator) y el siguiente sync completa la tarea con doneAt en el map', async () => {
+  const e = env();
+  const c = card({ id: 'T-0418', state: 'review', gate: null });
+  await e.hub.syncDecisions([c]);
+  const t = () => e.plugin.model.tasks.find((x) => x.title.startsWith('T-0418'));
+  assert.equal(t().isDone, false);
+  const cleared = { ...c, blocked_by: 'agent' };
+  const r = await e.hub.syncDecisions([cleared]);
+  assert.equal(r.completed, 1, `des-gateada tiene que completar la tarea: ${JSON.stringify(r)}`);
+  assert.equal(t().isDone, true);
+  const map = sp.loadMap(e.intel);
+  assert.ok(map['fleet:T-0418'].doneAt, 'doneAt escrito en el fixture map.json');
+});
+
+test('T-0492 D: camino de vuelta alterno — la tarjeta pasa a done manteniendo blocked_by=operator (residuo) y igual se completa', async () => {
+  const e = env();
+  const c = card({ id: 'T-0462', state: 'review', gate: null });
+  await e.hub.syncDecisions([c]);
+  const done = { ...c, state: 'done' };
+  const r = await e.hub.syncDecisions([done]);
+  assert.equal(r.completed, 1, `done tiene que completar la tarea aunque blocked_by siga en operator: ${JSON.stringify(r)}`);
+});
+
+test('T-0492 E: done/cancelled nunca crean una decision aunque blocked_by siga en operator', async () => {
+  const e = env();
+  const r1 = await e.hub.syncDecisions([card({ id: 'T-1001', state: 'done' })]);
+  assert.equal(r1.created, 0, 'done no gatea');
+  const r2 = await e.hub.syncDecisions([card({ id: 'T-1002', state: 'cancelled' })]);
+  assert.equal(r2.created, 0, 'cancelled no gatea');
+});
