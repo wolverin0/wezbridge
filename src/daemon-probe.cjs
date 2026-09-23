@@ -64,4 +64,23 @@ function probeDaemon({ timeoutMs = 2500 } = {}) {
   });
 }
 
-module.exports = { probeDaemon, probeDaemonServices };
+/** T-0525: the `orca` block of /api/health, or null when the daemon is down / predates it. */
+function probeDaemonOrca() {
+  const dashPort = parseInt(process.env.DASHBOARD_PORT || '4200', 10);
+  return new Promise((resolve) => {
+    const http = require('http');
+    const req = http.request({ host: '127.0.0.1', port: dashPort, method: 'GET', path: '/api/health' }, (res) => {
+      let body = '';
+      res.on('data', (c) => { body += c; });
+      res.on('end', () => {
+        if (res.statusCode !== 200) return resolve(null);
+        try { resolve(JSON.parse(body).orca || null); } catch { resolve(null); }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.setTimeout(2500, () => { req.destroy(); resolve(null); });
+    req.end();
+  });
+}
+
+module.exports = { probeDaemon, probeDaemonServices, probeDaemonOrca };

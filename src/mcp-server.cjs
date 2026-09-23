@@ -1981,7 +1981,7 @@ function probeWezterm() {
  */
 // Extracted to src/daemon-probe.cjs (T-0190) so tests can exercise the probes
 // without starting this stdio server. Liveness is decided by /api/health there.
-const { probeDaemon, probeDaemonServices } = require('./daemon-probe.cjs');
+const { probeDaemon, probeDaemonServices, probeDaemonOrca } = require('./daemon-probe.cjs');
 
 async function handleBridgeHealth() {
   let pkgVersion = 'unknown';
@@ -1989,7 +1989,7 @@ async function handleBridgeHealth() {
   // Arming is MEASURED at the daemon, never inferred here: this process has a
   // different environment from the daemon's, so reading process.env would
   // report a wish. `null` services => genuinely unknown, and it says so.
-  const [daemon, services] = await Promise.all([probeDaemon(), probeDaemonServices()]);
+  const [daemon, services, orcaLive] = await Promise.all([probeDaemon(), probeDaemonServices(), probeDaemonOrca()]);
   const wezterm = probeWezterm();
   const snap = services && services.session_snapshot;
   const health = {
@@ -1998,6 +1998,9 @@ async function handleBridgeHealth() {
     daemon,
     services: services || 'unknown (daemon down, or predates /api/health)',
     session_snapshot_armed: snap ? snap.armed : 'unknown',
+    // T-0525: the fleet runs in Orca terminals; WezTerm pane_count alone reads 0.
+    // Daemon down => last persisted census (_intel/orca-census.json), marked source:'file'.
+    orca: orcaLive || require('./orca-census.cjs').readPersistedCensus() || 'unknown (daemon down and no _intel/orca-census.json)',
     ok: wezterm.reachable, // wezterm is the only hard dependency for core MCP tools
   };
   // Two mux sockets serving the same panes under different ids is invisible

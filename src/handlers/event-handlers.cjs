@@ -389,6 +389,32 @@ function createEventHandlers(ctx) {
     } else {
       daemonStatus.set('pane_census', { armed: false, reason: 'WEZBRIDGE_CENSUS=0 (explicit off)' });
     }
+    // T-0525: the fleet runs in ORCA terminals; the WezTerm census above sees none
+    // of them. Async (execFile) loop in THIS process — the Orca CLI never blocks
+    // the event loop — feeding the `orca` block of /api/health, the Orca crash
+    // snapshot, and durable WORKER_DONE events. WEZBRIDGE_ORCA_CENSUS=0 turns it off.
+    if (process.env.WEZBRIDGE_ORCA_CENSUS !== '0') {
+      try {
+        const orcaCensus = require('../orca-census.cjs');
+        const orcaIntel = process.env.WEZBRIDGE_INTEL_DIR || path.join(SRC_DIR, '..', '..', '_intel');
+        const orcaInterval = Number(process.env.WEZBRIDGE_ORCA_CENSUS_MS) || 20000;
+        const orcaHandle = orcaCensus.startOrcaCensus({
+          intelDir: orcaIntel, intervalMs: orcaInterval,
+          snapshotIntervalMs: snapshotIntervalMs || 0, log,
+        });
+        orcaCensus.setHealthSource(() => orcaHandle.healthBlock());
+        daemonStatus.set('orca_census', {
+          armed: true, reason: `async orca CLI every ${orcaInterval} ms (snapshot ${snapshotIntervalMs ? snapshotIntervalMs / 1000 + 's' : 'off'})`,
+          probe: () => orcaHandle.status(),
+        });
+        log(`orca-census armed (${orcaInterval / 1000}s tick, async) -> _intel/orca-census.json`);
+      } catch (e) {
+        daemonStatus.set('orca_census', { armed: false, reason: `failed: ${e.message}` });
+        log(`orca-census failed to start: ${e.message}`);
+      }
+    } else {
+      daemonStatus.set('orca_census', { armed: false, reason: 'WEZBRIDGE_ORCA_CENSUS=0 (explicit off)' });
+    }
     if (snapEnv !== '0' && censusHandle) {
       daemonStatus.set('session_snapshot', { armed: true, reason: `armed (${snapshotIntervalMs / 1000}s tick, en el worker del censo)` });
       log(`session-snapshot watcher armed (${snapshotIntervalMs / 1000}s tick) — corre en el worker del censo, no en este loop`);

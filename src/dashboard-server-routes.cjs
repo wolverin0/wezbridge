@@ -237,7 +237,10 @@ const server = http.createServer(async (req, res) => {
   // infer arming from the MCP server's own env — a different process — so it
   // could report a watcher as armed while nothing ran (fixed 2026-08-06).
   if (pathname === '/api/health' && method === 'GET') {
-    return sendJson(res, 200, { services: require('./daemon-status.cjs').snapshot() });
+    // T-0525: `orca` = census of the Orca terminals the fleet actually runs in.
+    let orca;
+    try { orca = require('./orca-census.cjs').healthBlock(); } catch (e) { orca = { last_error: e.message }; }
+    return sendJson(res, 200, { services: require('./daemon-status.cjs').snapshot(), orca });
   }
   if (pathname === '/api/panes' && method === 'GET') return handlers.handleGetPanes(req, res);
   if (pathname === '/api/sessions' && method === 'GET') return handlers.handleGetSessions(req, res);

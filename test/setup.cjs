@@ -5,6 +5,8 @@ const path = require('path');
 
 const mockPath = path.join(__dirname, 'mocks', 'wezterm-mock.cjs');
 process.env.WEZBRIDGE_WEZTERM_BIN = mockPath;
+// T-0525: daemons started by the suite must not poll the operator's real Orca.
+if (process.env.WEZBRIDGE_ORCA_CENSUS === undefined) process.env.WEZBRIDGE_ORCA_CENSUS = '0';
 
 // Quote the path — NODE_OPTIONS splits on spaces, and this repo lives under
 // "Py Apps" (child test processes died with MODULE_NOT_FOUND 'G:/.../Py').
