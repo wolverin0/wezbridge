@@ -59,7 +59,30 @@ const DEFAULTS = {
   // hace dias no es "trabajo terminado", es historia; poke-ar por el es ruido.
   staleEventMs: 6 * 60 * 60 * 1000,
   ctxAlertPct: 80, // M2: pane context % at/above which the poke carries a handoff→/clear warning
+  // T-0419: deliverPending() used to return BEFORE touching any intent when
+  // the target wasn't idle, so a target stuck at status 'unknown' (dead
+  // selector, pane gone) let intents pile up in pending.json forever — the
+  // maxAttempts cap and the flags.json writer live downstream of an attempted
+  // poke, and one was never attempted. This is the bounded window a target
+  // may sit at an UNREACHABLE status (see UNREACHABLE_STATUSES below — NOT
+  // 'working': busy is alive, unreachable is not) before its pending intents
+  // are flagged with their own target-unreachable reason. Override:
+  // WEZBRIDGE_ORCH_WAKER_UNREACHABLE_MS or _intel/orch-waker.json's
+  // `unreachableWindowMs` (see resolveWakerConfig / event-handlers.cjs).
+  unreachableWindowMs: 30 * 60 * 1000,
 };
+
+// T-0419: which pane statuses count as the DESTINATION being unreachable,
+// vs. merely busy. pane-discovery.cjs reports 'idle' | 'permission' |
+// 'working' | 'continuation' | 'unknown' (plus 'unknown' again when the
+// resolved pane id is no longer in the live census at all — see deliverPending).
+// Deliberately narrow: the card's intent is "unknown/unreachable is the
+// problem", not "flag any pane that isn't idle". 'working'/'permission'/
+// 'continuation' mean the pane is alive and doing something a human is
+// plausibly watching (including waiting on THEM); only 'unknown' — no
+// legible status at all — means the waker cannot tell the pane apart from
+// simply not being there.
+const UNREACHABLE_STATUSES = new Set(['unknown']);
 
 function intentId(evt) {
   return crypto.createHash('sha1')
@@ -310,6 +333,13 @@ function createWaker(opts) {
     // vez por espera) y cuantos pokes se AHORRARON al colapsar rafagas.
     debounceHeld: {},
     debounceCollapsed: 0,
+    // T-0419: targetId -> ms del PRIMER tick en que se lo vio en un status de
+    // UNREACHABLE_STATUSES con pending no vacio. In-memory, como lastAttemptAt
+    // arriba: un restart reinicia el reloj, lo cual es seguro (peor caso,
+    // tarda una ventana mas en detectarlo de nuevo) y nunca resucita un flag
+    // ya escrito (flags.json es lo durable). Se borra en cuanto el target deja
+    // de estar en un status unreachable (vuelve a idle o pasa a 'working' etc).
+    notIdleSince: {},
   };
   const deliveredSet = new Set(state.delivered);
   // A crash after receipt persistence but before pending removal must not
@@ -323,6 +353,12 @@ function createWaker(opts) {
   if (opts.debounceMs === undefined && process.env.WEZBRIDGE_ORCH_WAKER_DEBOUNCE_MS !== undefined) {
     const v = Number(process.env.WEZBRIDGE_ORCH_WAKER_DEBOUNCE_MS);
     if (Number.isFinite(v) && v >= 0) cfg.debounceMs = v;
+  }
+  // T-0419: same precedence pattern — explicit opts wins, then env, then the
+  // DEFAULTS.unreachableWindowMs above.
+  if (opts.unreachableWindowMs === undefined && process.env.WEZBRIDGE_ORCH_WAKER_UNREACHABLE_MS !== undefined) {
+    const v = Number(process.env.WEZBRIDGE_ORCH_WAKER_UNREACHABLE_MS);
+    if (Number.isFinite(v) && v >= 0) cfg.unreachableWindowMs = v;
   }
 
   function persistPending() { atomicWriteJson(FILES.pending, state.pending); }
@@ -342,6 +378,46 @@ function createWaker(opts) {
     const flags = readJson(FILES.flags, {});
     flags[id] = { ...intent, flagged_at: new Date(now()).toISOString(), reason };
     atomicWriteJson(FILES.flags, flags);
+  }
+
+  function formatWindow(ms) {
+    if (!Number.isFinite(ms)) return `${ms}ms`;
+    const mins = ms / 60000;
+    return mins >= 1 ? `${Math.round(mins)}min` : `${Math.round(ms / 1000)}s`;
+  }
+
+  // T-0419: a THIRD reason an intent can leave pending, distinct from both W4
+  // reasons above — those are consumer-side (the poke was attempted and
+  // failed/couldn't be read back). This one fires BEFORE any poke is ever
+  // attempted: the destination itself has been unreachable (status in
+  // UNREACHABLE_STATUSES) for cfg.unreachableWindowMs straight. Names the
+  // pane and the window so waker-gate (and a human) can tell "consumer not
+  // consuming" apart from "destination unreachable" on sight.
+  function flagTargetUnreachable(targetId, status, notIdleMs) {
+    const ids = Object.keys(state.pending);
+    if (!ids.length) return 0;
+    const reason = `target-unreachable: pane ${targetId} (${cfg.targetProject}) not idle for ${formatWindow(notIdleMs)} (status=${status}), window=${formatWindow(cfg.unreachableWindowMs)}`;
+    for (const id of ids) {
+      flagCapExhausted(id, state.pending[id], reason);
+      delete state.pending[id];
+    }
+    persistPending();
+    log(`orch-waker: pane ${targetId} unreachable (status=${status}) for ${formatWindow(notIdleMs)} — ${ids.length} pending intent(s) FLAGGED as target-unreachable, not attempt-cap`);
+    return ids.length;
+  }
+
+  // T-0419: called every tick the target is observed in an UNREACHABLE status
+  // (or unresolved). Starts the clock on first sight, flags once it has run
+  // continuously for cfg.unreachableWindowMs, then resets so a LATER batch of
+  // intents (arriving after the flag) gets its own fresh window instead of
+  // being flagged on the very next tick.
+  function noteUnreachable(key, status) {
+    if (state.notIdleSince[key] === undefined) state.notIdleSince[key] = now();
+    const notIdleMs = now() - state.notIdleSince[key];
+    if (notIdleMs >= cfg.unreachableWindowMs) {
+      flagTargetUnreachable(key, status, notIdleMs);
+      delete state.notIdleSince[key];
+    }
   }
 
   /**
@@ -613,10 +689,33 @@ function createWaker(opts) {
     if (!ids.length) return;
 
     const targetId = findTarget(panes);
-    if (targetId == null) { state.idleStreak = 0; return; }
+    if (targetId == null) {
+      state.idleStreak = 0;
+      // T-0419: "dead selector" from the problem statement — resolve() found
+      // NO live pane at all for cfg.targetProject (not merely ambiguous; that
+      // case already logs and is a config problem, not a vanished pane). No
+      // paneId to key on, so track it under a fixed sentinel.
+      noteUnreachable('(unresolved)', 'no-target');
+      return;
+    }
+    // T-0419: a resolved target means the destination is not "unresolved"
+    // this tick — clear that sentinel's clock the same way a resolved
+    // target's own clock is cleared below, or a transient resolve blip that
+    // later recovers leaves a stale start time that a LATER unrelated blip
+    // reads as "unreachable ever since", flagging it immediately.
+    delete state.notIdleSince['(unresolved)'];
     const target = panes.find((p) => (p.paneId ?? p.pane_id) === targetId);
     const status = target ? target.status : 'unknown';
-    if (status !== 'idle') { state.idleStreak = 0; return; }
+    if (status !== 'idle') {
+      state.idleStreak = 0;
+      // T-0419: only a genuinely UNREACHABLE status starts the clock that
+      // ends in a flag — 'working'/'permission'/'continuation' mean the pane
+      // is alive, just busy (see UNREACHABLE_STATUSES above for why).
+      if (UNREACHABLE_STATUSES.has(status)) noteUnreachable(targetId, status);
+      else delete state.notIdleSince[targetId];
+      return;
+    }
+    delete state.notIdleSince[targetId];
     state.idleStreak += 1;
     if (state.idleStreak < cfg.settleTicks) return;
 
