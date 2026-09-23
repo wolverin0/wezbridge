@@ -185,6 +185,35 @@ def load_tiers(intel=None):
         raise CardError(f"{path} is missing; it maps model ids to aliases and tiers. Refusing to guess.")
 
 
+def resolve_roster_terminal(repo, intel=None):
+    """T-0554: resolve a card's repo to a live lane handle from _intel/orchestrators.json
+    (mirrors src/lane-roster.cjs's loadRoster semantics). Missing file, bad JSON, no
+    `lanes` list, or no lane whose `repos` contains `repo` all degrade to None — never raises.
+    """
+    path = os.path.join(intel or intel_dir(), "orchestrators.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            roster = json.load(f)
+    except (OSError, ValueError):
+        return None
+    lanes = roster.get("lanes") if isinstance(roster, dict) else None
+    if not isinstance(lanes, list):
+        return None
+    for lane in lanes:
+        if isinstance(lane, dict) and repo and repo in (lane.get("repos") or []):
+            return lane.get("handle")
+    return None
+
+
+def _legacy_terminal_for_repo(repo):
+    """Old WORKER_REGISTRY, kept as the fallback when the roster has no answer."""
+    repo_l = (repo or "").lower()
+    for cfg in WORKER_REGISTRY.values():
+        if cfg["project_pattern"].lower() in repo_l:
+            return cfg.get("default_term_id")
+    return None
+
+
 def repo_path(repo):
     """Worktree for a card's repo: sweeper-config.json (root + path) when listed, else <Py Apps>/<repo>."""
     try:
@@ -253,7 +282,10 @@ def build_from_card(card, tiers, brief=None, terminal=None, worktree=None):
             notes.append(f"no worker-tN matches tier={card.get('tier')} {model}/{effort}; "
                          f"general-purpose cannot pin effort={effort}")
         out["agent_call"] = {"subagent_type": agent, "model": alias, "prompt": prompt}
-        term = terminal or "<TERMINAL_ID>"
+        # T-0554: no explicit --terminal -> roster (_intel/orchestrators.json) by repo,
+        # then the legacy WORKER_REGISTRY, then the placeholder.
+        term = (terminal or resolve_roster_terminal(card.get("repo"))
+                or _legacy_terminal_for_repo(card.get("repo")) or "<TERMINAL_ID>")
         # POSIX quoting: the fleet runs these from Git Bash.
         out["pane_command"] = " ".join(
             shlex.quote(a) for a in ["orca", "terminal", "send", "--terminal", term, "--text", prompt, "--enter"])

@@ -50,6 +50,12 @@ CODEX_CARD = {
     "acceptance_criteria": ["conteo con evidencia"],
     "runtime": "codex", "model": "gpt-6-luna", "effort": "low", "tier": "T1",
 }
+PEDRITO_CARD = {
+    "id": "T-0904", "title": "Arreglar factura", "goal": "AFIP receipt fix.",
+    "repo": "pedrito", "state": "ready", "blocked_by": "agent",
+    "acceptance_criteria": ["test verde"],
+    "runtime": "claude", "model": "claude-sonnet-5", "effort": "medium", "tier": "T2",
+}
 
 
 class FromCardTest(unittest.TestCase):
@@ -58,7 +64,7 @@ class FromCardTest(unittest.TestCase):
         os.makedirs(os.path.join(self.intel, "tasks"))
         with open(os.path.join(self.intel, "model-tiers.json"), "w", encoding="utf-8") as f:
             json.dump(TIERS, f)
-        for c in (CLAUDE_CARD, CODEX_CARD, {**CLAUDE_CARD, "id": "T-0903", "runtime": None, "model": None}):
+        for c in (CLAUDE_CARD, CODEX_CARD, {**CLAUDE_CARD, "id": "T-0903", "runtime": None, "model": None}, PEDRITO_CARD):
             with open(os.path.join(self.intel, "tasks", f"{c['id']}.json"), "w", encoding="utf-8") as f:
                 json.dump(c, f)
 
@@ -125,6 +131,30 @@ class FromCardTest(unittest.TestCase):
         r = self.cli("--title", "x")
         self.assertEqual(r.returncode, 2)
         self.assertIn("--from-card", r.stderr)
+
+    def test_no_terminal_uses_roster_handle_for_repo(self):
+        # T-0554: _intel/orchestrators.json roster with a lane owning CLAUDE_CARD's repo.
+        with open(os.path.join(self.intel, "orchestrators.json"), "w", encoding="utf-8") as f:
+            json.dump({"lanes": [{"lane": "wezbridge", "repos": ["wezbridge"], "handle": "term_roster_wb"}]}, f)
+        r = self.cli("--from-card", "T-0901")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        argv = shlex.split(r.stdout.split("# Pane dispatch (orca):\n", 1)[1])
+        self.assertIn("term_roster_wb", argv)
+
+    def test_missing_roster_falls_back_to_legacy_registry(self):
+        # No orchestrators.json written: PEDRITO_CARD's repo matches WORKER_REGISTRY["pedrito"].
+        r = self.cli("--from-card", "T-0904")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        argv = shlex.split(r.stdout.split("# Pane dispatch (orca):\n", 1)[1])
+        self.assertIn("term_5bc6d4ef-16e4-40e0-bd5d-765cb075e781", argv)
+
+    def test_malformed_roster_falls_back_to_legacy_registry(self):
+        with open(os.path.join(self.intel, "orchestrators.json"), "w", encoding="utf-8") as f:
+            f.write("{not valid json")
+        r = self.cli("--from-card", "T-0904")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        argv = shlex.split(r.stdout.split("# Pane dispatch (orca):\n", 1)[1])
+        self.assertIn("term_5bc6d4ef-16e4-40e0-bd5d-765cb075e781", argv)
 
 
 if __name__ == "__main__":
