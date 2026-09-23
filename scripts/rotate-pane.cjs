@@ -63,7 +63,7 @@ const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 
  * must then not produce. Records what it would have sent, so the test can assert
  * that /clear was never among them.
  */
-function send(target, text, { dryRun }) {
+function send(target, text, { dryRun, allowLong = false } = {}) {
   if (process.env.WEZBRIDGE_ROTATE_FAKE_SEND) {
     fs.appendFileSync(process.env.WEZBRIDGE_ROTATE_FAKE_SEND, `${text.split('\n')[0]}\n`);
     return { code: 0, out: 'fake' };
@@ -74,6 +74,13 @@ function send(target, text, { dryRun }) {
   if (target.tabTitle) args.push('--tab-title', target.tabTitle);
   if (target.project) args.push('--project', target.project);
   if (dryRun) args.push('--dry-run');
+  // T-0473: this file's own /clear interlock and composer-integrity checks
+  // (via poke-pane) are the verification path for a dispatched job or resume
+  // prompt — poke-pane's measured payload ceiling (src/poke-payload-ceiling.cjs)
+  // exists for callers with no such path. Only payload-carrying sends (the
+  // caller's own job text) opt in; short control pokes (/compact, /handoff,
+  // /clear) never need it and stay refused-by-default.
+  if (allowLong) args.push('--allow-long');
   const r = spawnSync(process.execPath, args, { encoding: 'utf8', timeout: 120000 });
   try { fs.unlinkSync(tmp); } catch { /* ignore */ }
   return { code: r.error ? 3 : r.status, out: `${r.stdout || ''}${r.stderr || ''}`.trim() };
@@ -103,7 +110,7 @@ function main() {
     log(`sent /compact${dryRun ? ' (dry run)' : ''}`);
     if (next && !dryRun) {
       sleep(CLEAR_SETTLE_MS);
-      const f = send(target, next, { dryRun });
+      const f = send(target, next, { dryRun, allowLong: true });
       if (f.code !== 0) die(7, `compacted, but the follow-up job did not deliver (exit ${f.code})`);
       log('follow-up job delivered');
     }
@@ -147,7 +154,7 @@ function main() {
 
   const rel = path.join(project, 'handoffs', fresh).replace(/\\/g, '/');
   const resume = `Read \`${rel}\` first - it is your own handoff from the session that just ended, written because this pane was rotated to free context.\n\n${next || 'Then wait for instructions.'}`;
-  const r = send(target, resume, {});
+  const r = send(target, resume, { allowLong: true });
   if (r.code !== 0) die(7, `cleared and handoff is at ${rel}, but the resume prompt did not deliver (exit ${r.code}). Send it by hand.`);
 
   log(`rotated: handoff ${fresh} -> /clear -> resume prompt delivered`);
