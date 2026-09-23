@@ -1,10 +1,13 @@
 'use strict';
 /**
- * orca-census.cjs — census, crash-restore snapshot and durable WORKER_DONE events for ORCA terminals (T-0525).
- * Covers: `orca terminal list --json` normalization, _intel/orca-census.json, the `orca` block of
- * /api/health + bridge_health, vault/_wezbridge/orca-session-snapshot.jsonl, and the WORKER_DONE poller
- * that appends {event:'worker-done'} to _intel/pane-events.jsonl.
- * Key terms: runOrca (injectable CLI double), healthBlock, readRichestOrcaSnapshot, ECHO_MARKERS.
+ * orca-census.cjs — census, crash-restore snapshot and durable WORKER_DONE/SUBORCH_* events for
+ * ORCA terminals (T-0525, T-0555). Covers: `orca terminal list --json` normalization,
+ * _intel/orca-census.json, the `orca` block of /api/health + bridge_health,
+ * vault/_wezbridge/orca-session-snapshot.jsonl, and the poller that appends
+ * {event:'worker-done'|'suborch_done'|'suborch_question'|'suborch_status'|'suborch_handoff'}
+ * to _intel/pane-events.jsonl for foreman-supervised and roster lane-orchestrator terminals.
+ * Key terms: runOrca (injectable CLI double), healthBlock, readRichestOrcaSnapshot, ECHO_MARKERS,
+ * extractSuborchLines, readRosterTerminals.
  * Read when: bridge_health says pane_count 0 while the fleet runs in Orca, or a crash-restore must recreate Orca terminals.
  * Never throws: every failure lands in last_error / {ok:false, reason}.
  *
@@ -22,6 +25,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { execFile } = require('node:child_process');
+const { loadRoster } = require('./lane-roster.cjs');
 
 const DEFAULT_ORCA_BIN = process.env.ORCA_CLI
   || 'C:/Users/pauol/AppData/Local/Programs/orca/resources/bin/orca.exe';
@@ -35,7 +39,15 @@ const SEEN_MAX = 2000;
 // Same filter as scripts/orchestration/foreman.py: these lines echo a DISPATCH
 // (instruction text, templates), not a worker's closure.
 const SENTINEL_RE = /\[WORKER_DONE\]\s+task_id=([^\s<>]+)(?:\s+outcome=(succeeded|failed))?/;
-const ECHO_MARKERS = ['[ORCHESTRATOR]', '[MISSION]', 'emiti', 'emití', 'report=<'];
+// T-0555: lane-orchestrator report lines (see FLEET brief close format). Same echo
+// problem as WORKER_DONE — briefs quote the template line back at the orchestrator.
+const SUBORCH_DONE_RE = /\[SUBORCH_DONE\]\s+task_id=([^\s<>]+)(?:\s+outcome=(succeeded|failed))?(?:\s+report=([^\s<>]+))?/;
+const SUBORCH_QUESTION_RE = /\[SUBORCH_QUESTION\]\s+task_id=([^\s<>]+)\s+q=(.+)/;
+const SUBORCH_STATUS_RE = /\[SUBORCH_STATUS\]\s+(.+)/;
+const SUBORCH_HANDOFF_RE = /\[SUBORCH_HANDOFF\]\s+(\S+)/;
+const ECHO_MARKERS = ['[ORCHESTRATOR]', '[MISSION]', 'emiti', 'emití', 'report=<',
+  // T-0555: literal placeholders from the brief's close-format block, quoted back on screen.
+  'task_id=T-NNNN', "q='<", 'outcome=succeeded|failed', 'running=<ids>'];
 
 /** Default CLI runner: async, bounded, never blocks the caller's event loop. */
 function defaultRunOrca(args, { bin = DEFAULT_ORCA_BIN, timeoutMs = 15000 } = {}) {
@@ -239,6 +251,74 @@ function extractDoneLines(screenLines) {
   return out;
 }
 
+/** '`key=value key2=value2`' -> {key: 'value', key2: 'value2'}. Empty values kept. */
+function parseStatusKv(str) {
+  const out = {};
+  const re = /(\w+)=(\S*)/g;
+  let m;
+  while ((m = re.exec(str))) out[m[1]] = m[2];
+  return out;
+}
+
+/** True when a value (or any string value nested one level deep) still carries a `<...>`
+ * template placeholder — real ids/paths/questions never contain angle brackets. Belt-and-braces
+ * alongside ECHO_MARKERS: it catches template shapes not on that literal list (e.g. a bare
+ * `[SUBORCH_HANDOFF] <path>`) without having to enumerate every brief's placeholder wording. */
+function containsAngleBracket(v) {
+  if (typeof v === 'string') return /[<>]/.test(v);
+  if (v && typeof v === 'object') return Object.values(v).some(containsAngleBracket);
+  return false;
+}
+
+/**
+ * Real lane-orchestrator report lines on a screen: [{line, kind, fields}], echoes
+ * filtered out (same ECHO_MARKERS as WORKER_DONE, extended with the SUBORCH close-format
+ * placeholders, plus the containsAngleBracket net). kind is one of
+ * suborch_done|suborch_question|suborch_status|suborch_handoff.
+ */
+function extractSuborchLines(screenLines) {
+  const out = [];
+  for (const raw of screenLines || []) {
+    const line = String(raw).trim();
+    if (!line.includes('[SUBORCH_')) continue;
+    if (ECHO_MARKERS.some((m) => line.includes(m))) continue;
+    let kind = null;
+    let fields = null;
+    if (line.includes('[SUBORCH_DONE]')) {
+      const m = SUBORCH_DONE_RE.exec(line);
+      if (m) { kind = 'suborch_done'; fields = { task_id: m[1], outcome: m[2] || null, report: m[3] || null }; }
+    } else if (line.includes('[SUBORCH_QUESTION]')) {
+      const m = SUBORCH_QUESTION_RE.exec(line);
+      if (m) {
+        let q = m[2].trim();
+        if ((q.startsWith("'") && q.endsWith("'")) || (q.startsWith('"') && q.endsWith('"'))) q = q.slice(1, -1);
+        kind = 'suborch_question'; fields = { task_id: m[1], q };
+      }
+    } else if (line.includes('[SUBORCH_HANDOFF]')) {
+      const m = SUBORCH_HANDOFF_RE.exec(line);
+      if (m) { kind = 'suborch_handoff'; fields = { path: m[1] }; }
+    } else if (line.includes('[SUBORCH_STATUS]')) {
+      const m = SUBORCH_STATUS_RE.exec(line);
+      if (m) { kind = 'suborch_status'; fields = { kv: parseStatusKv(m[1]) }; }
+    }
+    if (!kind || containsAngleBracket(fields)) continue;
+    out.push({ line, kind, fields });
+  }
+  return out;
+}
+
+/** Lane-orchestrator terminals from the roster (_intel/orchestrators.json via lane-roster.cjs). Never throws. */
+function readRosterTerminals(intelDir = DEFAULT_INTEL) {
+  let roster;
+  try { roster = loadRoster(intelDir); } catch { return []; }
+  const lanes = (roster && Array.isArray(roster.lanes)) ? roster.lanes : [];
+  const out = [];
+  for (const l of lanes) {
+    if (l && l.handle) out.push({ terminal: String(l.handle), lane: l.lane || null });
+  }
+  return out;
+}
+
 function sha1(s) { return crypto.createHash('sha1').update(s).digest('hex'); }
 
 function loadSeen(file) {
@@ -246,41 +326,71 @@ function loadSeen(file) {
 }
 
 /**
- * One poll pass. Appends {time, ts, event:'worker-done', source:'orca', terminal, task_id,
- * outcome, line, repo} to pane-events.jsonl for each NEW closure line (dedupe by
- * sha1(terminal + line), persisted so a daemon restart does not re-emit).
+ * One poll pass. Appends one event per NEW report line to pane-events.jsonl (dedupe by
+ * sha1(terminal + line), persisted so a daemon restart does not re-emit):
+ *  - {event:'worker-done', source:'orca', terminal, task_id, outcome, line, repo} for
+ *    [WORKER_DONE] closures on foreman-supervised terminals (_intel/foreman/*.json).
+ *  - {event:'suborch_done'|'suborch_question'|'suborch_status'|'suborch_handoff', source:'orca',
+ *    terminal, line, repo, ...fields} for [SUBORCH_*] lines (T-0555) on roster lane-orchestrator
+ *    terminals (_intel/orchestrators.json via lane-roster.cjs).
+ * A terminal that is both supervised and rostered is read once and scanned for both kinds.
  */
 async function pollWorkerDone({ runOrca = defaultRunOrca, intelDir = DEFAULT_INTEL, now = Date.now, terminals = [] } = {}) {
   const supervised = readSupervised(intelDir);
+  const roster = readRosterTerminals(intelDir);
   const result = { polled: 0, appended: [], errors: [] };
-  if (!supervised.length) return result;
+  const byTerminal = new Map();
+  for (const s of supervised) {
+    const cur = byTerminal.get(s.terminal) || {};
+    cur.supervised = true;
+    cur.task_id = s.task_id;
+    byTerminal.set(s.terminal, cur);
+  }
+  for (const r of roster) {
+    if (!byTerminal.has(r.terminal)) byTerminal.set(r.terminal, {});
+  }
+  if (!byTerminal.size) return result;
   const seenFile = path.join(intelDir, '.orca-done-seen.json');
   const seenList = loadSeen(seenFile);
   const seen = new Set(seenList);
   const wtOf = new Map(terminals.map((t) => [t.handle, t.worktreePath]));
-  for (const s of supervised) {
+
+  const appendEvt = (evt) => {
+    try {
+      fs.mkdirSync(intelDir, { recursive: true });
+      fs.appendFileSync(path.join(intelDir, 'pane-events.jsonl'), JSON.stringify(evt) + '\n', 'utf8');
+      result.appended.push(evt);
+    } catch (e) { result.errors.push(`append: ${e.message}`); }
+  };
+
+  for (const [term, meta] of byTerminal) {
     result.polled += 1;
     let lines;
     try {
-      const j = JSON.parse(await runOrca(['terminal', 'read', '--terminal', s.terminal, '--screen', '--json']));
+      const j = JSON.parse(await runOrca(['terminal', 'read', '--terminal', term, '--screen', '--json']));
       const r = (j && j.result) || {};
       lines = (r.terminal && r.terminal.tail) || r.lines || [];
-    } catch (e) { result.errors.push(`${s.terminal}: ${e.message}`); continue; }
-    for (const d of extractDoneLines(lines)) {
-      if (s.task_id && d.task_id !== s.task_id && !d.task_id.includes(s.task_id)) continue;
-      const h = sha1(`${s.terminal}\n${d.line}`);
+    } catch (e) { result.errors.push(`${term}: ${e.message}`); continue; }
+    const wt = wtOf.get(term) || null;
+    const repo = wt ? path.basename(wt) : null;
+
+    if (meta.supervised) {
+      for (const d of extractDoneLines(lines)) {
+        if (meta.task_id && d.task_id !== meta.task_id && !d.task_id.includes(meta.task_id)) continue;
+        const h = sha1(`${term}\n${d.line}`);
+        if (seen.has(h)) continue;
+        seen.add(h); seenList.push(h);
+        const iso = new Date(now()).toISOString();
+        appendEvt({ time: iso, ts: iso, event: 'worker-done', source: 'orca', terminal: term,
+          task_id: d.task_id, outcome: d.outcome, line: d.line, repo });
+      }
+    }
+    for (const d of extractSuborchLines(lines)) {
+      const h = sha1(`${term}\n${d.line}`);
       if (seen.has(h)) continue;
       seen.add(h); seenList.push(h);
       const iso = new Date(now()).toISOString();
-      const wt = wtOf.get(s.terminal) || null;
-      const evt = { time: iso, ts: iso, event: 'worker-done', source: 'orca', terminal: s.terminal,
-        task_id: d.task_id, outcome: d.outcome, line: d.line,
-        repo: wt ? path.basename(wt) : null };
-      try {
-        fs.mkdirSync(intelDir, { recursive: true });
-        fs.appendFileSync(path.join(intelDir, 'pane-events.jsonl'), JSON.stringify(evt) + '\n', 'utf8');
-        result.appended.push(evt);
-      } catch (e) { result.errors.push(`append: ${e.message}`); }
+      appendEvt({ time: iso, ts: iso, event: d.kind, source: 'orca', terminal: term, repo, line: d.line, ...d.fields });
     }
   }
   if (result.appended.length) {
@@ -326,7 +436,7 @@ function startOrcaCensus({
       }
       const p = await pollWorkerDone({ runOrca, intelDir, now, terminals: state.last ? state.last.terminals : [] });
       state.doneEvents += p.appended.length;
-      for (const e of p.appended) log(`orca-census: WORKER_DONE ${e.task_id} en ${e.terminal} -> pane-events.jsonl`);
+      for (const e of p.appended) log(`orca-census: ${e.event} ${e.task_id || e.path || ''} en ${e.terminal} -> pane-events.jsonl`);
       if (p.errors.length) state.lastPollError = p.errors.join('; ').slice(0, 300);
     } catch (e) {
       state.lastError = `tick: ${e && e.message}`;
@@ -365,4 +475,6 @@ module.exports = {
   buildHealthBlock, readPersistedCensus, restoreArgv, buildOrcaSnapshot, readOrcaSnapshots,
   appendOrcaSnapshot, readRichestOrcaSnapshot, readSupervised, extractDoneLines, pollWorkerDone,
   startOrcaCensus, setHealthSource, healthBlock,
+  // T-0555
+  extractSuborchLines, readRosterTerminals, parseStatusKv,
 };
