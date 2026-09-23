@@ -71,3 +71,28 @@ test('splitCmdline: realistic claude --channels invocation', () => {
     '--continue',
   ]);
 });
+
+// applyTabTitle ------------------------------------------------------
+
+const { applyTabTitle, spawnPane } = require(path.resolve(__dirname, '..', 'scripts', 'restore-session.cjs'));
+
+test('applyTabTitle: ignores missing paneId or title', () => {
+  assert.equal(applyTabTitle(null, 'test'), false);
+  assert.equal(applyTabTitle(1, ''), false);
+  assert.equal(applyTabTitle(null, null), false);
+});
+
+test('applyTabTitle: handles dry-run without spawning', () => {
+  assert.equal(applyTabTitle(12, 'network-audit', { dryRun: true }), true);
+});
+
+test('spawnPane: dry-run respects tab_title and ai', () => {
+  const entry = {
+    pane_id: 13,
+    cwd: 'G:/_OneDrive/OneDrive/Desktop/Py Apps/whatsappbot-main-wt',
+    tab_title: 'network-audit',
+    ai: 'claude',
+  };
+  assert.equal(spawnPane(entry, { dryRun: true }), true);
+});
+
