@@ -522,6 +522,103 @@ test('T-0329b: dos drains sobre un submit falso-negativo entregan el sobre UNA s
   assert.strictEqual(calls.length, 1, `el sobre aterrizo una sola vez, no 3 (corr=crm-wa-bot-qr-20260903): ${calls.length}`);
 });
 
+// ── T-0350: un result cuya ENTREGA FALLA sigue sin estado terminal ──────────
+//
+// Hasta esta correccion, project-queue solo escribia a a2a-results.jsonl
+// dentro de la rama `ok` de deliverPending: un result que nunca llega a
+// entregarse (pane que no vuelve, cap de intentos alcanzado) NO dejaba
+// NINGUN rastro en a2a-results.jsonl — el mismo trabajo terminado, pero
+// invisible para el linker/ledger. Medido en el sobre real
+// 996509539944f94d (memorymaster, corr eve-piloto-d006-final-20260829):
+// se reencolo 151 veces sin jamas resolver pane, y aterrizo en
+// a2a-results.jsonl solo porque CADA reenvio de a2a_send lo registraba de
+// nuevo en el emisor — la cola misma nunca lo hizo.
+
+test('T-0350 AC2: un type=result cuya entrega SIEMPRE falla queda igual registrado en a2a-results.jsonl (id, corr, body)', async () => {
+  const base = freshBase();
+  const prior = process.env.WEZBRIDGE_INTEL_DIR;
+  process.env.WEZBRIDGE_INTEL_DIR = base;
+  try {
+    const q = pq.enqueue({ project: 'wezbridge', corr: 'T-0350:fail:1', type: 'result', from_pane: 3, ok: false, body: 'criteria:\n- a: pass — evidencia' }, { base });
+    assert.strictEqual(q.ok, true);
+    // badSend => verifyPromptSubmission siempre 'stuck' => classifyDelivery
+    // NUNCA verifica => la entrada nunca sale de pending.
+    const c = makeConsumer(base, { send: badSend() });
+    const out = await c.drain();
+    assert.strictEqual(out.delivered, 0, 'precondicion: la entrega fallo');
+    const lines = resultsLines(base);
+    assert.strictEqual(lines.length, 1, 'una entrega fallida tiene que registrar igual el cuerpo del result');
+    assert.strictEqual(lines[0].id, q.id, 'la linea registrada tiene que llevar el id del sobre encolado');
+    assert.strictEqual(lines[0].corr, 'T-0350:fail:1');
+    assert.match(lines[0].body, /criteria:/);
+  } finally { process.env.WEZBRIDGE_INTEL_DIR = prior; }
+});
+
+test('T-0350 AC3: el registro no depende del estado de la tarjeta — se registra sin importar ledger/card', async () => {
+  const base = freshBase();
+  const prior = process.env.WEZBRIDGE_INTEL_DIR;
+  process.env.WEZBRIDGE_INTEL_DIR = base;
+  try {
+    // No se crea NINGUNA tarjeta en base/tasks — el corr no resuelve a ningun
+    // card, y aun asi el registro tiene que ocurrir y quedar localizable por corr.
+    pq.enqueue({ project: 'wezbridge', corr: 'T-0350:nocard:1', type: 'result', from_pane: 3, ok: false, body: 'criteria:\n- a: pass — evidencia' }, { base });
+    const c = makeConsumer(base, { send: badSend() });
+    await c.drain();
+    const lines = resultsLines(base);
+    assert.strictEqual(lines.length, 1);
+    assert.strictEqual(lines[0].corr, 'T-0350:nocard:1');
+  } finally { process.env.WEZBRIDGE_INTEL_DIR = prior; }
+});
+
+test('T-0350 AC4: un result que YA viene recorded:true no genera linea aunque la entrega falle', async () => {
+  const base = freshBase();
+  const prior = process.env.WEZBRIDGE_INTEL_DIR;
+  process.env.WEZBRIDGE_INTEL_DIR = base;
+  try {
+    pq.enqueue({ project: 'wezbridge', corr: 'T-0350:already:1', type: 'result', from_pane: 3, ok: false, recorded: true, body: 'criteria:\n- a: pass — evidencia' }, { base });
+    const c = makeConsumer(base, { send: badSend() });
+    await c.drain();
+    assert.strictEqual(resultsLines(base).length, 0, 'el emisor ya lo registro — la cola no puede duplicarlo');
+  } finally { process.env.WEZBRIDGE_INTEL_DIR = prior; }
+});
+
+test('T-0350 AC4: el mismo id nunca escribe dos lineas, ni entre ingest y un drain posterior', async () => {
+  const base = freshBase();
+  const prior = process.env.WEZBRIDGE_INTEL_DIR;
+  process.env.WEZBRIDGE_INTEL_DIR = base;
+  try {
+    const q = pq.enqueue({ project: 'wezbridge', corr: 'T-0350:once:1', type: 'result', from_pane: 3, ok: false, body: 'criteria:\n- a: pass — evidencia' }, { base });
+    const c = makeConsumer(base, { send: badSend() });
+    await c.drain(); // ingest-time record
+    await c.drain(); // second failed attempt — must not re-record
+    await c.drain(); // third failed attempt hits maxAttempts=3, flags+drops
+    const lines = resultsLines(base).filter((l) => l.id === q.id);
+    assert.strictEqual(lines.length, 1, `el id ${q.id} no puede aparecer mas de una vez: ${JSON.stringify(lines)}`);
+  } finally { process.env.WEZBRIDGE_INTEL_DIR = prior; }
+});
+
+test('T-0350 AC5: entrega acotada — tras maxAttempts la entrada FLAGGED (dead-letter), no se reintenta mas', async () => {
+  const base = freshBase();
+  const prior = process.env.WEZBRIDGE_INTEL_DIR;
+  process.env.WEZBRIDGE_INTEL_DIR = base;
+  try {
+    pq.enqueue({ project: 'wezbridge', corr: 'T-0350:cap:1', type: 'result', from_pane: 3, ok: false, body: 'criteria:\n- a: pass — evidencia' }, { base });
+    let t = 0;
+    const c = makeConsumer(base, { send: badSend(), now: () => (t += 10 * 60 * 1000) });
+    await c.drain();
+    const id = Object.keys(c._state.pending)[0];
+    await c.drain();
+    await c.drain(); // third failure hits maxAttempts=3
+    assert.strictEqual(c.status().pending, 0, 'la entrada capeada sale de pending');
+    const flags = JSON.parse(fs.readFileSync(c._files.flags, 'utf8'));
+    assert.ok(flags[id], 'entrada capeada tiene que quedar FLAGGED para revision humana (dead-letter)');
+    const before = resultsLines(base).length;
+    const out4 = await c.drain();
+    assert.strictEqual(out4.delivered, 0, 'una entrada flagged nunca se reintenta');
+    assert.strictEqual(resultsLines(base).length, before, 'y un drain de mas no vuelve a registrar el mismo id');
+  } finally { process.env.WEZBRIDGE_INTEL_DIR = prior; }
+});
+
 test('T-0329c control: submit falso-negativo pero el cuerpo NO esta en el pane => sigue siendo fallo y reintenta', async () => {
   const base = freshBase();
   pq.enqueue({ project: 'wezbridge', corr: 'T-x', type: 'request', from_pane: 0, ok: false, body: 'algo' }, { base });
