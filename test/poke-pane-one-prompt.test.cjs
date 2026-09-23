@@ -83,7 +83,12 @@ test('AC4 (real): poke-pane mapea fragmented -> exit 9 y nunca a 0; Enter nunca 
     const r = spawnSync(process.execPath, [POKE, '--tab-title', 'wb-frag-test', '--text', 'linea uno\nlinea dos\nlinea tres'], {
       env: {
         ...process.env,
-        WEZTERM_BIN: path.join(REPO, 'test', 'mocks', 'wezterm-fragmented-mock.cjs'),
+        // T-0567 fix-up: this child re-runs test/setup.cjs (inherited
+        // NODE_OPTIONS), which now ALWAYS forces WEZTERM_BIN to the default
+        // mock — a plain WEZTERM_BIN override here would get clobbered.
+        // WEZBRIDGE_TEST_WEZTERM_BIN is setup.cjs's own escape hatch for a
+        // per-test double and survives that re-run.
+        WEZBRIDGE_TEST_WEZTERM_BIN: path.join(REPO, 'test', 'mocks', 'wezterm-fragmented-mock.cjs'),
         WEZBRIDGE_MOCK_STATE: path.join(stateDir, 'state.json'),
         WEZBRIDGE_INTEL_DIR: intelDir,
       },
@@ -104,9 +109,16 @@ test('AC4 (real): poke-pane mapea fragmented -> exit 9 y nunca a 0; Enter nunca 
 const REPO = path.join(__dirname, '..');
 const POKE = path.join(REPO, 'scripts', 'poke-pane.cjs');
 const DOUBLE = path.join(REPO, 'test', 'fixtures', 'tui-double.cjs');
-const WEZTERM = process.env.WEZTERM_BIN || 'wezterm';
+// T-0567 fix-up: setup.cjs now ALWAYS forces WEZTERM_BIN to the test double,
+// so this real-mux test can no longer rely on an ambient WEZTERM_BIN to find
+// a real binary — and must never run unattended against the operator's live
+// mux. Opt in explicitly with WEZBRIDGE_LIVE_WEZTERM=1; the binary comes from
+// WEZBRIDGE_LIVE_WEZTERM_BIN (or PATH `wezterm`), never the forced WEZTERM_BIN.
+const LIVE_OPT_IN = process.env.WEZBRIDGE_LIVE_WEZTERM === '1';
+const WEZTERM = process.env.WEZBRIDGE_LIVE_WEZTERM_BIN || 'wezterm';
 
 function muxEnv() {
+  if (!LIVE_OPT_IN) return null;
   try {
     const wez = require('../src/wezterm.cjs');
     const sock = wez.muxSocketPath();
@@ -130,7 +142,7 @@ function liveAvailable() {
   } catch { return null; }
 }
 
-test('AC3 live: un payload de 3 lineas llega a un TUI ESTRICTO (cada salto = Enter) como EXACTAMENTE UN prompt; composer vacio; exit 0; el log declara el aplanado', { skip: !liveAvailable() && 'wezterm mux no alcanzable' }, () => {
+test('AC3 live: un payload de 3 lineas llega a un TUI ESTRICTO (cada salto = Enter) como EXACTAMENTE UN prompt; composer vacio; exit 0; el log declara el aplanado', { skip: !liveAvailable() && (LIVE_OPT_IN ? 'wezterm mux no alcanzable' : 'live wezterm test; set WEZBRIDGE_LIVE_WEZTERM=1 to run against a real mux') }, () => {
   const env = liveAvailable();
   const projName = `t0303live${Date.now().toString(36)}`;
   const dir = path.join(os.tmpdir(), projName);

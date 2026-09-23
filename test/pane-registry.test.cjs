@@ -136,8 +136,15 @@ test('AC3 poke-pane --role: resuelve por registro contra el listado mux y muere 
 });
 
 // ---------------------------------------------------------------- AC5 live
-const WEZTERM = process.env.WEZTERM_BIN || 'wezterm';
+// T-0567 fix-up: setup.cjs now ALWAYS forces WEZTERM_BIN to the test double,
+// so this real-mux test can no longer rely on an ambient WEZTERM_BIN to find
+// a real binary — and must never run unattended against the operator's live
+// mux. Opt in explicitly with WEZBRIDGE_LIVE_WEZTERM=1; the binary comes from
+// WEZBRIDGE_LIVE_WEZTERM_BIN (or PATH `wezterm`), never the forced WEZTERM_BIN.
+const LIVE_OPT_IN = process.env.WEZBRIDGE_LIVE_WEZTERM === '1';
+const WEZTERM = process.env.WEZBRIDGE_LIVE_WEZTERM_BIN || 'wezterm';
 function muxEnv() {
+  if (!LIVE_OPT_IN) return null;
   try {
     const sock = require('../src/wezterm.cjs').muxSocketPath();
     if (!sock) return null;
@@ -148,7 +155,7 @@ const cli = (env, a, input) => execFileSync(WEZTERM, ['cli', '--prefer-mux', '--
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 function live() { const env = muxEnv(); if (!env) return null; try { const list = JSON.parse(cli(env, ['list', '--format', 'json'])); return Array.isArray(list) && list.length > 0 ? env : null; } catch { return null; } }
 
-test('AC5 live: un pane real registra su rol desde ADENTRO (hook), poke-pane --role le entrega verificado, y al morir el pane el registro se limpia solo', { skip: !live() && 'wezterm mux no alcanzable' }, () => {
+test('AC5 live: un pane real registra su rol desde ADENTRO (hook), poke-pane --role le entrega verificado, y al morir el pane el registro se limpia solo', { skip: !live() && (LIVE_OPT_IN ? 'wezterm mux no alcanzable' : 'live wezterm test; set WEZBRIDGE_LIVE_WEZTERM=1 to run against a real mux') }, () => {
   const env = live();
   const dir = tmpReg();
   const role = `t0322r${Date.now().toString(36)}`;
