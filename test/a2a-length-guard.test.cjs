@@ -88,7 +88,9 @@ test('a2a_send calls the guard, and calls it BEFORE sending', async (t) => {
   t.after(() => fs.rmSync(stateDir, { recursive: true, force: true }));
   const env = {
     WEZBRIDGE_INTEL_DIR: dir,
-    WEZBRIDGE_WEZTERM_BIN: path.join(__dirname, 'mocks', 'wezterm-echo-mock.cjs'),
+    // T-0400 fix-up: WEZBRIDGE_WEZTERM_BIN is always clobbered by setup.cjs in
+    // the child now; route the echo double through WEZBRIDGE_TEST_WEZTERM_BIN.
+    WEZBRIDGE_TEST_WEZTERM_BIN: path.join(__dirname, 'mocks', 'wezterm-echo-mock.cjs'),
     WEZBRIDGE_MOCK_ECHO_STATE: path.join(stateDir, 'state.json'),
   };
   const corr = 'len-guard-real-1';
