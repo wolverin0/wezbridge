@@ -70,7 +70,13 @@ test('AC4 pasteLandedIntact: cabeza => intact, colapsado => collapsed, otra line
 // la cabeza del payload — el mock estatico de setup.cjs jamas produce
 // 'fragmented': su get-text es constante y sin marcador de composer) y
 // asertar sobre el exit code y el log reales.
-test('AC4 (real): poke-pane mapea fragmented -> exit 9 y nunca a 0', () => {
+// T-0473: entre el chequeo y el die(9) ahora vive el self-clean del residuo
+// (Ctrl+C + verificacion de ownership) — el fragmento del mock ("unrelated
+// leftover fragment") NO es un tail de `payload`, asi que composerStillHolds
+// lo rechaza y la corrida real cae por la rama "left untouched" SIN mandar
+// Ctrl+C ni Enter; se asertan ambos hechos reales (log real, no grep de
+// fuente) en vez de solo el exit code.
+test('AC4 (real): poke-pane mapea fragmented -> exit 9 y nunca a 0; Enter nunca se manda y el residuo ajeno queda intocado', () => {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-frag-state-'));
   const intelDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-frag-intel-'));
   try {
@@ -86,6 +92,8 @@ test('AC4 (real): poke-pane mapea fragmented -> exit 9 y nunca a 0', () => {
     assert.equal(r.status, 9, `poke-pane exit ${r.status}, esperaba 9 (fragmented): ${r.stdout}${r.stderr}`);
     assert.match(r.stdout, /paste did not land as ONE prompt/, 'el log tiene que nombrar la falla de integridad');
     assert.doesNotMatch(r.stdout, /VERIFIED/, 'un fragmented jamas puede reportar VERIFIED — el Enter nunca se manda');
+    assert.match(r.stdout, /Enter NOT sent/, 'T-0473: el log tiene que declarar explicitamente que el Enter real nunca se mando');
+    assert.match(r.stdout, /residue left untouched: not provably this run's own payload/, 'T-0473: un fragmento AJENO al payload de esta corrida se deja intocado (T-0242/T-0323), sin Ctrl+C');
   } finally {
     fs.rmSync(stateDir, { recursive: true, force: true });
     fs.rmSync(intelDir, { recursive: true, force: true });
