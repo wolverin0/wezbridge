@@ -354,3 +354,84 @@ test('T-0492 E: done/cancelled nunca crean una decision aunque blocked_by siga e
   const r2 = await e.hub.syncDecisions([card({ id: 'T-1002', state: 'cancelled' })]);
   assert.equal(r2.created, 0, 'cancelled no gatea');
 });
+
+// ---------------------------------------------------------------------------
+// T-0494 — la nota de SP solo llevaba el blocker de la tarjeta AL CREARSE: si
+// infra la cambiaba despues (misma tarjeta, nueva pregunta), los syncs
+// siguientes nunca la actualizaban. Medido 20/09: 4/20 tareas abiertas del
+// operador en SP con un blocker superado (T-0480, T-0472, T-0420, T-0346).
+// Evidence: _intel/evidence/wezbridge/2026-09-20-pregunta-congelada-en-sp.md
+test('T-0494 AC1 fail-first: la tarjeta ya tiene entrada en map.json y el blocker cambio despues de createdAt => el siguiente sync pone el blocker NUEVO en la nota', async () => {
+  const e = env();
+  const c1 = card({ id: 'T-0480', blocker: 'operator gate: pregunta vieja' });
+  const r1 = await e.hub.syncDecisions([c1]);
+  assert.equal(r1.created, 1);
+  const t = () => e.plugin.model.tasks.find((x) => x.title.startsWith('T-0480'));
+  assert.match(t().notes, /pregunta vieja/, 'la nota arranca con el blocker original');
+
+  // infra cambia la pregunta sin que la tarjeta se des-gatee (mismo escenario que T-0480/T-0472/T-0420/T-0346)
+  const c2 = { ...c1, blocker: 'operator gate: pregunta NUEVA, la vieja ya no aplica' };
+  await e.hub.syncDecisions([c2]);
+  assert.match(t().notes, /pregunta NUEVA, la vieja ya no aplica/, 'el sync tiene que refrescar el blocker en la nota');
+  assert.doesNotMatch(t().notes, /pregunta vieja/, 'el blocker superado no puede seguir en la nota');
+});
+
+test('T-0494 AC1 legacy: una entrada de map.json de ANTES de este fix (sin campo blocker guardado) tambien se autocorrige en el primer sync', async () => {
+  const e = envWithBoard();
+  const c1 = card({ id: 'T-0472', blocker: 'pregunta original' });
+  await e.hub.syncDecisions([c1]);
+  // simula el map.json viejo: sin el campo "blocker" que este fix agrega
+  const map = sp.loadMap(e.intel);
+  delete map['fleet:T-0472'].blocker;
+  fs.writeFileSync(sp.mapFile(e.intel), JSON.stringify(map, null, 2));
+  const t = () => e.plugin.model.tasks.find((x) => x.title.startsWith('T-0472'));
+  // el operador ya resolvio la pregunta original hace rato; infra puso una nueva
+  const c2 = { ...c1, blocker: 'pregunta post-fix' };
+  await e.hub.syncDecisions([c2]);
+  assert.match(t().notes, /pregunta post-fix/, 'entrada legacy sin campo blocker igual se refresca');
+});
+
+test('T-0494 AC2 idempotencia: dos syncs SEGUIDOS sin cambio de blocker no agregan ni pierden ninguna linea (estado, result, /act)', async () => {
+  const e = envWithBoard();
+  fs.mkdirSync(path.join(e.intel, 'results'), { recursive: true });
+  const c = card({ id: 'T-0420', blocker: 'pregunta estable' });
+  await e.hub.syncDecisions([c]);
+  const running = { ...c, state: 'running', blocked_by: 'agent', gate: null };
+  await e.hub.syncOutcomes([running]);
+  fs.writeFileSync(path.join(e.intel, 'results', 'T-0420-result.md'), '# T-0420\ncriteria:\n- AC1: pass - ok\n');
+  await e.hub.syncOutcomes([running]);
+  const t = () => e.plugin.model.tasks.find((x) => x.title.startsWith('T-0420'));
+  const notesBefore = t().notes;
+  const notesAppendedBefore = [...sp.loadMap(e.intel)['fleet:T-0420'].notesAppended];
+
+  // dos syncs de mas, mismo blocker: nada tiene que moverse
+  await e.hub.syncDecisions([running]);
+  await e.hub.syncDecisions([running]);
+
+  const notesAfter = t().notes;
+  const notesAppendedAfter = sp.loadMap(e.intel)['fleet:T-0420'].notesAppended;
+  assert.equal(notesAfter, notesBefore, 'sin cambio de blocker la nota no se toca');
+  assert.equal(notesAfter.length, notesBefore.length, 'largo identico');
+  assert.deepEqual(notesAppendedAfter, notesAppendedBefore, 'appendNoteOnce keys intactas (estado, result, /act)');
+});
+
+test('T-0494 AC4 check-notes: detecta la tarjeta con blocker superado y NO detecta la que esta al dia', async () => {
+  const e = env();
+  const stale = card({ id: 'T-0346', blocker: 'pregunta vieja de T-0346' });
+  await e.hub.syncDecisions([stale]);
+  const fresh = card({ id: 'T-0347', blocker: 'pregunta al dia' });
+  await e.hub.syncDecisions([fresh]);
+
+  assert.deepEqual(e.hub.checkNotes([stale, fresh]).map((s) => s.id).sort(), [], 'recien creadas: ninguna esta stale');
+
+  // infra cambia el blocker de T-0346 pero todavia no corrio el sync que lo refresca
+  const staleNow = { ...stale, blocker: 'pregunta NUEVA de T-0346' };
+  const report = e.hub.checkNotes([staleNow, fresh]);
+  assert.deepEqual(report.map((s) => s.id), ['T-0346'], 'solo la tarjeta con blocker desactualizado aparece');
+  assert.match(report[0].noteHead, /pregunta vieja de T-0346/);
+  assert.match(report[0].blockerHead, /pregunta NUEVA de T-0346/);
+
+  // y despues de refrescar, check-notes queda limpio
+  await e.hub.syncDecisions([staleNow, fresh]);
+  assert.deepEqual(e.hub.checkNotes([staleNow, fresh]), [], 'refrescada => ya no aparece');
+});
