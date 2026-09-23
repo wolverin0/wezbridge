@@ -55,5 +55,8 @@ test('T-0303 AC6: the fix is not a bigger timeout or added sleeps', () => {
   const timeouts = [...source.matchAll(/timeout:\s*(\d+)/g)].map((m) => Number(m[1]));
   assert.ok(timeouts.every((t) => t <= 20000), `a timeout grew past 20000ms: ${timeouts}`);
   const pauses = [...source.matchAll(/pause\((\d+)\)/g)].map((m) => Number(m[1]));
-  assert.deepEqual(pauses, [700, 700, 900], `the settle waits are the three that existed (700 after paste, 700 after Enter, 900 after retry), not new sleeps: ${pauses}`);
+  // T-0473 added ONE new settle wait (500ms, after the FAIL(9) self-clean's own
+  // Ctrl+C, only reached on the fragmented path) — the original three (700 after
+  // paste, 700 after Enter, 900 after retry) are unchanged.
+  assert.deepEqual(pauses, [700, 500, 700, 900], `the settle waits are the original three plus T-0473's post-Ctrl+C 500ms, not new unrelated sleeps: ${pauses}`);
 });

@@ -9,6 +9,7 @@
  *   node scripts/poke-pane.cjs --project brlite --text "do the thing"
  *   node scripts/poke-pane.cjs --project brlite --file msg.txt
  *   node scripts/poke-pane.cjs --project brlite --text "..." --dry-run
+ *   node scripts/poke-pane.cjs --project brlite --text "<long>" --allow-long
  *
  * WHY BY PROJECT AND NOT BY PANE ID: pane ids are reused and reassigned. A
  * scheduled job holding a stored id eventually poked a completely unrelated
@@ -24,7 +25,16 @@
  *              8 composer unreadable · 9 paste did not land as ONE prompt (Enter NOT sent) ·
  *              10 composer already held someone else's unsent text (nothing written) ·
  *              11 --role: no valid registry for that role (missing, pane dead, cwd changed, pid dead, ambiguous)
- *              12 attempt audit unavailable; no terminal write performed
+ *              12 attempt audit unavailable; no terminal write performed ·
+ *              13 payload over the measured ceiling (src/poke-payload-ceiling.cjs) — refused before trying, use --allow-long
+ *
+ * T-0473 (2026-09-23): FAIL(9) used to leave its own residue "for the operator"
+ * and claim a keystroke was needed to clear it — FALSE (measured: a single
+ * Ctrl+C clears it, session intact). It now Ctrl+C's its OWN residue and
+ * VERIFIES the composer is empty before exiting 9, but ONLY when what's
+ * showing is provably a fragment of the payload THIS RUN just wrote
+ * (composerStillHolds against `payload`) — text this run cannot prove it wrote
+ * is left untouched (T-0242/T-0323: exit 10 still refuses without writing).
  * T-0469: attempted/failed/submitted metadata uses the existing actions.jsonl.
  * Full bodies are not logged; hash + corr + attempt UUID join retry observations.
  * A final audit failure is loud but does not turn a sent prompt into a replay request.
@@ -46,6 +56,7 @@
 const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { pokeCeilingWarning } = require('../src/poke-payload-ceiling.cjs');
 
 const WEZTERM = process.env.WEZTERM_BIN || 'wezterm';
 let auditState = null;
@@ -95,7 +106,7 @@ if (require.main === module && !has('dry-run')) {
   if (!auditPoke('attempted', null)) die(12, 'cannot record attempt; nothing written to terminal');
 }
 if (require.main === module && ((!project && !tabTitle && !role) || !text)) {
-  die(2, 'usage: (--role <r> | --project <name> | --tab-title <exact-name> | combinations) (--text "..." | --file <path>) [--dry-run]');
+  die(2, 'usage: (--role <r> | --project <name> | --tab-title <exact-name> | combinations) (--text "..." | --file <path>) [--dry-run] [--allow-long]');
 }
 
 // T-0260 (2026-09-02): UN solo espacio de pane_id, el del mux. Medido: el mismo
@@ -252,7 +263,7 @@ try {
     die(10, `pane ${target.pane_id} operator-question requires an operator response; nothing written`);
   }
   if (composerHoldsForeignText(before)) {
-    die(10, `pane ${target.pane_id} composer already holds unsent text ${JSON.stringify(composerContent(before).slice(0, 80))} — nothing written; a key from the operator unblocks it`);
+    die(10, `pane ${target.pane_id} composer already holds unsent text ${JSON.stringify(composerContent(before).slice(0, 80))} — nothing written; not this run's own text (T-0242/T-0323), so it is left alone rather than cleared`);
   }
 } catch (e) {
   if (e && typeof e === 'object' && e.status === 10) process.exit(10);
@@ -280,6 +291,11 @@ const payload = trimmed.replace(/\s*\r?\n\s*/g, ' ⏎ ');
 if (lineCount > 1) {
   console.log(`${new Date().toISOString()} poke-pane FLATTENED: ${lineCount} lines -> 1 line (${payload.length} chars) with " ⏎ " between them, so the composer takes it as ONE prompt on any TUI`);
 }
+
+// ---------- T-0473 AC5: measured ceiling, refuse before trying blind ----------
+const ceilingWarning = pokeCeilingWarning(payload.length, has('allow-long'));
+if (ceilingWarning) die(13, ceilingWarning);
+
 try {
   sendViaStdin(target.pane_id, payload, target._socketEnv, { noPaste: false });
 } catch (e) {
@@ -295,10 +311,33 @@ try {
   die(8, `composer verification unavailable for pane ${target.pane_id}: ${String(e.message || e).split('\n')[0]}`);
 }
 if (landed === 'fragmented') {
-  // Enter here is exactly what fragments/hybridises the prompt. Leave it visible.
+  // Enter here is exactly what fragments/hybridises the prompt.
   let shown = '';
-  try { shown = composerContent(readTail()).slice(0, 80); } catch { /* best effort */ }
-  die(9, `paste did not land as ONE prompt in pane ${target.pane_id}: composer shows ${JSON.stringify(shown)} instead of the payload head — Enter NOT sent, text left in the composer for the operator`);
+  let afterTail = '';
+  try { afterTail = readTail(); shown = composerContent(afterTail).slice(0, 80); } catch { /* best effort */ }
+  // T-0473: self-clean OWN residue instead of leaving it "for the operator" — that
+  // claim was FALSE (measured 15/09: a single Ctrl+C clears it, session intact,
+  // Ctrl+U 0x15 is NOT bound). "Proof it wrote it": composerStillHolds is the same
+  // predicate used above to detect the fragmentation itself — the composer was
+  // confirmed clear of foreign text right before THIS run's own paste (the T-0323
+  // guard above), so if what's showing now is a fragment of `payload`, only this
+  // run's own bytes can have put it there and only this run may erase it. Anything
+  // that fails that check is left untouched (T-0242/T-0323).
+  let cleanupNote = ' — text left in composer, ownership unclear (no readable tail): needs a look';
+  try {
+    if (afterTail && composerStillHolds(afterTail, payload)) {
+      sendViaStdin(target.pane_id, '\x03', target._socketEnv); // Ctrl+C: clears, never submits
+      pause(500);
+      cleanupNote = composerContent(readTail()) === ''
+        ? ' — residue self-cleared (Ctrl+C) and verified empty; no operator action needed'
+        : ' — residue self-clean attempted (Ctrl+C) but could not be verified empty; needs a look';
+    } else if (afterTail) {
+      cleanupNote = ' — residue left untouched: not provably this run\'s own payload (T-0242/T-0323)';
+    }
+  } catch (e) {
+    cleanupNote = ` — residue self-clean failed: ${String(e.message || e).split('\n')[0]}`;
+  }
+  die(9, `paste did not land as ONE prompt in pane ${target.pane_id}: composer shows ${JSON.stringify(shown)} instead of the payload head — Enter NOT sent${cleanupNote}`);
 }
 if (landed === 'empty') {
   console.log(`${new Date().toISOString()} poke-pane NOTE: pane ${target.pane_id} has no readable composer line (shell or non-TUI): paste integrity unverified, submitting anyway`);
