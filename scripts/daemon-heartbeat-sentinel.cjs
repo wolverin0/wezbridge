@@ -165,6 +165,33 @@ async function deliverPoke(message, recheck) {
 }
 
 /**
+ * T-0526: deliver `message` via deliverPoke, and if that didn't land
+ * (delivered !== true — no pane, refused, or thrown), fall back to
+ * ntfy/Telegram in the SAME run so a missing orchestrator pane can no longer
+ * swallow an alert silently (157 of 199 alerts since 2026-08-22 were lost
+ * exactly this way — see file header). Dependencies are injectable so tests
+ * exercise this without a pane, a network call, or a subprocess.
+ */
+async function deliverAlert(message, recheck, { deliverPokeFn = deliverPoke, sendFallbackFn } = {}) {
+  let delivery;
+  try {
+    delivery = await deliverPokeFn(message, recheck);
+  } catch (err) {
+    delivery = { delivered: false, reason: String(err && err.message).slice(0, 200) };
+  }
+  let fallback = null;
+  if (delivery.delivered !== true) {
+    const sendFallback = sendFallbackFn || require(path.join(REPO, 'src', 'alert-fallback.cjs')).sendFallback;
+    try {
+      fallback = await sendFallback(message);
+    } catch (err) {
+      fallback = { ok: false, error: String(err && err.message).slice(0, 200) };
+    }
+  }
+  return { delivery, fallback };
+}
+
+/**
  * T-0529: best-effort touch of the VM dead-man heartbeat. Bounded timeout,
  * never throws, never blocks the daemon-liveness verdict this file exists
  * for — a hung SSH must not turn into a missed poke.
@@ -216,18 +243,16 @@ async function main() {
   let { heartbeat, liveness, decision } = observe();
 
   let delivery = null;
+  let fallback = null;
   if (decision.alert) {
-    try {
-      delivery = await deliverPoke(decision.message, () => {
-        ({ heartbeat, liveness, decision } = observe());
-        return decision.alert ? decision.message : null;
-      });
-    } catch (err) {
-      delivery = { delivered: false, reason: String(err && err.message).slice(0, 200) };
-    }
+    ({ delivery, fallback } = await deliverAlert(decision.message, () => {
+      ({ heartbeat, liveness, decision } = observe());
+      return decision.alert ? decision.message : null;
+    }));
     logLine({
       ts: new Date().toISOString(), verdict: decision.verdict, message: decision.message,
       heartbeat_ts: heartbeat && heartbeat.ts, daemon_up: daemon.up, delivery,
+      ...(fallback ? { fallback } : {}),
     });
   }
   if (decision.recovered) {
@@ -266,9 +291,14 @@ async function main() {
     deadman_touch: deadmanTouch,
   });
 
-  const line = `daemon-sentinel: ${decision.verdict}${decision.alert ? ` — poked (${JSON.stringify(delivery)})` : ''}`;
+  const line = `daemon-sentinel: ${decision.verdict}${decision.alert ? ` — poked (${JSON.stringify(delivery)})${fallback ? ` fallback (${JSON.stringify(fallback)})` : ''}` : ''}`;
   console.log(line);
-  process.exitCode = decision.verdict === 'healthy' ? 0 : 1;
+  // T-0526: both the primary poke AND the fallback failing is the exact
+  // silent-loss defect this card exists to kill — that gets its own exit
+  // code (3) so a scheduled-task failure history distinguishes "daemon is
+  // down, alert delivered" (1) from "daemon is down, NOBODY WAS TOLD" (3).
+  const bothChannelsFailed = decision.alert && delivery && delivery.delivered !== true && fallback && fallback.ok !== true;
+  process.exitCode = bothChannelsFailed ? 3 : (decision.verdict === 'healthy' ? 0 : 1);
 }
 
 if (require.main === module) {
@@ -283,4 +313,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { evaluate, touchVmHeartbeat, REPOKE_MS, HTTP_FAIL_STREAK_ALERT, SENTINEL_PROBE_TIMEOUT_MS };
+module.exports = { evaluate, deliverAlert, touchVmHeartbeat, REPOKE_MS, HTTP_FAIL_STREAK_ALERT, SENTINEL_PROBE_TIMEOUT_MS };

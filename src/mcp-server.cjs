@@ -2081,6 +2081,24 @@ async function handleBridgeHealth() {
   health.inbox_starvation = inbox;
   health.alerts = [...(health.alerts || []), ...inbox.alerts];
   if (inbox.alerts.length) health.ok = false;
+
+  // T-0526: surface the sentinel's own out-of-band evidence — its dead-man
+  // touch to the VM, and the last fallback delivery it attempted — so a
+  // session can see both without SSHing in or tailing the jsonl by hand.
+  try {
+    const p = require('node:path');
+    const evidenceDir = p.join(process.env.WEZBRIDGE_INTEL_DIR || p.join(__dirname, '..', '..', '_intel'), 'evidence', 'wezbridge');
+    try { health.deadman_touch = JSON.parse(fs.readFileSync(p.join(evidenceDir, 'deadman-touch.json'), 'utf8')); }
+    catch { health.deadman_touch = 'unknown (no deadman-touch.json yet)'; }
+    try {
+      const lines = fs.readFileSync(p.join(evidenceDir, 'daemon-sentinel.jsonl'), 'utf8').trim().split('\n');
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const entry = JSON.parse(lines[i]);
+        if (entry.fallback) { health.last_fallback = entry.fallback; break; }
+      }
+    } catch { /* no sentinel log yet, or fallback never fired */ }
+  } catch { /* diagnostic only, never fail the health probe */ }
+
   return { content: [{ type: 'text', text: JSON.stringify(health, null, 2) }] };
 }
 
