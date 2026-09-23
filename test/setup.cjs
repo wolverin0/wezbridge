@@ -22,6 +22,11 @@ if (testBin && testBin.endsWith('.cjs') && path.isAbsolute(testBin)
 } else {
   process.env.WEZBRIDGE_WEZTERM_BIN = mockPath;
 }
+// T-0567: scripts/poke-pane.cjs (and other scripts) read the plain
+// WEZTERM_BIN var, not WEZBRIDGE_WEZTERM_BIN — force it to the SAME
+// resolved mock so an ambient WEZTERM_BIN pointing at a real wezterm
+// binary can never leak into a spawned script during `npm test`.
+process.env.WEZTERM_BIN = process.env.WEZBRIDGE_WEZTERM_BIN;
 // T-0525: daemons started by the suite must not poll the operator's real Orca.
 if (process.env.WEZBRIDGE_ORCA_CENSUS === undefined) process.env.WEZBRIDGE_ORCA_CENSUS = '0';
 
