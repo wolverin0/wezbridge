@@ -45,7 +45,7 @@ async function main() {
     newFlags += out.flagged || 0;
     console.log(`queue-drain[${project}]${dryRun ? ' (dry-run)' : ''}: ` +
       `ingested=${out.added || 0} delivered=${out.delivered || 0} dropped=${out.dropped || 0} flagged=${out.flagged || 0} ` +
-      `pending=${st.pending} oldest=${st.pendingOldestMinutes}min totalFlagged=${st.flagged}`);
+      `pending=${st.pending} uncertain=${st.uncertain || 0} locked=${Boolean(out.locked)} oldest=${st.pendingOldestMinutes}min totalFlagged=${st.flagged}`);
   }
   return newFlags > 0 ? 1 : 0;
 }
