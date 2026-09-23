@@ -698,6 +698,12 @@ function createWaker(opts) {
       noteUnreachable('(unresolved)', 'no-target');
       return;
     }
+    // T-0419: a resolved target means the destination is not "unresolved"
+    // this tick — clear that sentinel's clock the same way a resolved
+    // target's own clock is cleared below, or a transient resolve blip that
+    // later recovers leaves a stale start time that a LATER unrelated blip
+    // reads as "unreachable ever since", flagging it immediately.
+    delete state.notIdleSince['(unresolved)'];
     const target = panes.find((p) => (p.paneId ?? p.pane_id) === targetId);
     const status = target ? target.status : 'unknown';
     if (status !== 'idle') {
