@@ -11,7 +11,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { evaluate, REPOKE_MS } = require('../scripts/daemon-heartbeat-sentinel.cjs');
+const { evaluate, deliverAlert, REPOKE_MS } = require('../scripts/daemon-heartbeat-sentinel.cjs');
 const { assessLiveness } = require('../src/daemon-status.cjs');
 
 const NOW = Date.parse('2026-08-22T12:00:00Z');
@@ -110,4 +110,57 @@ test('recovery closes the episode and reports it', () => {
   assert.strictEqual(after.verdict, 'healthy');
   assert.strictEqual(after.recovered, true, 'the close of an episode is itself evidence');
   assert.deepStrictEqual(after.newState, {});
+});
+
+// ── T-0526: fallback delivery when deliverPoke() could not reach a pane ──
+// Senders are injected — these tests hit deliverAlert() directly and never
+// touch the network, per AC4. Removing the fallback call from deliverAlert
+// is exactly what must make test (a) fail.
+test('T-0526 AC4a: delivered:false triggers the fallback with the same message', async () => {
+  let fallbackCalledWith = null;
+  const result = await deliverAlert('DAEMON DOWN — test', null, {
+    deliverPokeFn: async () => ({ delivered: false, reason: 'no orchestrator pane found' }),
+    sendFallbackFn: async (message) => { fallbackCalledWith = message; return { channel: 'ntfy', ok: true }; },
+  });
+  assert.strictEqual(fallbackCalledWith, 'DAEMON DOWN — test', 'fallback must receive the same alert text');
+  assert.deepStrictEqual(result.fallback, { channel: 'ntfy', ok: true });
+  assert.strictEqual(result.delivery.delivered, false);
+});
+
+test('T-0526 AC4b: delivered:true does NOT call the fallback', async () => {
+  let fallbackCalled = false;
+  const result = await deliverAlert('DAEMON DOWN — test', null, {
+    deliverPokeFn: async () => ({ delivered: true, paneId: 42 }),
+    sendFallbackFn: async () => { fallbackCalled = true; return { channel: 'ntfy', ok: true }; },
+  });
+  assert.strictEqual(fallbackCalled, false, 'a successful pane poke must not also fire the fallback channel');
+  assert.strictEqual(result.fallback, null);
+});
+
+test('T-0526 AC4c: no fallback channel configured is logged with a reason, not swallowed', async () => {
+  const result = await deliverAlert('DAEMON DOWN — test', null, {
+    deliverPokeFn: async () => ({ delivered: false, reason: 'no orchestrator pane found' }),
+    sendFallbackFn: async () => ({ ok: false, reason: 'no fallback channel configured' }),
+  });
+  assert.deepStrictEqual(result.fallback, { ok: false, reason: 'no fallback channel configured' });
+});
+
+test('T-0526: deliverPoke throwing still runs the fallback (never crashes the sentinel)', async () => {
+  let fallbackCalled = false;
+  const result = await deliverAlert('DAEMON DOWN — test', null, {
+    deliverPokeFn: async () => { throw new Error('wezterm CLI exploded'); },
+    sendFallbackFn: async () => { fallbackCalled = true; return { channel: 'ntfy', ok: true }; },
+  });
+  assert.strictEqual(result.delivery.delivered, false);
+  assert.match(result.delivery.reason, /wezterm CLI exploded/);
+  assert.strictEqual(fallbackCalled, true, 'a thrown deliverPoke is still an undelivered alert');
+});
+
+test('T-0526: sendFallback throwing is caught, never propagates', async () => {
+  const result = await deliverAlert('DAEMON DOWN — test', null, {
+    deliverPokeFn: async () => ({ delivered: false, reason: 'no orchestrator pane found' }),
+    sendFallbackFn: async () => { throw new Error('ntfy DNS lookup failed'); },
+  });
+  assert.strictEqual(result.fallback.ok, false);
+  assert.match(result.fallback.error, /ntfy DNS lookup failed/);
 });
