@@ -60,12 +60,36 @@ test('AC4 pasteLandedIntact: cabeza => intact, colapsado => collapsed, otra line
   assert.equal(composerContent(box('│ ❯ hola   │')), 'hola', 'bordes de los dos lados fuera');
 });
 
-test('AC4 poke-pane mapea fragmented -> exit 9 y nunca a 0 (contrato de salida, leido del fuente)', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'poke-pane.cjs'), 'utf8');
-  assert.match(src, /if \(landed === 'fragmented'\) \{[\s\S]{0,400}die\(9,/, 'fragmented tiene que morir con 9 antes de mandar el Enter');
-  const idxFrag = src.indexOf("if (landed === 'fragmented')");
-  const idxEnter = src.indexOf("sendViaStdin(target.pane_id, '\\r', target._socketEnv)");
-  assert.ok(idxFrag > 0 && idxEnter > idxFrag, 'el chequeo de integridad va ANTES del Enter');
+// T-0400: era un chequeo de fuente (regex sobre el bloque `if (landed ===
+// 'fragmented')` + comparacion de indices contra el Enter). Un `if (false)`
+// alrededor del `die(9, ...)` real deja ambos literales en su mismo lugar del
+// archivo — el regex y la comparacion de indices siguen viendo el texto,
+// aunque el guard nunca corra. Reescrito para invocar poke-pane.cjs DE VERDAD
+// contra test/mocks/wezterm-fragmented-mock.cjs (el unico doble de este repo
+// cuyo get-text, DESPUES del paste, muestra un composer con texto que NO es
+// la cabeza del payload — el mock estatico de setup.cjs jamas produce
+// 'fragmented': su get-text es constante y sin marcador de composer) y
+// asertar sobre el exit code y el log reales.
+test('AC4 (real): poke-pane mapea fragmented -> exit 9 y nunca a 0', () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-frag-state-'));
+  const intelDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-frag-intel-'));
+  try {
+    const r = spawnSync(process.execPath, [POKE, '--tab-title', 'wb-frag-test', '--text', 'linea uno\nlinea dos\nlinea tres'], {
+      env: {
+        ...process.env,
+        WEZTERM_BIN: path.join(REPO, 'test', 'mocks', 'wezterm-fragmented-mock.cjs'),
+        WEZBRIDGE_MOCK_STATE: path.join(stateDir, 'state.json'),
+        WEZBRIDGE_INTEL_DIR: intelDir,
+      },
+      encoding: 'utf8', timeout: 20000,
+    });
+    assert.equal(r.status, 9, `poke-pane exit ${r.status}, esperaba 9 (fragmented): ${r.stdout}${r.stderr}`);
+    assert.match(r.stdout, /paste did not land as ONE prompt/, 'el log tiene que nombrar la falla de integridad');
+    assert.doesNotMatch(r.stdout, /VERIFIED/, 'un fragmented jamas puede reportar VERIFIED — el Enter nunca se manda');
+  } finally {
+    fs.rmSync(stateDir, { recursive: true, force: true });
+    fs.rmSync(intelDir, { recursive: true, force: true });
+  }
 });
 
 // ---------------------------------------------------------------- Parte 2: live
