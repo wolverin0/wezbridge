@@ -1,0 +1,31 @@
+diff --git a/lane-guard.cjs b/lane-guard.cjs
+index 616dd59..13a3822 100644
+--- a/lane-guard.cjs
++++ b/lane-guard.cjs
+@@ -110,10 +110,26 @@ function deny(tool, reason, extra) {
+   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } };
+ }
+
++// T-0568: catastrophic-command guard (taskkill /IM, Stop-Process -Name, pkill, shutdown, ...).
++// Runs for EVERYONE (orchestrator AND subagents), before the agent_id early return below, and
++// fails CLOSED on Bash/PowerShell if the module can't be loaded. Rule set lives in wezbridge
++// (versioned + tested): see wezbridge/src/catastrophic-commands.cjs and
++// wezbridge/test/catastrophic-commands.test.cjs.
++const CATASTROPHIC_MODULE = 'G:/_OneDrive/OneDrive/Desktop/Py Apps/wezbridge/src/catastrophic-commands.cjs';
++
+ let CURRENT_TOOL = '';
+ function main() {
+   const input = readStdin();
+   CURRENT_TOOL = input.tool_name || '';
++  const toolC = input.tool_name || '';
++  if (toolC === 'Bash' || toolC === 'PowerShell') {
++    const cmdC = (input.tool_input || {}).command || '';
++    let classify;
++    try { ({ classifyCatastrophic: classify } = require(CATASTROPHIC_MODULE)); }
++    catch (e) { return deny(toolC, 'catastrophic-command guard unavailable', { cmd: cmdC.slice(0, 200) }); }
++    const cat = classify(cmdC);
++    if (cat.deny) return deny(toolC, `CATASTROPHIC (${cat.rule}): ${cat.reason}`, { cmd: cmdC.slice(0, 200) });
++  }
+   if (input.agent_id) return null; // subagent: delegated work is allowed
+   const tool = input.tool_name || '';
+   const bypass = process.env.WEZ_ORCH_BYPASS === '1';
