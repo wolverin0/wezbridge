@@ -49,15 +49,22 @@ function identify(pane, aliasMap = new Map()) {
   const fromCwd = projectFromCwd(pane.cwd);
   const label = pane.tab_title || null;
   const labelCanonical = label ? (aliasMap.get(norm(label)) || null) : null;
+
+  // When working in the user home directory (e.g. C:\Users\pauol), the folder name
+  // is just the user profile, not a project repo. If the tab has a specific title
+  // (like w11install or claude-launcher), that tab title is the true project identity.
+  const isUserHome = norm(fromCwd) === 'pauol' || (process.env.USERNAME && norm(fromCwd) === norm(process.env.USERNAME));
+  const effectiveCwdProject = (isUserHome && label && norm(label) !== 'pauol') ? label : fromCwd;
+
   return {
     paneId: pane.pane_id,
-    canonical: fromCwd || labelCanonical || null,
+    canonical: effectiveCwdProject || labelCanonical || fromCwd || null,
     label,
-    cwdProject: fromCwd,
+    cwdProject: effectiveCwdProject,
     // A label that resolves to a DIFFERENT project than the cwd is worth
     // surfacing: it means the pane is labelled as one project while working in
     // another — either a borrowed pane, or a tab someone forgot to relabel.
-    labelConflict: Boolean(fromCwd && labelCanonical && labelCanonical !== fromCwd),
+    labelConflict: Boolean(fromCwd && labelCanonical && labelCanonical !== fromCwd && !isUserHome),
   };
 }
 
@@ -65,9 +72,16 @@ function identify(pane, aliasMap = new Map()) {
  * Build alias -> canonical from fleet briefs.
  * A project always aliases to itself so a bare folder name resolves.
  */
-function buildAliasMap(briefs) {
+function buildAliasMap(briefs = []) {
   const m = new Map();
-  for (const b of briefs) {
+  // Fleet-wide orchestrator aliases: 'orch', 'orchestrator', and historical 'pauol'
+  // resolve to 'wezbridge' (the active orchestrator pane), preventing messages
+  // from routing into scratch/home worker panes like w11install.
+  m.set('orch', 'wezbridge');
+  m.set('orchestrator', 'wezbridge');
+  m.set('pauol', 'wezbridge');
+
+  for (const b of briefs || []) {
     if (!b || !b.project) continue;
     m.set(norm(b.project), b.project);
     const aliases = Array.isArray(b.aliases) ? b.aliases : (b.aliases ? [b.aliases] : []);
@@ -84,7 +98,7 @@ function buildAliasMap(briefs) {
  * Never cache the result beyond the current session, and re-resolve on
  * "no such pane" or after any WezTerm restart.
  */
-function resolve(wanted, panes, aliasMap = new Map()) {
+function resolve(wanted, panes, aliasMap = buildAliasMap()) {
   const target = aliasMap.get(norm(wanted)) || wanted;
   const ids = panes.map((p) => identify(p, aliasMap));
 

@@ -149,3 +149,26 @@ test('T-0235: unprovable identity falls back to env WITH a warning, or null with
   assert.strictEqual(nothing.paneId, null);
   assert.strictEqual(nothing.source, 'unresolved');
 });
+
+test('home directory tab w11install has identity w11install and does NOT hijack pauol', () => {
+  const panes = [
+    { pane_id: 0, tab_title: 'wezbridge', cwd: 'file:///G:/_OneDrive/OneDrive/Desktop/Py%20Apps/wezbridge/' },
+    { pane_id: 2, tab_title: 'w11install', cwd: 'file:///C:/Users/pauol/' },
+  ];
+  const w11Identity = id.identify(panes[1]);
+  assert.strictEqual(w11Identity.canonical, 'w11install');
+  assert.strictEqual(w11Identity.cwdProject, 'w11install');
+
+  // to_project: "pauol" aliases to wezbridge (the orchestrator), reaching pane 0, NOT pane 2
+  const toPauol = id.resolve('pauol', panes);
+  assert.strictEqual(toPauol.paneId, 0);
+
+  // to_project: "orchestrator" reaches pane 0
+  const toOrch = id.resolve('orchestrator', panes);
+  assert.strictEqual(toOrch.paneId, 0);
+
+  // to_project: "w11install" explicitly reaches pane 2
+  const toW11 = id.resolve('w11install', panes);
+  assert.strictEqual(toW11.paneId, 2);
+});
+
