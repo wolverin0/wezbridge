@@ -418,9 +418,8 @@ test('T-0494 AC2 idempotencia: dos syncs SEGUIDOS sin cambio de blocker no agreg
 test('T-0494 AC4 check-notes: detecta la tarjeta con blocker superado y NO detecta la que esta al dia', async () => {
   const e = env();
   const stale = card({ id: 'T-0346', blocker: 'pregunta vieja de T-0346' });
-  await e.hub.syncDecisions([stale]);
   const fresh = card({ id: 'T-0347', blocker: 'pregunta al dia' });
-  await e.hub.syncDecisions([fresh]);
+  await e.hub.syncDecisions([stale, fresh]);
 
   assert.deepEqual(e.hub.checkNotes([stale, fresh]).map((s) => s.id).sort(), [], 'recien creadas: ninguna esta stale');
 
