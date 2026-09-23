@@ -20,6 +20,18 @@ function write(value) {
   if (value !== undefined) process.stdout.write(value);
 }
 
+// T-0400: optional, OFF by default — records every invocation's argv (after
+// list/cli/no-auto-start/prefer-mux would still be VISIBLE, they're only
+// dropped from dispatch routing below) to a file, so a test can assert on the
+// REAL argv that reached "wezterm" (e.g. that --prefer-mux was actually
+// present) instead of grepping the caller's source for the literal. Inert
+// unless WEZBRIDGE_MOCK_ARGV_LOG is set; every other test is unaffected.
+if (process.env.WEZBRIDGE_MOCK_ARGV_LOG) {
+  try {
+    require('fs').appendFileSync(process.env.WEZBRIDGE_MOCK_ARGV_LOG, JSON.stringify(process.argv.slice(2)) + '\n');
+  } catch { /* best effort — must never break the mock */ }
+}
+
 function optionValue(args, name) {
   const index = args.indexOf(name);
   if (index === -1 || index + 1 >= args.length) return null;

@@ -50,14 +50,36 @@ test('AC1: toda invocacion `wezterm cli` en src/ y scripts/ lleva --prefer-mux',
   assert.deepEqual(culpables, [], 'invocaciones sin --prefer-mux (otro espacio de ids):\n  ' + culpables.join('\n  '));
 });
 
-test('AC5: spawnPane y splitPane no arman su propio array cli — pasan por buildCliInvocation', () => {
-  const src = fs.readFileSync(path.join(ROOT, 'src', 'wezterm.cjs'), 'utf8');
-  for (const fn of ['spawnPane', 'splitHorizontal']) {
-    const i = src.indexOf(`function ${fn}(`);
-    assert.ok(i > 0, `no existe function ${fn}`);
-    const body = src.slice(i, src.indexOf('\nfunction ', i + 10));
-    assert.match(body, /buildCliInvocation\(|wezCmd\(/, `${fn} tiene que pasar por wezCmd/buildCliInvocation`);
-    assert.doesNotMatch(body, /\[\s*'cli',/, `${fn} arma un array cli a mano`);
+// T-0400: era un chequeo de texto — buscaba `buildCliInvocation(`/`wezCmd(`
+// como substring DENTRO del cuerpo de la funcion. Un `if (false)` alrededor
+// de la linea que arma el array cli (dejando `wezCmd(cmdArgs)` viva mas abajo,
+// intacta) deja pasar el regex igual: el texto sigue estando, la RUTA que
+// realmente se ejecuta puede haber cambiado. Reescrito para invocar
+// spawnPane/splitHorizontal DE VERDAD contra el mock (test/mocks/wezterm-mock.cjs,
+// vivo via NODE_OPTIONS/setup.cjs) y leer el argv REAL que llego al binario
+// (WEZBRIDGE_MOCK_ARGV_LOG) — si alguna de las dos arma un array cli a mano en
+// vez de pasar por wezCmd/buildCliInvocation, --prefer-mux (que SOLO vive en
+// CLI_BASE, usado por buildCliInvocation) no aparece ahi, y el test lo ve.
+test('AC5 (real): spawnPane y splitHorizontal invocan wezterm cli CON --prefer-mux — la unica forma de llegar ahi es via wezCmd/buildCliInvocation, no un array propio', () => {
+  const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-mux-argvlog-'));
+  const logFile = path.join(logDir, 'argv.log');
+  const prevLog = process.env.WEZBRIDGE_MOCK_ARGV_LOG;
+  process.env.WEZBRIDGE_MOCK_ARGV_LOG = logFile;
+  try {
+    // wezterm.cjs caches its own module state (listPanes TTL) but not the CLI
+    // binary path itself — WEZTERM is resolved once at require-time from
+    // WEZBRIDGE_WEZTERM_BIN, already the mock via test/setup.cjs.
+    const w = require('../src/wezterm.cjs');
+    w.spawnPane({ cwd: '/tmp', program: 'node', capExempt: true });
+    w.splitHorizontal(1, { cwd: '/tmp', program: 'node', capExempt: true });
+  } finally {
+    if (prevLog === undefined) delete process.env.WEZBRIDGE_MOCK_ARGV_LOG; else process.env.WEZBRIDGE_MOCK_ARGV_LOG = prevLog;
+  }
+  const invocations = fs.readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  const spawnOrSplit = invocations.filter((argv) => argv.includes('spawn') || argv.includes('split-pane'));
+  assert.ok(spawnOrSplit.length >= 2, `spawnPane and splitHorizontal must each shell out to wezterm cli, saw: ${JSON.stringify(invocations)}`);
+  for (const argv of spawnOrSplit) {
+    assert.ok(argv.includes('--prefer-mux'), `an invocation reaching wezterm had no --prefer-mux (hand-rolled cli array, bypassing buildCliInvocation): ${argv.join(' ')}`);
   }
 });
 

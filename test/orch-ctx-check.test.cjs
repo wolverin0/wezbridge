@@ -92,11 +92,48 @@ test('a clean verdict travels the chain to silence — each tick overwrites the 
 // Wiring: orchestrator-turn runs the check; --dry-run touches nothing
 // ---------------------------------------------------------------------------
 
+// T-0400: was a source-position check (indexOf('runCtxCheck') vs.
+// lastIndexOf('--dry-run', callSite)) — an `if (false)` around the actual
+// runCtxCheck() call would leave both string literals in the exact same
+// relative order, so the position comparison stays green while the check
+// never runs. Rewritten to spawn the real orchestrator-turn.cjs against a
+// throwaway WEZBRIDGE_INTEL_DIR and observe the ONE side effect runCtxCheck
+// owns (writeRecord's RUN_RECORD file): --dry-run must touch nothing; a real
+// turn must produce it. Both real invocations are cheap here because an
+// empty temp intel dir makes the rest of the turn (gate, reviews, intake)
+// a fast no-op that never wakes a pane (verified: gate=0, reviews=0).
 test('orchestrator-turn.cjs wires the check in, guarded from --dry-run', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'orchestrator-turn.cjs'), 'utf8');
-  assert.match(src, /require\(['"]\.\/orch-ctx-check\.cjs['"]\)/);
-  assert.match(src, /runCtxCheck/);
-  const callSite = src.indexOf('runCtxCheck');
-  const guard = src.lastIndexOf("--dry-run", callSite);
-  assert.ok(guard > -1, 'the check call is not guarded by a --dry-run test above it');
+  const { spawnSync } = require('node:child_process');
+  const ENTRY = path.join(__dirname, '..', 'scripts', 'orchestrator-turn.cjs');
+  const runRecordPath = (dir) => path.join(dir, 'routine-findings', 'run-orchestrator-rotation-wezbridge.json');
+
+  const dryDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-turn-dry-'));
+  try {
+    const dry = spawnSync(process.execPath, [ENTRY, '--dry-run'], {
+      cwd: path.join(__dirname, '..'),
+      env: { ...process.env, WEZBRIDGE_INTEL_DIR: dryDir },
+      encoding: 'utf8', timeout: 30000,
+    });
+    assert.equal(dry.status, 0, `--dry-run turn exited ${dry.status}: ${dry.stdout}${dry.stderr}`);
+    assert.equal(fs.existsSync(runRecordPath(dryDir)), false,
+      '--dry-run must touch NOTHING — runCtxCheck (and its writeRecord) must not run');
+  } finally {
+    fs.rmSync(dryDir, { recursive: true, force: true });
+  }
+
+  const liveDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-turn-live-'));
+  try {
+    const live = spawnSync(process.execPath, [ENTRY], {
+      cwd: path.join(__dirname, '..'),
+      env: { ...process.env, WEZBRIDGE_INTEL_DIR: liveDir },
+      encoding: 'utf8', timeout: 30000,
+    });
+    assert.equal(live.status, 0, `turn exited ${live.status}: ${live.stdout}${live.stderr}`);
+    assert.equal(fs.existsSync(runRecordPath(liveDir)), true,
+      'a real turn (no --dry-run) must actually call runCtxCheck — its RUN_RECORD must exist');
+    const record = JSON.parse(fs.readFileSync(runRecordPath(liveDir), 'utf8'));
+    assert.equal(record.routine, 'orchestrator-rotation');
+  } finally {
+    fs.rmSync(liveDir, { recursive: true, force: true });
+  }
 });

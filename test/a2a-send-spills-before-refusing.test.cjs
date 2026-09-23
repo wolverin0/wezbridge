@@ -6,42 +6,14 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const os = require('node:os');
-const { spawn } = require('node:child_process');
-const ENTRY = path.resolve(__dirname, '../src/mcp-server.cjs');
-function callA2aSend(args, env, timeoutMs = 60000) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [ENTRY], {
-      cwd: path.join(__dirname, '..'),
-      env: { ...process.env, WEZTERM_PANE: '', ...env },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`timed out; stderr=${stderr}`)); }, timeoutMs);
-    child.stderr.on('data', (c) => { stderr += c; });
-    child.stdout.on('data', (c) => {
-      stdout += c;
-      const nl = stdout.indexOf('\n');
-      if (nl === -1) return;
-      clearTimeout(timer);
-      child.stdin.end();
-      child.kill('SIGTERM');
-      try { resolve(JSON.parse(stdout.slice(0, nl).trim()).result); }
-      catch (err) { reject(new Error(`invalid JSON: ${err.message}; stdout=${stdout}; stderr=${stderr}`)); }
-    });
-    child.on('error', reject);
-    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'a2a_send', arguments: args } }) + '\n');
-  });
-}
-
+// T-0400: spawn-and-JSON-RPC boilerplate now lives in test/helpers/mcp-call.cjs
+// (shared with test/mcp-server-v35-tools.test.cjs) — callA2aSend/fixture/textOf
+// here are the SAME functions, just no longer duplicated in this file.
+const { callA2aSend, textOf, fixture: sharedFixture } = require('./helpers/mcp-call.cjs');
 
 function fixture(t) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't0327-length-policy-'));
-  t.after(() => { assert.equal(path.dirname(dir), os.tmpdir()); fs.rmSync(dir, { recursive: true, force: true }); });
-  return dir;
+  return sharedFixture(t, 't0327-length-policy-');
 }
-const textOf = result => result.content.map(block => block.text || '').join('\n');
 const args = extra => ({ from_pane: 1, to_project: 't0327-unavailable', corr: 'length-policy', type: 'request', ...extra });
 
 for (const body of ['x'.repeat(901), 'x'.repeat(1800), '?'.repeat(901)]) {

@@ -72,13 +72,24 @@ test('una ruta, un hash o una URL alcanzan como artefacto', () => {
   assert.deepStrictEqual(weakPasses(body), []);
 });
 
-test('a2a_send nombra los pass sin artefacto en su nota, y NO bloquea', () => {
-  const fs = require('node:fs');
-  const src = fs.readFileSync(require.resolve('../src/mcp-server.cjs'), 'utf8');
-  assert.match(src, /UNVERIFIABLE PASSES/);
-  assert.match(src, /weakPasses\(body\)/);
-  // El aviso vive en el note, no en un return isError: un heuristico que
-  // bloquea castiga la redaccion honesta.
-  const bloque = src.slice(src.indexOf('UNVERIFIABLE PASSES') - 400, src.indexOf('UNVERIFIABLE PASSES') + 400);
-  assert.ok(!/isError:\s*true/.test(bloque), 'el guard no puede bloquear');
+// T-0400: era un chequeo de fuente — matcheaba el string 'UNVERIFIABLE
+// PASSES', la llamada `weakPasses(body)`, y que un slice de 800 chars
+// alrededor no contuviera `isError: true`. Un `if (false)` alrededor del
+// bloque que arma esa nota deja las tres literales en su lugar (el `if`
+// sigue en el archivo), asi que el regex las sigue encontrando aunque la nota
+// nunca se arme. Reescrito para invocar el mcp-server DE VERDAD y leer la
+// nota real que vuelve en la respuesta.
+test('a2a_send nombra los pass sin artefacto en su nota, y NO bloquea', async (t) => {
+  const { callA2aSend, textOf, fixture } = require('./helpers/mcp-call.cjs');
+  const dir = fixture(t, 'weak-passes-');
+  const body = [
+    'criteria:',
+    '- deploy: pass — sin errores',
+    '- tests: pass — 917/920',
+  ].join('\n');
+  const res = await callA2aSend({ from_pane: 601, to_pane: 602, corr: 'wp-real-1', type: 'result', body }, { WEZBRIDGE_INTEL_DIR: dir });
+  assert.notEqual(res.isError, true, 'the weak-pass note must never block the send');
+  const out = JSON.parse(textOf(res));
+  assert.match(out.note, /UNVERIFIABLE PASSES \(1\): deploy/, 'the note must name the exact unverifiable pass');
+  assert.doesNotMatch(out.note, /tests/, 'a pass that CITES an artifact (917\\/920) must not be named as unverifiable');
 });
