@@ -34,3 +34,22 @@ test('setup.cjs never lets an ambient WEZBRIDGE_WEZTERM_BIN reach a test child',
   assert.notEqual(out, bogus, 'an ambient WEZBRIDGE_WEZTERM_BIN must never survive setup.cjs');
   assert.equal(out, DEFAULT_MOCK, 'setup.cjs must fall back to the default mock');
 });
+
+// T-0567: scripts/poke-pane.cjs (and rotate-pane / others) read the PLAIN
+// `WEZTERM_BIN` var, not `WEZBRIDGE_WEZTERM_BIN`. setup.cjs never touched
+// WEZTERM_BIN, so an ambient value pointing at a real wezterm binary was
+// inherited by any test that spawns those scripts without overriding it
+// itself — risking a live pane being driven by the suite.
+test('setup.cjs never lets an ambient WEZTERM_BIN reach a test child', () => {
+  const bogus = '/nonexistent/real-wezterm.exe';
+  const out = execFileSync(process.execPath, [
+    '--require', SETUP.replace(/\\/g, '/'),
+    '-e', 'process.stdout.write(String(process.env.WEZTERM_BIN))',
+  ], {
+    env: { ...process.env, WEZTERM_BIN: bogus },
+    encoding: 'utf8',
+  }).trim();
+
+  assert.notEqual(out, bogus, 'an ambient WEZTERM_BIN must never survive setup.cjs');
+  assert.equal(out, DEFAULT_MOCK, 'setup.cjs must force WEZTERM_BIN to the mock too');
+});
