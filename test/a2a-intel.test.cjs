@@ -445,3 +445,62 @@ test('recordResultBody persists abandons so surrender survives the scrollback', 
   const rec = JSON.parse(lines[lines.length - 1]);
   assert.equal(rec.abandons, 1, 'el count de ABANDON debe persistirse en el registro');
 });
+
+// ── T-0350 AC6b: dedupeResultLines — reader-side collapse of amplified resends ──
+
+test('recordResultBody: id opcional viaja en la linea cuando el llamador lo conoce', () => {
+  const { recordResultBody } = require('../src/a2a-intel.cjs');
+  recordResultBody({ id: 'abc123', corr: 'c-id', fromPane: 1, toPane: 0, v2: 'ok', body: 'criteria:\n- x: pass' });
+  const lines = fs.readFileSync(path.join(TMP, 'a2a-results.jsonl'), 'utf8').trim().split('\n');
+  const rec = JSON.parse(lines[lines.length - 1]);
+  assert.equal(rec.id, 'abc123');
+});
+
+test('recordResultBody: sin id, la linea no lleva el campo (retrocompatible)', () => {
+  const { recordResultBody } = require('../src/a2a-intel.cjs');
+  recordResultBody({ corr: 'c-noid', fromPane: 1, toPane: 0, v2: 'ok', body: 'criteria:\n- x: pass' });
+  const lines = fs.readFileSync(path.join(TMP, 'a2a-results.jsonl'), 'utf8').trim().split('\n');
+  const rec = JSON.parse(lines[lines.length - 1]);
+  assert.equal(rec.id, undefined);
+});
+
+test('dedupeResultLines: mismo id repetido N veces colapsa a 1 (id gana sobre cualquier otra clave)', () => {
+  const { dedupeResultLines } = require('../src/a2a-intel.cjs');
+  const lines = [
+    { id: 'x1', corr: 'c1', time: '2026-09-02T01:00:00.000Z', body: 'v1' },
+    { id: 'x1', corr: 'c1', time: '2026-09-02T01:15:00.000Z', body: 'v1' },
+    { id: 'x1', corr: 'c1', time: '2026-09-02T01:30:00.000Z', body: 'v1' },
+  ];
+  const out = dedupeResultLines(lines);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].time, '2026-09-02T01:00:00.000Z', 'la copia mas temprana sobrevive');
+});
+
+test('dedupeResultLines: lineas legacy SIN id dedupean por corr+cuerpo (el shape real del incidente 996509539944f94d)', () => {
+  const { dedupeResultLines } = require('../src/a2a-intel.cjs');
+  const lines = Array.from({ length: 151 }, (_, i) => ({
+    corr: 'eve-piloto-d006-final-20260829',
+    time: new Date(Date.parse('2026-09-02T01:56:09.128Z') + i * 15 * 60000).toISOString(),
+    body: 'FinalOrchestra JOB-cecef9e2: completed\ncriteria:\n- C1: fail — E',
+  }));
+  const out = dedupeResultLines(lines);
+  assert.equal(out.length, 1, `151 reenvios del MISMO cuerpo tienen que colapsar a 1, no ${out.length}`);
+  assert.equal(out[0].time, lines[0].time, 'sobrevive la copia mas temprana');
+});
+
+test('dedupeResultLines: un reintento con cuerpo DISTINTO no se colapsa — es evidencia nueva', () => {
+  const { dedupeResultLines } = require('../src/a2a-intel.cjs');
+  const lines = [
+    { corr: 'c-retry', time: '2026-09-02T01:00:00.000Z', body: 'criteria:\n- a: fail — nada' },
+    { corr: 'c-retry', time: '2026-09-02T02:00:00.000Z', body: 'criteria:\n- a: pass — arreglado' },
+  ];
+  const out = dedupeResultLines(lines);
+  assert.equal(out.length, 2, 'cuerpos distintos son resultados distintos, no duplicados del mismo envio');
+});
+
+test('dedupeResultLines: never throws, nunca dropea silenciosamente sobre input roto', () => {
+  const { dedupeResultLines } = require('../src/a2a-intel.cjs');
+  assert.doesNotThrow(() => dedupeResultLines([null, undefined, {}, { corr: 'c' }]));
+  const out = dedupeResultLines([null, undefined, {}, { corr: 'c' }]);
+  assert.ok(out.length >= 1);
+});

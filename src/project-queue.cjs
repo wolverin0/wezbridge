@@ -31,7 +31,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { intelDir, updateThreads, autoAckResult, recordResultBody } = require('./a2a-intel.cjs');
+const { intelDir, updateThreads, autoAckResult, recordResultBody, detectV2 } = require('./a2a-intel.cjs');
 const { logAction } = require('./action-log.cjs');
 const { classifyDelivery } = require('./verified-send.cjs');
 const { decisionDisposition, queuedDecision } = require('./decision-authority.cjs');
@@ -197,6 +197,12 @@ function createConsumer(opts) {
     delivered: path.join(stateDir, 'delivered.json'),
     flags: path.join(stateDir, 'flags.json'),
     suppressed: path.join(stateDir, 'suppressed.json'),
+    // T-0350: ids already appended to a2a-results.jsonl BY THIS CONSUMER — a
+    // ring persisted independently of pending/delivered so recording a
+    // type=result body never depends on whether delivery ever succeeds, and
+    // a crash between the append and persistPending can never replay it into
+    // a second line (checked BEFORE every recordResultBody call below).
+    recorded: path.join(stateDir, 'recorded.json'),
   };
   fs.mkdirSync(stateDir, { recursive: true });
   // T-0329a: decision.delivered lo emite quien ENTREGA — un sobre entregado por
@@ -213,12 +219,44 @@ function createConsumer(opts) {
     pending: readJson(FILES.pending, {}), // id -> {entry fields + attempts}
     delivered: readJson(FILES.delivered, []), // ring of entry ids
     suppressed: readJson(FILES.suppressed, {}), // terminal discards/obsolete decisions, never delivery evidence
+    recordedIds: readJson(FILES.recorded, []), // ring of result ids already written to a2a-results.jsonl
     lastAttemptAt: undefined, // in-memory; cron cadence is the real spacing
   };
   const deliveredSet = new Set(state.delivered);
+  const recordedSet = new Set(state.recordedIds);
 
   function persistPending() { atomicWriteJson(FILES.pending, state.pending); }
   function persistCursor() { atomicWriteJson(FILES.cursor, { bytes: state.cursorBytes, tail: state.cursorTail }); }
+  function persistRecorded() {
+    state.recordedIds = state.recordedIds.slice(-cfg.deliveredKeep);
+    atomicWriteJson(FILES.recorded, state.recordedIds);
+  }
+  /**
+   * Record a type=result body to a2a-results.jsonl exactly once per id,
+   * whatever happens to delivery afterwards. Called from ingest() (so a
+   * result that NEVER delivers — cap reached, pane never comes back — is
+   * still recorded) and kept as a backstop in deliverPending() for entries
+   * whose ingest-time record attempt failed (fail-soft recordResultBody).
+   * Persists the id BEFORE returning so a same-process double-call (e.g. the
+   * ingest branch and the delivery backstop both firing for one id in the
+   * same pass) can never write two lines. Never throws.
+   */
+  function recordResultOnce(id, entry) {
+    if (!id || entry.type !== 'result' || entry.recorded === true || recordedSet.has(id)) return false;
+    const rec = recordResultBody({
+      id,
+      corr: entry.corr,
+      fromPane: entry.from_pane,
+      toPane: entry.resolved_pane ?? null,
+      v2: detectV2(entry.body),
+      body: entry.body,
+    });
+    if (!rec) return false; // fail-soft: leave unrecorded, next pass retries
+    recordedSet.add(id);
+    state.recordedIds.push(id);
+    persistRecorded();
+    return true;
+  }
   function persistDelivered() {
     state.delivered = state.delivered.slice(-cfg.deliveredKeep);
     atomicWriteJson(FILES.delivered, state.delivered);
@@ -269,6 +307,11 @@ function createConsumer(opts) {
       const id = entry.id || entryId(entry);
       if (entry.ok) { // delivered & verified at send time — nothing to retry
         if (!deliveredSet.has(id)) { deliveredSet.add(id); state.delivered.push(id); confirmed += 1; }
+        // T-0350: a result already delivered at send time but never recorded
+        // (the sender's own recordResultBody call failed, fail-soft) would
+        // otherwise NEVER be recorded — this line never enters pending, so
+        // deliverPending's recording branch never sees it either.
+        recordResultOnce(id, entry);
         // A later verified re-send supersedes an earlier failed line of the
         // same logical message — without this, the pending copy re-delivers.
         if (state.pending[id]) { delete state.pending[id]; persistPending(); }
@@ -281,6 +324,14 @@ function createConsumer(opts) {
         deliveredSet.add(id); state.delivered.push(id); expired += 1;
         continue;
       }
+      // T-0350: record a type=result body AT INGEST, before any delivery is
+      // even attempted. A result whose delivery never succeeds (pane never
+      // comes back, attempt cap reached) used to stay unrecorded forever —
+      // deliverPending only wrote to a2a-results.jsonl on the `ok` branch.
+      // Recording here decouples "the work happened" from "the pane heard
+      // about it", which is also what makes it independent of card state:
+      // this call has no card/decision gate at all.
+      const recordedNow = recordResultOnce(id, entry);
       state.pending[id] = {
         project: entry.project || project,
         corr: entry.corr, type: entry.type, from_pane: entry.from_pane, from_project: entry.from_project ?? null,
@@ -289,7 +340,7 @@ function createConsumer(opts) {
         ...(entry.submitted === 'submitted' ? { submission_uncertain: true } : {}),
         ...(entry.ruling ? { ruling: entry.ruling } : {}),
         ...(entry.decision_at ? { decision_at: entry.decision_at } : {}),
-        ...(entry.recorded ? { recorded: true } : {}),
+        ...(entry.recorded || recordedNow ? { recorded: true } : {}),
       };
       added += 1;
     }
@@ -547,9 +598,14 @@ function createConsumer(opts) {
           // rastro: el linker no podia mover la tarjeta de un result que, para
           // el archivo de resultados, nunca existio. `recorded` es la marca del
           // emisor: si ya lo escribio al encolar, aca no se duplica.
-          if (entry.type === 'result' && entry.recorded !== true) {
-            recordResultBody({ corr: entry.corr, fromPane: entry.from_pane, toPane: targetId, v2: require('./a2a-intel.cjs').detectV2(entry.body), body: entry.body });
-          }
+          //
+          // T-0350: el registro PRIMARIO ahora ocurre en ingest() (arriba),
+          // antes de cualquier intento de entrega — esto solo es un backstop
+          // para el caso en que ese intento haya fallado fail-soft. Pasa por
+          // recordResultOnce (dedupe por id + persistencia) en vez de llamar
+          // a recordResultBody directo, para que nunca pueda escribir una
+          // segunda linea del mismo id.
+          recordResultOnce(id, { ...entry, resolved_pane: targetId });
           updateThreads({ fromPane: entry.from_pane, toPane: targetId, corr: entry.corr, type: entry.type, body: entry.body });
           if (entry.type === 'result' && submitted === 'submitted' && autoAckResult({ corr: entry.corr, byPane: entry.from_pane })) {
             logActionFn('auto_ack', { target: `corr=${entry.corr}`, why: 'verified queue redelivery of type=result — bookkeeping acuse automated (B1)' });
@@ -619,8 +675,11 @@ function createConsumer(opts) {
     state.pending = readJson(FILES.pending, {});
     state.delivered = readJson(FILES.delivered, []);
     state.suppressed = readJson(FILES.suppressed, {});
+    state.recordedIds = readJson(FILES.recorded, []);
     deliveredSet.clear();
     for (const id of state.delivered) deliveredSet.add(id);
+    recordedSet.clear();
+    for (const id of state.recordedIds) recordedSet.add(id);
   }
 
   /** State is refreshed only after winning the cross-process writer exclusion. */

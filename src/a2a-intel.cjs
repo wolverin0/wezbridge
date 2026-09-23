@@ -12,6 +12,7 @@
  */
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 
 function intelDir() {
   const dir = process.env.WEZBRIDGE_INTEL_DIR
@@ -158,8 +159,14 @@ const RESULT_BODY_CAP = 16 * 1024;
  * (`a2a-results.jsonl#time=<iso>`) en vez de a "llegó un result": dos results
  * del mismo corr en el mismo minuto son indistinguibles sin él. Devuelve null
  * si el append falló (fail-soft: el llamador simplemente no liga).
+ *
+ * T-0350: `id` es opcional (el emisor directo de a2a_send no tiene el sha1 de
+ * la cola) — cuando el llamador SI lo conoce (project-queue.cjs), viaja en la
+ * linea para que un lector pueda dedupear por id, no solo por corr (corr no
+ * es unico: un corr puede tener varios results legitimos, ej. reintentos con
+ * cuerpo distinto).
  */
-function recordResultBody({ corr, fromPane, toPane, v2, body }) {
+function recordResultBody({ corr, fromPane, toPane, v2, body, id = null }) {
   try {
     const text = String(body ?? '');
     const truncated = text.length > RESULT_BODY_CAP;
@@ -167,6 +174,7 @@ function recordResultBody({ corr, fromPane, toPane, v2, body }) {
     const line = JSON.stringify({
       time,
       event: 'a2a.result',
+      ...(id ? { id } : {}),
       corr,
       from_pane: fromPane,
       to_pane: toPane,
@@ -180,6 +188,38 @@ function recordResultBody({ corr, fromPane, toPane, v2, body }) {
     fs.appendFileSync(path.join(intelDir(), 'a2a-results.jsonl'), line + '\n');
     return { time };
   } catch { return null; /* fail-soft */ }
+}
+
+/**
+ * T-0350 AC6b: a reader-side dedupe for a2a-results.jsonl. The 2026-09-02/03
+ * incident wrote the SAME envelope 151+ times (the sender re-enqueued every
+ * ~15min because the destination pane never resolved, and each send recorded
+ * unconditionally) — any consumer that iterates the file naively (fleet-
+ * steward's result.unlinked tally, daily-rollup's per-day counts) inflates by
+ * the same multiple. This never rewrites the file (data deletion stays an
+ * operator gate) — it filters an ALREADY-READ array, so the source of truth
+ * on disk is untouched.
+ *
+ * Key: `id` when present (post-T-0350 lines always carry it when the writer
+ * knows it). Older lines have no id, so they fall back to `corr + sha1(body)`
+ * — the same logical resend of the same corr with byte-identical body is the
+ * observed duplicate shape; a resend with a genuinely DIFFERENT body (a
+ * retry with new evidence) is a distinct result and must survive.
+ * First occurrence (earliest `time`) wins. Never throws; a corrupt/missing
+ * `time` on some lines still dedupes correctly, it just does not guarantee
+ * WHICH copy survives.
+ */
+function dedupeResultLines(lines) {
+  try {
+    const byKey = new Map();
+    for (const r of lines) {
+      if (!r || typeof r !== 'object') continue;
+      const key = r.id || `${r.corr || ''}::${crypto.createHash('sha1').update(String(r.body || '')).digest('hex')}`;
+      const prior = byKey.get(key);
+      if (!prior || String(r.time || '') < String(prior.time || '')) byKey.set(key, r);
+    }
+    return [...byKey.values()];
+  } catch { return lines; /* fail-soft: never drop data on a dedupe bug */ }
 }
 
 function readThreads(file) {
@@ -594,4 +634,4 @@ function detectSmuggledEnvelope(text) {
   return { smuggled: true, corr: m[1], type: m[2].toLowerCase() };
 }
 
-module.exports = { intelDir, buildEnvelope, taskIdFromCorr, detectV2, detectAbandons, detectDecisions, detectEvidence, recordEvent, recordResultBody, updateThreads, autoAckResult, checkDispatchGate, checkResultShape, takeDispatchLease, detectSmuggledEnvelope, weakPasses };
+module.exports = { intelDir, buildEnvelope, taskIdFromCorr, detectV2, detectAbandons, detectDecisions, detectEvidence, recordEvent, recordResultBody, dedupeResultLines, updateThreads, autoAckResult, checkDispatchGate, checkResultShape, takeDispatchLease, detectSmuggledEnvelope, weakPasses };
