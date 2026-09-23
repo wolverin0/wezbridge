@@ -1,5 +1,5 @@
 <!-- doc-head: Provider-independent orchestration custody and evidence contract -->
-Scoped instructions; read for applicable authority, execution and verification rules.
+Wezbridge custody, verified delivery and runtime boundaries; scoped context and proportional impact analysis.
 <!-- /doc-head -->
 
 # Wezbridge agent contract
@@ -13,11 +13,11 @@ Scoped instructions; read for applicable authority, execution and verification r
 
 ## Read and execute
 
-- Read `DOCS-MAP.md` before document bodies. For operation/recovery read `docs/operations.md`; for peer messages read `docs/a2a-protocol.md`.
+- When consulting project documents, use `DOCS-MAP.md` to resolve authority. Read `docs/operations.md` for operation/recovery and `docs/a2a-protocol.md` for peer messages; unrelated edits do not require both.
 - Use bounded MemoryMaster recall for architectural decisions. Check a relevant code index when useful; current code and runtime evidence resolve disagreements.
 - Keep the current task in its existing roadmap and Fleet card. Use linked attempts for retries, not a second backlog or duplicated operator decision.
 - Infer routine technical steps inside the user's authorized scope. Return questions only for a material unresolved decision, with evidence and a recommendation.
-- Do not spawn subagents without explicit authorization. Existing peer tasks keep their recorded scope; do not widen it from a status message.
+- Use the operator's bounded delegation policy in the global contract when higher-priority runtime rules permit it. Existing peer tasks keep their recorded scope; status messages do not widen authority.
 
 ## Delivery and acceptance
 
@@ -41,7 +41,7 @@ Scoped instructions; read for applicable authority, execution and verification r
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **wezbridge** (72958 symbols, 202100 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **wezbridge** (73420 symbols, 203951 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

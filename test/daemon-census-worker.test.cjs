@@ -25,7 +25,9 @@ const net = require('node:net');
 
 const ENTRY = path.join(__dirname, '..', 'src', 'dashboard-server.cjs');
 const PRELOAD = path.join(__dirname, 'fixtures', 'wezterm-hang-if-cli.cjs');
+const WORKER_PRELOAD = path.join(__dirname, 'fixtures', 'daemon-cli-hang-before-exec.cjs');
 const INTEL = fs.mkdtempSync(path.join(os.tmpdir(), 'census-intel-'));
+const HUNG_WORKERS = path.join(INTEL, 'hung-cli-workers.jsonl');
 const BIN_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'census-bin-'));
 const FAKE_WEZTERM = path.join(BIN_DIR, process.platform === 'win32' ? 'wezterm.exe' : 'wezterm');
 
@@ -71,7 +73,7 @@ before(async () => {
   port = await freePort();
   // Entre comillas: NODE_OPTIONS parte por espacios y este repo vive bajo "Py Apps"
   // (misma leccion que test/setup.cjs: sin comillas, MODULE_NOT_FOUND 'G:/.../Py').
-  const preload = `--require="${PRELOAD.replace(/\\/g, '/')}"`;
+  const preload = [PRELOAD, WORKER_PRELOAD].map(file => `--require="${file.replace(/\\/g, '/')}"`).join(' ');
   // test/setup.cjs (preload de TODA la suite, heredado por NODE_OPTIONS) pisa
   // WEZBRIDGE_WEZTERM_BIN con el mock dentro de cualquier hijo node. El daemon
   // bajo prueba necesita el binario colgado de verdad, asi que se le quita ESE
@@ -86,6 +88,7 @@ before(async () => {
       NODE_OPTIONS: [...inherited, preload].join(' '),
       WEZBRIDGE_WEZTERM_BIN: FAKE_WEZTERM,
       WEZBRIDGE_INTEL_DIR: INTEL,
+      WEZBRIDGE_TEST_HUNG_WORKERS: HUNG_WORKERS,
       DASHBOARD_PORT: String(port),
       WEZBRIDGE_SESSION_SNAPSHOT: '2', // tick cada 2 s: el camino que bloqueaba
       WEZBRIDGE_CENSUS_INTERVAL_MS: '1000',
@@ -169,8 +172,9 @@ test('T-0379 AC3 killer: residual CLI calls never starve the real daemon heartbe
   const control = await get('/api/panes/9000/output');
   assert.equal(control.status, 200, control.body);
   assert.equal(JSON.parse(control.body).output, 'T-0379 transport control', 'the worker must really execute a responsive CLI');
-  // Four uncached HTTP reads used to queue 4 * (10s timeout + retry) in the
-  // daemon thread even though census already ran in its own worker.
+  // The preload stops these workers before their operation handler runs, so
+  // execFile cannot provide a competing native timeout. The real daemon's
+  // 25-second deadline must rescue all four HTTP reads and kill their workers.
   const reads = [8701, 8702, 8703, 8704].map(id =>
     get(`/api/panes/${id}/output`, 35000).catch(error => ({ error: error.message })));
   const beatFile = path.join(INTEL, '.daemon-heartbeat.json');
@@ -186,13 +190,30 @@ test('T-0379 AC3 killer: residual CLI calls never starve the real daemon heartbe
     await new Promise(resolve => setTimeout(resolve, 300));
   }
   const outcomes = await Promise.all(reads);
+  const hungWorkers = fs.existsSync(HUNG_WORKERS)
+    ? fs.readFileSync(HUNG_WORKERS, 'utf8').trim().split('\n').map(JSON.parse) : [];
   const maxAge = Math.max(...samples.map(sample => sample.age));
   const unavailable = samples.filter(sample => sample.status !== 200).length;
-  t.diagnostic(JSON.stringify({ samples: samples.length, heartbeat_max_age_ms: maxAge, health_unavailable: unavailable }));
+  t.diagnostic(JSON.stringify({ samples: samples.length, heartbeat_max_age_ms: maxAge,
+    health_unavailable: unavailable, hung_workers: hungWorkers,
+    outcomes: outcomes.map(outcome => ({ status: outcome.status, body: outcome.body, error: outcome.error })) }));
+  assert.deepEqual(hungWorkers.map(worker => worker.pane).sort(), [8701, 8702, 8703, 8704],
+    'all four real workers must enter the hang before any native exec timeout exists');
   assert.ok(maxAge <= 60000, `heartbeat starved ${maxAge} ms by residual CLI calls`);
   assert.equal(unavailable, 0, 'HTTP must stay responsive while those calls hang');
   for (const outcome of outcomes) {
     assert.equal(outcome.status, 500, JSON.stringify(outcome));
-    assert.match(outcome.body, /ETIMEDOUT|DAEMON_CLI_TIMEOUT/, 'failed reads must reach the worker and its deadline');
+    assert.match(outcome.body, /\bDAEMON_CLI_TIMEOUT\b/, 'only the daemon deadline may rescue a hung worker');
   }
+  for (const worker of hungWorkers) {
+    let alive = true;
+    try { process.kill(worker.pid, 0); } catch (error) {
+      if (error.code === 'ESRCH') alive = false;
+      else throw error;
+    }
+    assert.equal(alive, false, `daemon deadline must kill hung worker ${worker.pid}`);
+  }
+  const recovered = await get('/api/panes/9000/output');
+  assert.equal(recovered.status, 200, 'the real transport must accept work after the deadlines');
+  assert.equal(JSON.parse(recovered.body).output, 'T-0379 transport control');
 });

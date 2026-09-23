@@ -18,6 +18,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFile } = require('node:child_process');
 
 const REPO = path.join(__dirname, '..');
 const INTEL = process.env.WEZBRIDGE_INTEL_DIR || path.join(REPO, '..', '_intel');
@@ -26,6 +27,17 @@ const HEARTBEAT_FILE = path.join(INTEL, '.daemon-heartbeat.json');
 const STATE_FILE = path.join(EVIDENCE_DIR, 'daemon-sentinel-state.json');
 const OWN_BEAT_FILE = path.join(EVIDENCE_DIR, 'daemon-sentinel-heartbeat.json');
 const LOG_FILE = path.join(EVIDENCE_DIR, 'daemon-sentinel.jsonl');
+
+// T-0529: producer for the VM dead-man switch. Every in-daemon watcher dies
+// with the daemon (see file header) — but so does THIS sentinel if the whole
+// Windows box goes dark. Touching a heartbeat on a separate machine (the
+// ubuntu VM) on every genuinely-up run gives ~/bin/omni-deadman.sh (VM cron)
+// an out-of-band signal that covers "the daemon died" AND "the sentinel
+// itself stopped running" — neither of which can page from this host alone.
+const DEADMAN_TOUCH_FILE = path.join(EVIDENCE_DIR, 'deadman-touch.json');
+const DEADMAN_SSH_KEY = process.env.WEZBRIDGE_DEADMAN_SSH_KEY || 'C:/Users/pauol/.ssh/ubuntuvm_key';
+const DEADMAN_HOST = process.env.WEZBRIDGE_DEADMAN_HOST || 'ggorbalan@192.168.100.186';
+const DEADMAN_TOUCH_TIMEOUT_MS = 8_000;
 
 // Re-poke cadence while an episode stays open. One poke per episode start,
 // then a reminder every 30 min — an alert repeated every 5 min trains the
@@ -152,6 +164,36 @@ async function deliverPoke(message, recheck) {
   return { delivered: true, paneId, submitted };
 }
 
+/**
+ * T-0529: best-effort touch of the VM dead-man heartbeat. Bounded timeout,
+ * never throws, never blocks the daemon-liveness verdict this file exists
+ * for — a hung SSH must not turn into a missed poke.
+ */
+function touchVmHeartbeat() {
+  return new Promise((resolve) => {
+    const args = [
+      '-o', 'BatchMode=yes',
+      '-o', 'ConnectTimeout=8',
+      '-o', 'StrictHostKeyChecking=accept-new',
+      '-i', DEADMAN_SSH_KEY,
+      DEADMAN_HOST,
+      'date -Is > ~/omniclaude.heartbeat',
+    ];
+    let settled = false;
+    const done = (result) => { if (!settled) { settled = true; resolve(result); } };
+    try {
+      const child = execFile('ssh', args, { timeout: DEADMAN_TOUCH_TIMEOUT_MS, windowsHide: true }, (err) => {
+        done(err
+          ? { ok: false, at: new Date().toISOString(), error: String(err.message || err).slice(0, 200) }
+          : { ok: true, at: new Date().toISOString() });
+      });
+      child.on('error', (err) => done({ ok: false, at: new Date().toISOString(), error: String(err.message || err).slice(0, 200) }));
+    } catch (err) {
+      done({ ok: false, at: new Date().toISOString(), error: String(err && err.message).slice(0, 200) });
+    }
+  });
+}
+
 async function main() {
   // Independent of the SP plugin and checked before potentially slow daemon/pane probes.
   try {
@@ -197,6 +239,22 @@ async function main() {
   if (recoveredDuringCheck) logLine({ ts: new Date().toISOString(), verdict: 'recovered-before-alert',
     prior_heartbeat_ts: initialHeartbeat.ts, heartbeat_ts: heartbeat.ts });
 
+  // T-0529: only touch the VM dead-man heartbeat when the daemon is actually
+  // up. Skipping on down/wedged/suspect means the VM switch also alerts on
+  // "daemon down" as an independent, out-of-band channel — see file header.
+  let deadmanTouch;
+  if (daemon.up) {
+    try {
+      deadmanTouch = await touchVmHeartbeat();
+    } catch (err) {
+      deadmanTouch = { ok: false, at: new Date().toISOString(), error: String(err && err.message).slice(0, 200) };
+    }
+  } else {
+    deadmanTouch = { ok: false, skipped: true, at: new Date().toISOString(), reason: 'daemon not up' };
+  }
+  try { writeJson(DEADMAN_TOUCH_FILE, deadmanTouch); } catch { /* evidence must never crash the sentinel */ }
+  logLine({ ts: new Date().toISOString(), verdict: decision.verdict, daemon_up: daemon.up, deadman_touch: deadmanTouch });
+
   writeJson(STATE_FILE, decision.newState);
   // Own heartbeat EVERY run, healthy or not: silence from the sentinel must be
   // distinguishable from "all quiet" (F1 hardening rule 1).
@@ -205,6 +263,7 @@ async function main() {
     alerted: decision.alert, daemon_up: daemon.up,
     heartbeat_age_ms: liveness.heartbeatAgeMs,
     recovered_during_check: Boolean(recoveredDuringCheck),
+    deadman_touch: deadmanTouch,
   });
 
   const line = `daemon-sentinel: ${decision.verdict}${decision.alert ? ` — poked (${JSON.stringify(delivery)})` : ''}`;
@@ -224,4 +283,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { evaluate, REPOKE_MS, HTTP_FAIL_STREAK_ALERT, SENTINEL_PROBE_TIMEOUT_MS };
+module.exports = { evaluate, touchVmHeartbeat, REPOKE_MS, HTTP_FAIL_STREAK_ALERT, SENTINEL_PROBE_TIMEOUT_MS };

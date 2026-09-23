@@ -38,6 +38,7 @@ const OWNER = path.join('scripts', 'routine-audit.cjs');
  * everything anyone ever added.
  */
 const ALLOWED = new Map([
+  [path.join('src', 'queue-route.cjs'), 'writes its own fixed routing artifact and run record; never interprets another producer findings path'],
   [path.join('src', 'decision-relay-report.cjs'), 'writes run records and their own artifact; never interprets another producer path'],
   [OWNER, 'owns the contract — this is the one interpreter'],
   [path.join('scripts', 'orch-ctx-check.cjs'), 'writes the key into a run record; never resolves or reads it'],

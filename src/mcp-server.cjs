@@ -1013,24 +1013,6 @@ function handleToolCall(name, args) {
         };
       }
 
-      // Resolve persona if provided
-      let personaPath = null;
-      if (args.persona) {
-        if (!isValidPersonaName(args.persona)) {
-          return {
-            content: [{ type: 'text', text: 'Error: invalid persona name' }],
-            isError: true,
-          };
-        }
-        personaPath = resolvePersona(args.persona);
-        if (!personaPath) {
-          return {
-            content: [{ type: 'text', text: `persona "${args.persona}" not found in ~/.claude/agents/` }],
-            isError: true,
-          };
-        }
-      }
-
       // Which CLI boots in the pane. 'shell' leaves the pane as a plain shell
       // (no command typed) — useful for scratch panes and e2e tests.
       // Affinity (B2, frente 3): _intel/affinity.json maps project → {agent,
@@ -1081,6 +1063,26 @@ function handleToolCall(name, args) {
           content: [{ type: 'text', text: `Error: persona/resume/continue/permission flags only apply to agent "claude" (got agent="${agent}")` }],
           isError: true,
         };
+      }
+
+      // Resolve persona if provided. Runs after the claude-only-flags gate above
+      // so a persona named for a non-claude agent fails with that clear message
+      // instead of a confusing "not found in ~/.claude/agents/" lookup error.
+      let personaPath = null;
+      if (args.persona) {
+        if (!isValidPersonaName(args.persona)) {
+          return {
+            content: [{ type: 'text', text: 'Error: invalid persona name' }],
+            isError: true,
+          };
+        }
+        personaPath = resolvePersona(args.persona);
+        if (!personaPath) {
+          return {
+            content: [{ type: 'text', text: `persona "${args.persona}" not found in ~/.claude/agents/` }],
+            isError: true,
+          };
+        }
       }
 
       return (async () => {
@@ -1640,6 +1642,7 @@ function handleToolCall(name, args) {
           recordAndLinkResult(null);
           const q = projectQueue.enqueue({
             project: toProject, corr, type: msgType, from_pane: fromPane,
+            from_project: selfRes.project || null,
             resolved_pane: null, submitted: null, delivered: null, ok: false, body,
             // W4 handshake: el cuerpo YA quedo en a2a-results.jsonl, asi que
             // deliverPending no vuelve a registrarlo al drenar. Sin la marca el
@@ -1771,6 +1774,7 @@ function handleToolCall(name, args) {
         const queued = toProject
           ? projectQueue.enqueue({
             project: toProject, corr, type: msgType, from_pane: fromPane,
+            from_project: selfRes.project || null,
             resolved_pane: toPane, submitted, delivered, ok: verified, body,
             ...(recordedResult ? { recorded: true } : {}),
           })
@@ -1912,6 +1916,7 @@ function handleToolCall(name, args) {
         try {
           const rescue = require('./project-queue.cjs').rescueFailedSend({
             toProject, toPane, census: selfCensus, corr, type: msgType, fromPane, body,
+            fromProject: selfRes.project || null,
           });
           rescueNote = rescue.queued
             ? ` Envelope RESCUED to _intel/queues/${rescue.project}.jsonl (id ${rescue.id}) — scripts/queue-drain.cjs will retry; do not hand-retry unless urgent (the queue dedupes by corr+type+body).`
@@ -1978,7 +1983,7 @@ function probeWezterm() {
  */
 // Extracted to src/daemon-probe.cjs (T-0190) so tests can exercise the probes
 // without starting this stdio server. Liveness is decided by /api/health there.
-const { probeDaemon, probeDaemonServices } = require('./daemon-probe.cjs');
+const { probeDaemon, probeDaemonServices, probeDaemonOrca } = require('./daemon-probe.cjs');
 
 async function handleBridgeHealth() {
   let pkgVersion = 'unknown';
@@ -1986,7 +1991,7 @@ async function handleBridgeHealth() {
   // Arming is MEASURED at the daemon, never inferred here: this process has a
   // different environment from the daemon's, so reading process.env would
   // report a wish. `null` services => genuinely unknown, and it says so.
-  const [daemon, services] = await Promise.all([probeDaemon(), probeDaemonServices()]);
+  const [daemon, services, orcaLive] = await Promise.all([probeDaemon(), probeDaemonServices(), probeDaemonOrca()]);
   const wezterm = probeWezterm();
   const snap = services && services.session_snapshot;
   const health = {
@@ -1995,6 +2000,9 @@ async function handleBridgeHealth() {
     daemon,
     services: services || 'unknown (daemon down, or predates /api/health)',
     session_snapshot_armed: snap ? snap.armed : 'unknown',
+    // T-0525: the fleet runs in Orca terminals; WezTerm pane_count alone reads 0.
+    // Daemon down => last persisted census (_intel/orca-census.json), marked source:'file'.
+    orca: orcaLive || require('./orca-census.cjs').readPersistedCensus() || 'unknown (daemon down and no _intel/orca-census.json)',
     ok: wezterm.reachable, // wezterm is the only hard dependency for core MCP tools
   };
   // Two mux sockets serving the same panes under different ids is invisible

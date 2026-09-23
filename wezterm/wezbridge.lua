@@ -145,24 +145,74 @@ local function watchdog_owns_entry(entry, repo)
   return true -- The daemon validates and launches the selected session; never replay an old snapshot here.
 end
 
+local function resume_command_for_entry(e, args)
+  if e.ai == 'codex' or (args and args[1] == 'codex') then
+    return 'codex resume --yolo'
+  elseif e.ai == 'agy' or (args and args[1] == 'agy') then
+    return 'agy --model gemini-3.8-flash-high'
+  end
+  return 'claude --continue --dangerously-skip-permissions'
+end
+
+local function normalize_cwd(value, tab_title)
+  if not value or #value == 0 then return nil end
+  local s = value:gsub('%%(%x%x)', function(hex) return string.char(tonumber(hex, 16)) end)
+  s = s:gsub('^file://[^/]*', ''):gsub('\\', '/')
+  s = s:gsub('^/([A-Za-z]:/)', '%1'):gsub('/+$', '')
+  if (s:lower() == 'c:/users/pauol' or s:lower() == '/c:/users/pauol') and tab_title and #tab_title > 0 then
+    local map = {
+      ['network-audit'] = 'G:/_OneDrive/OneDrive/Desktop/Py Apps/whatsappbot-main-wt',
+      ['wabot'] = 'G:/_OneDrive/OneDrive/Desktop/Py Apps/whatsappbot-main-wt',
+      ['bot-rf-optimizer'] = 'G:/_OneDrive/OneDrive/Desktop/Py Apps/_worktrees/bot-rf-optimizer',
+      ['asistenteshop'] = 'G:/_OneDrive/OneDrive/Desktop/Py Apps/asistenteshop',
+      ['memorymaster'] = 'G:/_OneDrive/OneDrive/Desktop/Py Apps/memorymaster',
+      ['futuramax'] = 'G:/_OneDrive/OneDrive/Desktop/Py Apps/futuraMAX',
+      ['infra'] = 'G:/_OneDrive/OneDrive/Desktop/Py Apps/infra',
+      ['wezbridge'] = 'G:/_OneDrive/OneDrive/Desktop/Py Apps/wezbridge',
+      ['crm'] = 'G:/_OneDrive/OneDrive/Desktop/Py Apps/CRM',
+      ['yolo26'] = 'G:/_OneDrive/OneDrive/Desktop/Py Apps/yolo26',
+      ['nereidas'] = 'G:/_OneDrive/OneDrive/Desktop/Py Apps/nereidas',
+      ['claudelauncher'] = 'C:/Users/pauol/claude-launcher',
+    }
+    local clean = tab_title:lower():match('^%s*(.-)%s*$')
+    if map[clean] then return map[clean] end
+  end
+  return s
+end
+
 local function spawn_entries(entries, opts)
   opts = opts or {}
   local stagger_ms = opts.stagger_ms or 2000
+  local is_windows = wezterm.target_triple and wezterm.target_triple:find('windows') ~= nil
   local mux = wezterm.mux
   local first_window
   for i, e in ipairs(entries) do
     local args = split_cmdline(e.cmdline)
-    if #args > 0 and not watchdog_owns_entry(e, opts.wezbridge_dir) then
-      local spawn_opts = { args = args, cwd = e.cwd }
+    local is_ai = (e.ai == 'claude' or e.ai == 'codex' or e.ai == 'agy' or (args[1] == 'claude' or args[1] == 'codex' or args[1] == 'agy'))
+    if (#args > 0 or e.ai) and not watchdog_owns_entry(e, opts.wezbridge_dir) then
+      local spawn_opts = { cwd = normalize_cwd(e.cwd, e.tab_title) }
+      if not (is_windows and is_ai) then
+        spawn_opts.args = args
+      end
+      local tab, pane, win
       if not first_window then
-        local _, _, win = mux.spawn_window(spawn_opts)
+        tab, pane, win = mux.spawn_window(spawn_opts)
         first_window = win
       else
         if first_window then
-          first_window:spawn_tab(spawn_opts)
+          tab, pane = first_window:spawn_tab(spawn_opts)
         else
-          mux.spawn_window(spawn_opts)
+          tab, pane, win = mux.spawn_window(spawn_opts)
+          first_window = win
         end
+      end
+      if tab and e.tab_title and #e.tab_title > 0 then
+        pcall(function() tab:set_title(e.tab_title) end)
+      end
+      if is_windows and is_ai and pane then
+        wezterm.sleep_ms(2000)
+        local cmd = resume_command_for_entry(e, args)
+        pcall(function() pane:send_text(cmd .. '\r') end)
       end
       if i < #entries and stagger_ms > 0 then
         wezterm.sleep_ms(stagger_ms)

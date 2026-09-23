@@ -92,7 +92,10 @@ const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 
 function liveAvailable() {
   const env = muxEnv();
   if (!env) return null;
-  try { JSON.parse(cli(env, ['list', '--format', 'json'])); return env; } catch { return null; }
+  try {
+    const list = JSON.parse(cli(env, ['list', '--format', 'json']));
+    return Array.isArray(list) && list.length > 0 ? env : null;
+  } catch { return null; }
 }
 
 test('AC3 live: un payload de 3 lineas llega a un TUI ESTRICTO (cada salto = Enter) como EXACTAMENTE UN prompt; composer vacio; exit 0; el log declara el aplanado', { skip: !liveAvailable() && 'wezterm mux no alcanzable' }, () => {

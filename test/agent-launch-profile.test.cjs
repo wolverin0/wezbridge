@@ -37,7 +37,7 @@ test('old Claude snapshot cannot duplicate the selected live Codex owner', t => 
   const entry = { ai: 'claude', cwd: 'file:///G:/Fixture%20Apps/wezbridge/' };
   const { keep, skipped } = restore.excludeAlreadyLive([entry], [{ agent: 'codex', cwd: CWD }]);
   assert.equal(keep.length, 0);
-  assert.deepEqual(skipped, [entry]);
+  assert.deepEqual(skipped, [{ ...entry, reason: 'already-live' }]);
 });
 
 test('snapshot recovery honors the selected model and exact conversation', t => {

@@ -23,7 +23,7 @@ function callTool(name, args, env = {}, timeoutMs = 60000) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [ENTRY], {
       cwd: path.join(__dirname, '..'),
-      env: { ...process.env, ...env },
+      env: { WEZTERM_PANE: '1', ...process.env, ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';

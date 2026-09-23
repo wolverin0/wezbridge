@@ -35,16 +35,81 @@ const DEFAULT_LOG = path.resolve(__dirname, '..', 'vault', '_wezbridge', 'sessio
 const AI_CLI_PATTERNS = [
   { pattern: /\bclaude(?:\.exe)?\b/i, kind: 'claude' },
   { pattern: /\bcodex(?:\.exe)?\b/i, kind: 'codex' },
+  { pattern: /\b(?:agy|antigravity)(?:\.exe)?\b/i, kind: 'agy' },
 ];
 
+const KNOWN_PROJECT_MAP = {
+  'network-audit': 'G:/_OneDrive/OneDrive/Desktop/Py Apps/whatsappbot-main-wt',
+  'wabot': 'G:/_OneDrive/OneDrive/Desktop/Py Apps/whatsappbot-main-wt',
+  'whatsappbot': 'G:/_OneDrive/OneDrive/Desktop/Py Apps/whatsappbot-main-wt',
+  'whatsappbot-main-wt': 'G:/_OneDrive/OneDrive/Desktop/Py Apps/whatsappbot-main-wt',
+  'bot-rf-optimizer': 'G:/_OneDrive/OneDrive/Desktop/Py Apps/_worktrees/bot-rf-optimizer',
+  'bot-rf': 'G:/_OneDrive/OneDrive/Desktop/Py Apps/_worktrees/bot-rf-optimizer',
+  'asistenteshop': 'G:/_OneDrive/OneDrive/Desktop/Py Apps/asistenteshop',
+  'memorymaster': 'G:/_OneDrive/OneDrive/Desktop/Py Apps/memorymaster',
+  'futuramax': 'G:/_OneDrive/OneDrive/Desktop/Py Apps/futuraMAX',
+  'infra': 'G:/_OneDrive/OneDrive/Desktop/Py Apps/infra',
+  'wezbridge': 'G:/_OneDrive/OneDrive/Desktop/Py Apps/wezbridge',
+  'hermeskid': 'C:/Users/pauol/Desktop/kid-hermes-live',
+  'kid-hermes': 'C:/Users/pauol/Desktop/kid-hermes-live',
+  'crm': 'G:/_OneDrive/OneDrive/Desktop/Py Apps/CRM',
+  'yolo26': 'G:/_OneDrive/OneDrive/Desktop/Py Apps/yolo26',
+  'nereidas': 'G:/_OneDrive/OneDrive/Desktop/Py Apps/nereidas',
+  'w11install': 'C:/Users/pauol',
+  'orch': 'C:/Users/pauol',
+  'jevresearch': 'G:/_OneDrive/OneDrive/Desktop/Py Apps',
+  'claudelauncher': 'C:/Users/pauol/claude-launcher',
+  'claude-launcher': 'C:/Users/pauol/claude-launcher',
+};
+
+const KNOWN_PROJECT_AI_MAP = {
+  'w11install': 'agy',
+  'orch': 'agy',
+  'bot-rf-optimizer': 'agy',
+  'asistenteshop': 'agy',
+  'claudelauncher': 'agy',
+  'memorymaster': 'codex',
+  'yolo26': 'codex',
+  'infra': 'codex',
+  'network-audit': 'claude',
+  'wabot': 'claude',
+  'crm': 'claude',
+  'futuramax': 'claude',
+  'jevresearch': 'claude',
+};
+
+function resolveCanonicalCwd(cwd, tabTitle) {
+  const norm = (s) => (s || '').replace(/^file:\/\/\/?/, '').replace(/[\/\\]+$/, '').replace(/\\/g, '/');
+  const normalized = norm(cwd);
+  const homeDir = norm(process.env.USERPROFILE || process.env.HOME || 'C:/Users/pauol');
+  const cleanTitle = (tabTitle || '').trim().toLowerCase();
+
+  if (KNOWN_PROJECT_MAP[cleanTitle]) {
+    return KNOWN_PROJECT_MAP[cleanTitle];
+  }
+  if (!normalized || normalized.toLowerCase() === homeDir.toLowerCase()) {
+    if (cleanTitle) {
+      const c1 = path.join('G:/_OneDrive/OneDrive/Desktop/Py Apps', tabTitle);
+      if (fs.existsSync(c1)) return c1.replace(/\\/g, '/');
+      const c2 = path.join('G:/_OneDrive/OneDrive/Desktop/Py Apps/_worktrees', tabTitle);
+      if (fs.existsSync(c2)) return c2.replace(/\\/g, '/');
+    }
+  }
+  return cwd;
+}
+
 /**
- * Classify a process as a known AI CLI based on its command line + title.
- * Returns 'claude', 'codex', or null.
+ * Classify a process as a known AI CLI based on its command line + title + tabTitle.
+ * Returns 'claude', 'codex', 'agy', or null.
  */
-function classifyAI(cmdline, title = '') {
-  const haystack = `${cmdline || ''} ${title || ''}`;
+function classifyAI(cmdline, title = '', tabTitle = '') {
+  const haystack = `${cmdline || ''} ${title || ''} ${tabTitle || ''}`;
   for (const { pattern, kind } of AI_CLI_PATTERNS) {
     if (pattern.test(haystack)) return kind;
+  }
+  const cleanTab = (tabTitle || '').trim().toLowerCase();
+  if (KNOWN_PROJECT_AI_MAP[cleanTab]) {
+    return KNOWN_PROJECT_AI_MAP[cleanTab];
   }
   return null;
 }
@@ -86,14 +151,14 @@ function buildSnapshotEntry(pane, cmdline, ts) {
   if (!pane || pane.pane_id == null) return null;
   const title = pane.title || '';
   const tabTitle = pane.tab_title || '';
-  const ai = classifyAI(cmdline, `${title} ${tabTitle}`);
+  const ai = classifyAI(cmdline, title, tabTitle);
   if (!ai) return null;
   return {
     snapshot_ts: ts || new Date().toISOString(),
     pane_id: pane.pane_id,
     tab_id: pane.tab_id ?? null,
     window_id: pane.window_id ?? null,
-    cwd: pane.cwd || null,
+    cwd: resolveCanonicalCwd(pane.cwd, tabTitle) || null,
     pid: pane.pid ?? null,
     title,
     tab_title: tabTitle,
@@ -106,13 +171,6 @@ function _ensureDir(filePath) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
 }
 
-/**
- * Append a batch of snapshot entries (one per AI pane) as a single JSONL
- * batch — every entry shares the same snapshot_ts so readLatestSnapshot can
- * reconstruct the most-recent group cleanly.
- *
- * Returns true if any entries were written.
- */
 // Retention window: entries older than this are dropped on append so the log
 // (and the LEADER+R restore picker) never fills with dead history again —
 // 2,607 stale entries had accumulated by 2026-07-02. Override with
@@ -266,4 +324,7 @@ module.exports = {
   readRichestRecentSnapshot,
   snapshotOnce,
   startWatcher,
+  KNOWN_PROJECT_MAP,
+  KNOWN_PROJECT_AI_MAP,
+  resolveCanonicalCwd,
 };

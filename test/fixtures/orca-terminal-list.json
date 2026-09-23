@@ -1,0 +1,21 @@
+{
+  "id": "fixture",
+  "ok": true,
+  "result": {
+    "terminals": [
+      { "handle": "term_claude1", "worktreePath": "G:/Py Apps/memorymaster", "branch": "refs/heads/main", "tabId": "tab-1",
+        "title": "\u25d0 Revision adversarial MemoryMaster", "connected": true, "writable": true, "lastOutputAt": 1790135696510,
+        "preview": "\u00b7 Pollinating\u2026", "agentIdentity": "claude" },
+      { "handle": "term_codex1", "worktreePath": "G:/Py Apps/memorymaster", "branch": "refs/heads/main", "tabId": "tab-2",
+        "title": "Indica que debo hacer | memorymaster", "connected": true, "writable": true,
+        "preview": "Worked for 2m 45s  \u203a Ask Codex to do anything   gpt-6-sol high", "exitCause": { "kind": "operator_close" } },
+      { "handle": "term_gem1", "worktreePath": "G:/Py Apps/infra", "tabId": "tab-3",
+        "title": "gemini research", "connected": false, "writable": false, "preview": "" },
+      { "handle": "term_shell1", "worktreePath": "G:/Py Apps/wezbridge", "tabId": "tab-4",
+        "title": "pwsh", "connected": true, "writable": true, "preview": "PS G:/> " },
+      { "title": "no handle: dropped" }
+    ],
+    "totalCount": 5,
+    "truncated": false
+  }
+}

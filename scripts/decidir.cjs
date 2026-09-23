@@ -42,7 +42,7 @@ function buildDecideArgs({ task, verdict, why, corr, until, by = 'operator', car
   if (!ruling) throw new Error(`veredicto ${JSON.stringify(verdict)}: usa aprobar | cancelar | diferir (o a | c | d)`);
   if (!String(why || '').trim()) throw new Error('falta el textual del operador: es la razon del ruling, no se inventa');
   if (ruling === 'deferred' && !until) throw new Error('diferir necesita --until <iso futuro>');
-  const args = ['decide', task, '--ruling', ruling, '--why', String(why).trim(), '--source', 'orchestrator-pane', '--by', by];
+  const args = ['decide', task, '--ruling', ruling, '--why', String(why).trim(), '--source', 'ledger-cli', '--by', by];
   const c = corr || (card && card.corr) || null;
   if (c) args.push('--corr', String(c));
   if (until) args.push('--until', String(until));

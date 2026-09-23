@@ -35,6 +35,7 @@ const { intelDir, updateThreads, autoAckResult, recordResultBody } = require('./
 const { logAction } = require('./action-log.cjs');
 const { classifyDelivery } = require('./verified-send.cjs');
 const { decisionDisposition, queuedDecision } = require('./decision-authority.cjs');
+const { withConsumerLock } = require('./queue-consumer-lock.cjs');
 
 const DEFAULTS = {
   maxAttempts: 3, // per entry; cap reached -> flagged and dropped, never retried
@@ -135,7 +136,7 @@ function enqueue(entry, { base } = {}) {
  * the "needs a human look" — visible-but-stuck beats silent-and-gone.
  * Returns { queued, project, id | error }.
  */
-function rescueFailedSend({ toProject, toPane, census, corr, type, fromPane, body }, enqueueFn = enqueue) {
+function rescueFailedSend({ toProject, toPane, census, corr, type, fromPane, body, fromProject = null }, enqueueFn = enqueue) {
   let project = toProject || null;
   if (!project && Array.isArray(census)) {
     const hit = census.find((p) => p.pane_id === toPane);
@@ -147,6 +148,7 @@ function rescueFailedSend({ toProject, toPane, census, corr, type, fromPane, bod
   const q = enqueueFn({
     project: project || '_dead-letter',
     corr, type, from_pane: fromPane,
+    from_project: fromProject,
     resolved_pane: toPane ?? null, submitted: null, delivered: null, ok: false, body,
   });
   return q.ok
@@ -259,13 +261,14 @@ function createConsumer(opts) {
     const consumed = lastNewline + 1;
     let added = 0;
     let expired = 0;
+    let confirmed = 0;
     for (const line of chunk.slice(0, consumed).split('\n')) {
       if (!line.trim()) continue;
       let entry;
       try { entry = JSON.parse(line); } catch { continue; } // corrupt line: skip, never crash
       const id = entry.id || entryId(entry);
       if (entry.ok) { // delivered & verified at send time — nothing to retry
-        if (!deliveredSet.has(id)) { deliveredSet.add(id); state.delivered.push(id); }
+        if (!deliveredSet.has(id)) { deliveredSet.add(id); state.delivered.push(id); confirmed += 1; }
         // A later verified re-send supersedes an earlier failed line of the
         // same logical message — without this, the pending copy re-delivers.
         if (state.pending[id]) { delete state.pending[id]; persistPending(); }
@@ -282,6 +285,8 @@ function createConsumer(opts) {
         project: entry.project || project,
         corr: entry.corr, type: entry.type, from_pane: entry.from_pane, from_project: entry.from_project ?? null,
         body: entry.body, time: entry.time, attempts: 0,
+        submitted: entry.submitted ?? null,
+        ...(entry.submitted === 'submitted' ? { submission_uncertain: true } : {}),
         ...(entry.ruling ? { ruling: entry.ruling } : {}),
         ...(entry.decision_at ? { decision_at: entry.decision_at } : {}),
         ...(entry.recorded ? { recorded: true } : {}),
@@ -291,7 +296,7 @@ function createConsumer(opts) {
     // Order matters (waker rule): pending first, cursor second. A crash between
     // the two re-reads the same lines and the id-dedupe absorbs them.
     if (added) persistPending();
-    if (expired || added) persistDelivered();
+    if (expired || added || confirmed) persistDelivered();
     // T-0314: mismo defecto que el waker — el cursor es una posicion en BYTES y
     // `consumed` cuenta caracteres. Con sobres con acentos, cada pasada de
     // queue-drain veia "archivo rotado", reseteaba a 0 y re-ingestaba entradas
@@ -331,6 +336,21 @@ function createConsumer(opts) {
         ? paneId : null, missing: false };
     }
     if (hit.paneId === null || hit.ambiguous.length) {
+      if (hit.ambiguous.length) {
+        const route = require('./queue-route.cjs');
+        const candidates = panes.filter(p => hit.ambiguous.includes(p.paneId ?? p.pane_id));
+        const readText = cfg.readPaneText || (id => {
+          const wez = require('./wezterm.cjs');
+          wez.invalidateGetTextCache(id);
+          return wez.getFullText(id, 80);
+        });
+        const choice = route.selectAvailable(candidates, readText);
+        if (choice.reason) {
+          route.reportRoute(base, project, choice);
+          log(`project-queue[${project}]: ${choice.reason} ${JSON.stringify(choice.candidates)} - retained pending`);
+        }
+        if (choice.paneId !== null) return {paneId:choice.paneId,missing:false};
+      }
       log(`project-queue[${project}]: ${hit.warning} — not delivering this pass`);
       return { paneId: null, missing: false };
     }
@@ -421,6 +441,9 @@ function createConsumer(opts) {
     for (const id of ids) {
       const entry = state.pending[id];
       if (!entry) continue;
+      // A verified submission may have landed despite an integrity failure.
+      // Rewriting its body is not a repair; retain it for receipt reconciliation.
+      if (entry.submission_uncertain) continue;
       if (state.suppressed[id]?.event === 'queue.entry_dropped') {
         dropEntry(id, entry, state.suppressed[id].reason); dropped += 1; continue;
       }
@@ -484,6 +507,12 @@ function createConsumer(opts) {
         log(`project-queue[${project}]: send failed: ${err.message}`);
       }
       state.lastAttemptAt = now();
+      if (!ok && submitted === 'submitted') {
+        state.pending[id] = { ...entry, submitted, submission_uncertain: true };
+        persistPending();
+        recordEvent({ event: 'queue.submission_uncertain', id, project, corr: entry.corr });
+        break;
+      }
       // T-0329c: submit no verificado PERO el cuerpo ya en el pane = aterrizo,
       // falso negativo. Se cuenta entregado en vez de reintentar y duplicar.
       if (!ok && (integrity == null || !integrity.refused)
@@ -498,6 +527,7 @@ function createConsumer(opts) {
         deliveredSet.add(id);
         state.delivered.push(id);
         persistPending(); persistDelivered();
+        if (!Object.keys(state.pending).length) require('./queue-route.cjs').reportRoute(base, project, null);
         delivered += 1;
         if (entry.from_project === 'decision-relay' && entry.ruling) {
           recordEvent({ event: 'decision.delivered', task: entry.corr, project, pane: targetId, ruling: entry.ruling });
@@ -562,8 +592,51 @@ function createConsumer(opts) {
     return { expiredPending: expired.length };
   }
 
-  /** One deterministic pass: ingest, expire aged pending work, then attempt delivery. */
+  function reconcileLegacySubmissions() {
+    const legacy = new Set(Object.entries(state.pending)
+      .filter(([, entry]) => !Object.hasOwn(entry, 'submitted')).map(([id]) => id));
+    if (!legacy.size) return;
+    // Old consumers discarded submission metadata after moving the cursor.
+    // Recover it from the durable source before permitting any further write.
+    const source = fs.readFileSync(qFile, 'utf8');
+    const submitted = new Set();
+    for (const line of source.split('\n')) {
+      let entry;
+      try { entry = JSON.parse(line); } catch { continue; }
+      const id = entry.id || entryId(entry);
+      if (legacy.has(id) && entry.submitted === 'submitted') submitted.add(id);
+    }
+    for (const id of legacy) state.pending[id] = { ...state.pending[id],
+      submitted: submitted.has(id) ? 'submitted' : null,
+      ...(submitted.has(id) ? { submission_uncertain: true } : {}) };
+    persistPending();
+  }
+
+  function reloadState() {
+    const cursor = readJson(FILES.cursor, { bytes: 0, tail: null });
+    state.cursorBytes = cursor.bytes;
+    state.cursorTail = cursor.tail;
+    state.pending = readJson(FILES.pending, {});
+    state.delivered = readJson(FILES.delivered, []);
+    state.suppressed = readJson(FILES.suppressed, {});
+    deliveredSet.clear();
+    for (const id of state.delivered) deliveredSet.add(id);
+  }
+
+  /** State is refreshed only after winning the cross-process writer exclusion. */
   async function drain({ dryRun = false } = {}) {
+    if (dryRun) return drainLocked({ dryRun });
+    const result = await withConsumerLock(stateDir, async () => {
+      reloadState();
+      return drainLocked({ dryRun });
+    });
+    if (result) return result;
+    log(`project-queue[${project}]: consumer lock held; no state or transport write this pass`);
+    return { project, locked: true, delivered: 0, flagged: 0, pending: Object.keys(state.pending).length };
+  }
+
+  async function drainLocked({ dryRun = false } = {}) {
+    if (!dryRun) reconcileLegacySubmissions();
     let recoveredDrops = 0;
     if (!dryRun) for (const [id, drop] of Object.entries(state.suppressed)) {
       if (drop.event !== 'queue.entry_dropped' || drop.reported) continue;
@@ -588,6 +661,7 @@ function createConsumer(opts) {
     return {
       project,
       pending: Object.keys(state.pending).length,
+      uncertain: Object.values(state.pending).filter(entry => entry.submission_uncertain).length,
       pendingOldestMinutes,
       flagged: Object.keys(readJson(FILES.flags, {})).length,
       cursorBytes: state.cursorBytes,

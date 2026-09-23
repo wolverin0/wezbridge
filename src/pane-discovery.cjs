@@ -230,6 +230,28 @@ function discoverPanes({ wez: wezOps = wez } = {}) {
       projectName = parts[parts.length - 1] || null;
     }
 
+    const KNOWN_PROJECT_MAP = {
+      'network-audit': { name: 'whatsappbot-main-wt', path: 'G:/_OneDrive/OneDrive/Desktop/Py Apps/whatsappbot-main-wt' },
+      'wabot': { name: 'whatsappbot-main-wt', path: 'G:/_OneDrive/OneDrive/Desktop/Py Apps/whatsappbot-main-wt' },
+      'whatsappbot': { name: 'whatsappbot-main-wt', path: 'G:/_OneDrive/OneDrive/Desktop/Py Apps/whatsappbot-main-wt' },
+      'bot-rf-optimizer': { name: 'bot-rf-optimizer', path: 'G:/_OneDrive/OneDrive/Desktop/Py Apps/_worktrees/bot-rf-optimizer' },
+      'bot-rf': { name: 'bot-rf-optimizer', path: 'G:/_OneDrive/OneDrive/Desktop/Py Apps/_worktrees/bot-rf-optimizer' },
+      'asistenteshop': { name: 'asistenteshop', path: 'G:/_OneDrive/OneDrive/Desktop/Py Apps/asistenteshop' },
+      'memorymaster': { name: 'memorymaster', path: 'G:/_OneDrive/OneDrive/Desktop/Py Apps/memorymaster' },
+      'futuramax': { name: 'futuramax', path: 'G:/_OneDrive/OneDrive/Desktop/Py Apps/futuramax' },
+      'infra': { name: 'infra', path: 'G:/_OneDrive/OneDrive/Desktop/Py Apps/infra' },
+      'wezbridge': { name: 'wezbridge', path: 'G:/_OneDrive/OneDrive/Desktop/Py Apps/wezbridge' },
+      'hermeskid': { name: 'hermeskid', path: 'G:/_OneDrive/OneDrive/Desktop/Py Apps/hermeskid' },
+      'claude-launcher': { name: 'claude-launcher', path: 'C:/Users/pauol/claude-launcher' },
+      'claudelauncher': { name: 'claude-launcher', path: 'C:/Users/pauol/claude-launcher' },
+    };
+
+    const cleanTab = (tabTitle || '').trim().toLowerCase();
+    if ((!projectName || projectName.toLowerCase() === 'pauol') && KNOWN_PROJECT_MAP[cleanTab]) {
+      projectName = KNOWN_PROJECT_MAP[cleanTab].name;
+      project = KNOWN_PROJECT_MAP[cleanTab].path;
+    }
+
     const isClaude = !shellPrompt && confidence >= 30;
 
     // Extract persona from tab_title (wezterm's user-set title) or title (process title).
@@ -254,9 +276,9 @@ function discoverPanes({ wez: wezOps = wez } = {}) {
     const weeklyPct = typeof metrics.weekly === 'number' ? metrics.weekly : null;
     const model = metrics.model || null;
 
-    // agent: which CLI this pane runs. Codex wins if detected (a codex pane
-    // never trips the ❯/bypass-permissions Claude markers, but be explicit).
-    const agent = isCodex ? 'codex' : (isClaude ? 'claude' : null);
+    // agent: which CLI this pane runs. Codex wins if detected.
+    const isAgy = !shellPrompt && (/\b(?:agy|antigravity)\b/i.test(`${tabTitle} ${title}`) || /asistenteshop-agy/i.test(text));
+    const agent = isCodex ? 'codex' : (isAgy ? 'agy' : (isClaude ? 'claude' : null));
 
     // T-0281: el socket contra el que este pane_id es valido, y si el texto lo
     // identifica. Sin enumeracion de sockets no se afirma verificacion alguna.

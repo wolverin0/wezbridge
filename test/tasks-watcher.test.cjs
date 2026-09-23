@@ -84,7 +84,11 @@ function spawnWatcher(file, envOverrides = {}) {
     }
   });
 
-  function waitForEvent(predicate, timeoutMs = 4000) {
+  // Raised 4000 -> 8000ms (T-0470): this suite spawns real child processes and
+  // has a documented fs.watch arming race under contention (see file header);
+  // a full-suite run competes for CPU/IO with the other ~1700 tests running
+  // concurrently, which occasionally starved this within the old margin.
+  function waitForEvent(predicate, timeoutMs = 8000) {
     const already = events.find(predicate);
     if (already) return Promise.resolve(already);
     return new Promise((resolve, reject) => {

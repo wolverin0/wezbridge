@@ -146,7 +146,7 @@ function muxEnv() {
 }
 const cli = (env, a, input) => execFileSync(WEZTERM, ['cli', '--prefer-mux', '--no-auto-start', ...a], { env, encoding: 'utf8', timeout: 20000, windowsHide: true, ...(input !== undefined ? { input } : {}) });
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-function live() { const env = muxEnv(); if (!env) return null; try { JSON.parse(cli(env, ['list', '--format', 'json'])); return env; } catch { return null; } }
+function live() { const env = muxEnv(); if (!env) return null; try { const list = JSON.parse(cli(env, ['list', '--format', 'json'])); return Array.isArray(list) && list.length > 0 ? env : null; } catch { return null; } }
 
 test('AC5 live: un pane real registra su rol desde ADENTRO (hook), poke-pane --role le entrega verificado, y al morir el pane el registro se limpia solo', { skip: !live() && 'wezterm mux no alcanzable' }, () => {
   const env = live();

@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+"""
+Foreman Supervisor for Orca Workers
+
+Monitors active worker terminals, detects completion sentinels [WORKER_DONE],
+auto-nudges stuck workers, and notifies the Orchestrator.
+"""
+
+import sys
+import os
+import json
+import subprocess
+import time
+import re
+import argparse
+import hashlib
+from datetime import datetime, timezone
+
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+
+ORCHESTRATOR_NOTIFIER = os.path.join(os.path.dirname(__file__), "notify_orchestrator.py")
+
+# Estado durable (T-0524): Foreman es hijo de la sesion que lo lanza y muere con ella o con
+# el sleep del PC. El estado en disco permite que foreman_watch.py (Task Scheduler) detecte la
+# supervision huerfana y la reanude desde el deadline original, no desde cero.
+_PY_APPS = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
+STATE_DIR = os.environ.get("FOREMAN_STATE_DIR") or os.path.join(_PY_APPS, "_intel", "foreman")
+
+
+def _now_iso():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def state_path(task_id):
+    return os.path.join(STATE_DIR, f"{task_id}.json")
+
+
+def load_state(task_id):
+    try:
+        with open(state_path(task_id), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def save_state(state):
+    """Escritura atomica (tmp + replace). Un fallo de disco se reporta pero no mata la supervision."""
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        path = state_path(state["task_id"])
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, ensure_ascii=False)
+        for attempt in range(5):
+            try:
+                os.replace(tmp, path)
+                return True
+            except PermissionError:  # el watcher puede tenerlo abierto un instante (Windows)
+                time.sleep(0.2 * (attempt + 1))
+        os.remove(tmp)
+    except OSError as e:
+        sys.stderr.write(f"[foreman] no se pudo escribir estado de {state.get('task_id')}: {e}\n")
+    return False
+
+def read_terminal_screen(term_id):
+    """Reads the current rendered screen of an Orca terminal."""
+    try:
+        cmd = ["orca", "terminal", "read", "--terminal", term_id, "--screen", "--json"]
+        res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if res.returncode == 0:
+            data = json.loads(res.stdout)
+            res_obj = data.get("result", {})
+            lines = res_obj.get("terminal", {}).get("tail", [])
+            if not lines:
+                lines = res_obj.get("lines", [])
+            return "\n".join(lines)
+    except Exception as e:
+        sys.stderr.write(f"Error reading terminal {term_id}: {e}\n")
+    return ""
+
+def notify_orchestrator(message):
+    """Sends notification to the Orchestrator terminal."""
+    if os.path.exists(ORCHESTRATOR_NOTIFIER):
+        try:
+            res = subprocess.run([sys.executable, ORCHESTRATOR_NOTIFIER, message], check=False)
+            if res.returncode != 0:
+                # notify_orchestrator ya lo dejo en _intel/foreman/outbox.jsonl; foreman_watch reintenta.
+                sys.stderr.write(f"[foreman] notificacion no entregada (rc={res.returncode}); quedo en outbox\n")
+        except Exception as e:
+            sys.stderr.write(f"Error running notify_orchestrator: {e}\n")
+
+
+SENTINEL_RE = re.compile(r"\[WORKER_DONE\]\s+task_id=([^\s<>]+)\s+outcome=(succeeded|failed)(.*)")
+# Lineas que son ECO de un despacho/instruccion del orquestador, no un cierre del worker.
+ECHO_MARKERS = ("[ORCHESTRATOR]", "[MISSION]", "[MISI", "emiti", "emití", "report=<")
+
+def find_worker_done(screen, task_id):
+    """(task_id, outcome, extra) del ULTIMO cierre real en pantalla, o None.
+    Ignora el texto plantilla y el eco de instrucciones (2026-09-22: dos falsos positivos)."""
+    found = None
+    for line in screen.splitlines():
+        if any(m in line for m in ECHO_MARKERS):
+            continue
+        m = SENTINEL_RE.search(line)
+        if m and (task_id in m.group(1) or m.group(1) == task_id):
+            found = (m.group(1), m.group(2), m.group(3).strip())
+    return found
+
+def _finish(state, status, outcome=None, report=None):
+    if state is None:
+        return
+    state.update({"status": status, "outcome": outcome, "report": report, "finished_at": _now_iso()})
+    save_state(state)
+
+
+def supervise_task(task_id, term_id, max_wait_sec=300, poll_interval=10, deadline=None, state=None):
+    """Polls a worker terminal until [WORKER_DONE] is detected or timeout.
+    deadline (epoch) manda sobre max_wait_sec: un --resume conserva el deadline original.
+    state (dict) se persiste en cada poll; None = sin persistencia (compatibilidad)."""
+    if deadline is None:
+        deadline = time.time() + max_wait_sec
+    last_prompt_nudge = 0
+
+    print(f"[*] Foreman supervisando '{task_id}' en {term_id} (timeout: {max_wait_sec}s, "
+          f"restan {max(0, int(deadline - time.time()))}s)...", flush=True)
+
+    while time.time() < deadline:
+        time.sleep(max(0, min(poll_interval, deadline - time.time())))
+        screen = read_terminal_screen(term_id)
+        if state is not None:
+            state["last_poll"] = _now_iso()
+            state["last_screen_sha1"] = hashlib.sha1(screen.encode("utf-8", "replace")).hexdigest()
+            save_state(state)
+
+        # 1. Check for WORKER_DONE. outcome tiene que ser literal succeeded|failed:
+        #    el texto plantilla del despacho (outcome=<succeeded|failed>) queda eco en
+        #    pantalla y disparaba un falso positivo (medido 2026-09-22, T-0511).
+        hit = find_worker_done(screen, task_id)
+        if hit:
+            done_task_id, outcome, extra = hit
+            print(f"[+] Task {task_id} completada por worker! Outcome: {outcome}")
+            _finish(state, "done", outcome, extra)
+            notify_orchestrator(f"[WORKER_DONE] task_id={task_id} outcome={outcome} {extra}")
+            return {"status": "completed", "outcome": outcome, "details": extra}
+
+        # 2. Check if stuck on confirmation
+        stuck_phrases = [
+            "do you want to proceed",
+            "should i proceed",
+            "waiting for confirmation",
+            "press enter to continue",
+            "(Y/N)"
+        ]
+        lower_screen = screen.lower()
+        if any(p in lower_screen for p in stuck_phrases):
+            # NUNCA auto-confirmar: un "Do you want to proceed?" puede ser un dialogo de permiso
+            # sobre una operacion destructiva (2026-09-22: reescritura de historia git en el pod RF;
+            # el guard de Orca bloqueo 6 nudges de esta rama). Se avisa al orquestador y se espera.
+            if time.time() - last_prompt_nudge > 1800:
+                print(f"[!] Worker en {term_id} espera confirmacion. Avisando al orquestador (sin auto-confirmar).")
+                notify_orchestrator(f"[FOREMAN_STUCK] task_id={task_id} en {term_id}: el worker muestra un prompt de confirmacion. Revisalo vos; Foreman no confirma.")
+                last_prompt_nudge = time.time()
+
+    # Final check before timeout to avoid race condition
+    final_screen = read_terminal_screen(term_id)
+    hit = find_worker_done(final_screen, task_id)
+    if hit:
+        done_task_id, outcome, extra = hit
+        print(f"[+] Task {task_id} completada por worker en chequeo final! Outcome: {outcome}")
+        _finish(state, "done", outcome, extra)
+        notify_orchestrator(f"[WORKER_DONE] task_id={task_id} outcome={outcome} {extra}")
+        return {"status": "completed", "outcome": outcome, "details": extra}
+
+    print(f"[-] Timeout alcanzado para task {task_id}.")
+    _finish(state, "timeout")
+    notify_orchestrator(f"[FOREMAN_TIMEOUT] task_id={task_id} en {term_id} superó {max_wait_sec}s sin emitir WORKER_DONE.")
+    return {"status": "timeout"}
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Foreman Supervisor")
+    parser.add_argument("--task-id", help="Task ID being supervised")
+    parser.add_argument("--terminal", help="Worker terminal handle (e.g. term_...)")
+    parser.add_argument("--timeout", type=int, default=300, help="Max wait seconds")
+    parser.add_argument("--resume", metavar="TASK_ID",
+                        help="Reanudar desde _intel/foreman/<TASK_ID>.json conservando terminal y deadline")
+    parser.add_argument("--fresh", action="store_true",
+                        help="Ignorar un estado 'supervising' previo y reiniciar el timeout")
+    args = parser.parse_args(argv)
+    run(args, parser)
+
+
+def run(args, parser):
+    task_id = args.resume or args.task_id
+    if not task_id:
+        parser.error("--task-id es obligatorio (o --resume TASK_ID)")
+
+    prev = load_state(task_id)
+    if args.resume and (prev is None or not prev.get("terminal") or not prev.get("deadline_epoch")):
+        parser.error(f"--resume {task_id}: no hay estado valido en {state_path(task_id)}")
+    # Reanudar si se pidio, o automaticamente si hay una supervision previa sin cerrar para la
+    # misma terminal (el Foreman anterior murio con su sesion): el timeout NO se reinicia.
+    resume = bool(args.resume) or (
+        not args.fresh and prev is not None
+        and prev.get("status") in ("supervising", "orphaned")
+        and bool(prev.get("deadline_epoch"))
+        and (not args.terminal or prev.get("terminal") == args.terminal))
+
+    if resume:
+        state = prev
+        terminal = prev["terminal"]
+        deadline = float(prev["deadline_epoch"])
+        max_wait = int(prev.get("timeout_sec", args.timeout))
+        state["resumed_at"] = _now_iso()
+        print(f"[*] Reanudando supervision de {task_id} (deadline original {prev.get('deadline')}).", flush=True)
+    else:
+        if not args.terminal:
+            parser.error("--terminal es obligatorio salvo con --resume")
+        terminal = args.terminal
+        max_wait = args.timeout
+        deadline = time.time() + max_wait
+        state = {"task_id": task_id, "terminal": terminal, "started_at": _now_iso(),
+                 "timeout_sec": max_wait, "deadline_epoch": deadline,
+                 "deadline": datetime.fromtimestamp(deadline, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                 "last_poll": None, "last_screen_sha1": None,
+                 "resume_count": 0, "outcome": None, "report": None}
+    state.update({"pid": os.getpid(), "status": "supervising"})
+    save_state(state)
+    return supervise_task(task_id, terminal, max_wait_sec=max_wait, deadline=deadline, state=state)
+
+if __name__ == "__main__":
+    main()

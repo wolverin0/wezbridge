@@ -400,6 +400,11 @@ function createRelay(opts = {}) {
     const worker = resolveWorker(entry, card);
     if (!worker.project) return resolveUndeliverable(id, entry, null, null, 'no-repo', out);
     const project = worker.project;
+    if (!worker.eve && require('./decision-self-delivery.cjs').hasSelfDelivery(intelDir, entry, project)) {
+      markResolved(id);
+      out.delivered.push({task:entry.task,project,ruling:entry.ruling,delivery:'self'});
+      return;
+    }
     const body = buildBody({
       task: entry.task, ruling: entry.ruling, why: entry.why, source: entry.source, card, nextAction: worker.nextAction,
     });

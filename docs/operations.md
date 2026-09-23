@@ -1,3 +1,9 @@
+<!-- doc-head: Runtime operation, recovery and removal of pane-count limiting -->
+Read for environment settings, MCP reload boundaries, mux identity and GUI recovery.
+Pane-count limiting was removed by operator decision 2026-09-10; legacy env limits are ignored.
+Source edits do not update already-loaded MCP processes.
+<!-- /doc-head -->
+
 # Operations — env vars, restart, crash recovery, mux-wedge + GUI-hang triage (wezbridge)
 > Qué cubre: variables de entorno útiles, el gotcha de rebind del daemon :4200, latitud WSL,
 > recuperación de crash de wezterm, el triage mux-lento-vs-mux-wedgeado (firmas idénticas,
@@ -7,7 +13,8 @@
 > responding", hay >1 wezterm-mux-server, o vas a setear env de guards/grader/inbox.
 > Términos clave: WEZBRIDGE_*, restore-session, probeMux, degraded, inconclusive,
 > session-snapshot, --no-auto-start, gui-watchdog, Recover-WezTermGui, mux_split,
-> espacio único de pane_id (--prefer-mux + sock, T-0260), WEZBRIDGE_PREFER_MUX=0, gui_only.
+> espacio único de pane_id (--prefer-mux + sock, T-0260), WEZBRIDGE_PREFER_MUX=0, gui_only,
+> dead-man switch (VM omni-deadman.sh + DaemonSentinel touch, T-0529), deadman-touch.json.
 
 ## Espacio único de pane_id: el mux (T-0260, 2026-09-02)
 
@@ -40,8 +47,9 @@ misma pane era 11 en `sock` y 4 en la GUI). Resolver un id contra "la GUI viva d
   bypass-de-una-vez para los guards v3.2
 - `WEZBRIDGE_MM_INBOX=1` — habilita escrituras del memory-inbox
 - `WEZBRIDGE_GRADER_BACKEND=stub|claude|codex` — backend del outcome-grader
-- `WEZBRIDGE_MAX_PANES` — tope de panes vivos del spawn path (default 5; `0`/`off` desactiva;
-  seteado a 20 por el operador 2026-08-23)
+- `WEZBRIDGE_MAX_PANES` — retirado (decision del operador 2026-09-10): no limita panes.
+  Se ignoran tambien valores heredados como `20`; el tope no vuelve al recargar un MCP.
+  Los MCP ya cargados necesitan recarga para adoptar cambios de codigo o entorno.
 - `WEZBRIDGE_AFFINITY=0` / `WEZBRIDGE_AFFINITY_JSON` — control de la afinidad proyecto→agente
   (default: lee `_intel/affinity.json`)
 - **Censo de panes en worker (T-0321, 2026-09-04)** — el daemon `:4200` ya NO ejecuta wezterm de
@@ -74,6 +82,19 @@ Matar toda instancia stale:
 ```bash
 for pid in $(wmic process where "Name='node.exe' and CommandLine like '%dashboard-server%'" get ProcessId /format:value 2>/dev/null | grep -oE "[0-9]+"); do taskkill //PID $pid //F; done
 ```
+
+## Dead-man switch (VM, T-0529)
+`WezBridge-DaemonSentinel`'s own alert channel (Claude-pane poke) can go
+silent, so it also SSHes to the ubuntu VM on every **up** run and touches
+`~/omniclaude.heartbeat` (skipped on down/wedged/suspect — VM silence then
+means "daemon down" too). VM cron `~/bin/omni-deadman.sh` (`*/15 * * * *`)
+alerts to Telegram when that file is stale >1800s, re-alerts every 6h while
+stale, sends one "recovered" message when it clears. State:
+`~/.omni-deadman.state` (`episode_start`/`last_alert` epochs); test suite:
+`~/bin/test-omni-deadman.sh`. Visible without SSH:
+`_intel/evidence/wezbridge/deadman-touch.json` (`{ok, at, error?}` or
+`{ok:false, skipped:true, reason}`) and `deadman_touch` in every
+`daemon-sentinel.jsonl` line.
 
 ## Latitud WSL
 El operador no usa WSL personalmente — los agentes tienen latitud completa para spawnear panes

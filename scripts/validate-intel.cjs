@@ -12,11 +12,12 @@
  * reales (48 abiertas), salen TRES capas que NO pueden tratarse igual:
  *
  *  CAPA 1 — UNIVERSALES, 0 violaciones hoy. Son hechos estructurales que
- *  siempre valieron: id bien formado, id == nombre de archivo, `state` y `kind`
+ *  siempre valieron: id bien formado, id == nombre de archivo, `state`
  *  en su vocabulario, fechas parseables, `lease.expires_at` parseable,
  *  `depends_on` apuntando a tarjetas que existen. Se validan sobre TODA tarjeta
  *  y fallan cerrado: nacen verdes, asi que cualquier rojo futuro es una
- *  regresion real y no deuda heredada.
+ *  regresion real y no deuda heredada. T-0470: el kind actual se exige a estados
+ *  reactivables; kinds desconocidos en done/cancelled se enumeran como deuda.
  *
  *  CAPA 2 — LA ABIERTA, 3 violaciones y las tres vivas: T-0229, T-0241 y
  *  T-0253, `ready` con `blocked_by: null`. Ese campo es —por el comentario del
@@ -49,6 +50,8 @@ const { execFileSync } = require('node:child_process');
 
 const OPEN_STATES = ['queued', 'ready', 'running', 'review', 'blocked'];
 const STATES = [...OPEN_STATES, 'done', 'failed', 'cancelled'];
+// These states cannot reopen in the ledger FSM; failed CAN reopen and stays strict.
+const TERMINAL_STATES = ['done', 'cancelled'];
 const BLOCKED_BY_VOCAB = ['operator', 'third_party', 'agent'];
 const TASK_FILE = /^T-\d{4}\.json$/;
 
@@ -121,7 +124,9 @@ function validate(rows, { kinds = null, now = Date.now() } = {}) {
     if (!/^T-\d{4}$/.test(String(t.id || ''))) add(row.file, 'id-malformado', `id=${JSON.stringify(t.id)}`);
     else if (`${t.id}.json` !== row.file) add(t.id, 'id-no-coincide-con-archivo', `archivo ${row.file}`);
     if (!STATES.includes(t.state)) add(t.id, 'state-invalido', `state=${JSON.stringify(t.state)}`);
-    if (kinds && !kinds.includes(t.kind)) add(t.id, 'kind-fuera-de-vocabulario', `kind=${JSON.stringify(t.kind)}`);
+    if (kinds && !kinds.includes(t.kind) && !TERMINAL_STATES.includes(t.state)) {
+      add(t.id, 'kind-fuera-de-vocabulario', `kind=${JSON.stringify(t.kind)}`);
+    }
     for (const f of ['created_at', 'updated_at']) {
       if (t[f] !== undefined && !Number.isFinite(Date.parse(t[f]))) add(t.id, 'fecha-no-parseable', `${f}=${JSON.stringify(t[f])}`);
     }
@@ -149,6 +154,8 @@ function validate(rows, { kinds = null, now = Date.now() } = {}) {
   // --- deuda heredada: se CUENTA, nunca gatea -------------------------------
   const tasks = rows.map((r) => r.task).filter(Boolean);
   const debt = {
+    kinds_historicos: tasks.filter(t => kinds && !kinds.includes(t.kind) && TERMINAL_STATES.includes(t.state))
+      .map(t => ({id:t.id, state:t.state, kind:t.kind})),
     sin_criterios: tasks.filter((t) => !Array.isArray(t.acceptance_criteria) || !t.acceptance_criteria.length).length,
     sin_repo: tasks.filter((t) => !String(t.repo || '').trim()).length,
     done_sin_evidencia: tasks.filter((t) => t.state === 'done' && !String(t.evaluator_evidence || '').trim()).length,
@@ -166,7 +173,7 @@ function validateDir(dir = intelDir(), now = Date.now()) {
   return { dir, rows: rows.length, ...r };
 }
 
-module.exports = { validate, validateDir, loadTasks, OPEN_STATES, STATES, BLOCKED_BY_VOCAB, REPO_REQUIRED_SINCE };
+module.exports = { validate, validateDir, loadTasks, OPEN_STATES, STATES, TERMINAL_STATES, BLOCKED_BY_VOCAB, REPO_REQUIRED_SINCE };
 
 if (require.main === module) {
   const r = validateDir();
@@ -174,6 +181,7 @@ if (require.main === module) {
   if (process.argv.includes('--json')) { console.log(JSON.stringify(r, null, 2)); process.exit(r.violations.length ? 1 : 0); }
   console.log(`validate-intel: ${r.total} tarjetas (${r.open} abiertas), ${r.violations.length} violacion(es).`);
   for (const v of r.violations) console.log(`  ${v.id} · ${v.rule} · ${v.detail}`);
+  for (const t of r.debt.kinds_historicos) console.log(`historical kind debt (not dispatchable): ${t.id} ${t.state} kind=${t.kind}`);
   const untracked = r.debt.sin_trackear;
   console.log(`deuda heredada (NO gatea): ${r.debt.sin_criterios} sin criterios · ${r.debt.sin_repo} sin repo · `
     + `${r.debt.done_sin_evidencia} cerradas sin evidencia · `

@@ -454,12 +454,9 @@ function ensureGui() {
 }
 
 /**
- * Lifecycle cap chokepoint (B2, frente 3): every pane-creating path in this
- * module (spawnPane, splitHorizontal, splitVertical — which covers the MCP
- * spawn_session/split_pane tools AND the dashboard handlers) refuses past
- * WEZBRIDGE_MAX_PANES (default 5). Refusal is logged as spawn_refused with
- * the reason; `capExempt` exists for the pane0-watchdog orchestrator
- * recovery, which REPLACES a dead pane and must never be blocked by the cap.
+ * Compatibility hook for the retired lifecycle cap. The lifecycle verdict now
+ * always permits pane creation, including when a shell inherits an old limit.
+ * Keep the calling convention (including capExempt) stable for recovery callers.
  */
 function assertPaneCap(paneCount, cwd) {
   const cap = require('./lifecycle.cjs').evaluateSpawnCap({ paneCount });

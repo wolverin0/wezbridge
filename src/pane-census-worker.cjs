@@ -13,14 +13,14 @@
  *
  * Contrato con el padre (src/pane-census.cjs), por process.send:
  *   (la llamada wezterm en curso NO va por IPC: va por el beacon en archivo, ver abajo)
- *   {t:'census', at, panes}                     el discoverPanes() completo
+ *   {t:'census', at, panes}                     censo del socket de transporte
  *   {t:'snapshot', at, entries}                 un tick de session-snapshot
  *   {t:'log', message} · {t:'error', where, message}
  * Si el padre nos ve colgados en una llamada mas de hangMs, nos mata el arbol
  * (taskkill /T) y relanza: la revival es OBSERVADA por el, no afirmada por nosotros.
  */
 const wez = require('./wezterm.cjs');
-const { discoverPanes } = require('./pane-discovery.cjs');
+const { discoverRoutingPanes } = require('./pane-discovery.cjs');
 const sessionSnapshot = require('./session-snapshot.cjs');
 
 let cfg = {};
@@ -67,7 +67,7 @@ function cycle() {
   const started = Date.now();
   let panes = [];
   try {
-    panes = discoverPanes({ wez: wrapped }) || [];
+    panes = discoverRoutingPanes({ wez: wrapped }) || [];
     send({ t: 'census', at: Date.now(), panes });
   } catch (err) {
     send({ t: 'error', where: 'discover', message: err.message });

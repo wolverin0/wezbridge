@@ -31,13 +31,15 @@ const snap = require(path.resolve(__dirname, '..', 'src', 'session-snapshot.cjs'
 const { orchestratorResumeCommand, isOrchestratorCwd } = require('../src/agent-launch-profile.cjs');
 
 function parseArgs(argv) {
-  const out = { dryRun: false, staggerMs: 2000, filter: null, domain: null };
+  const out = { dryRun: false, staggerMs: 2000, filter: null, domain: null, windowHours: 24, ts: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--dry-run') out.dryRun = true;
     else if (a === '--stagger-ms') out.staggerMs = parseInt(argv[++i], 10) || 2000;
     else if (a === '--filter') out.filter = new RegExp(argv[++i]);
     else if (a === '--domain') out.domain = argv[++i] || null;
+    else if (a === '--hours') out.windowHours = parseFloat(argv[++i]) || 24;
+    else if (a === '--ts') out.ts = argv[++i] || null;
   }
   return out;
 }
@@ -67,7 +69,13 @@ function splitCmdline(cmdline) {
   return out;
 }
 
-function normalizeSnapshotCwd(value) {
+function normalizeSnapshotCwd(value, tabTitle) {
+  if (tabTitle && snap.KNOWN_PROJECT_MAP) {
+    const clean = String(tabTitle).trim().toLowerCase();
+    if (snap.KNOWN_PROJECT_MAP[clean]) {
+      return path.resolve(snap.KNOWN_PROJECT_MAP[clean]);
+    }
+  }
   if (!value) return '';
   let cwd = value;
   if (/^file:/i.test(value)) {
@@ -90,6 +98,7 @@ function resumeCommandFor(ai, cwd) {
   const selected = isOrchestratorCwd(cwd) && orchestratorResumeCommand();
   if (selected) return selected;
   if (ai === 'codex') return 'codex resume --yolo';
+  if (ai === 'agy') return 'agy --model gemini-3.8-flash-high';
   return 'claude --continue --dangerously-skip-permissions';       // default: claude
 }
 
@@ -115,8 +124,19 @@ function paneStillAlive(paneId) {
   return !/\swezterm\s*$/.test(line.trimEnd());  // titulo "wezterm" pelado = el programa murio
 }
 
+function applyTabTitle(paneId, title, opts = {}) {
+  if (!paneId || !title) return false;
+  if (opts.dryRun) { console.log(`[dry-run] set-tab-title --pane-id ${paneId} "${title}"`); return true; }
+  try {
+    const res = spawnSync('wezterm', ['cli', '--prefer-mux', '--no-auto-start', 'set-tab-title', '--pane-id', String(paneId), String(title)], { stdio: 'ignore' });
+    return !res.error && res.status === 0;
+  } catch {
+    return false;
+  }
+}
+
 function spawnPane(entry, opts = {}) {
-  const cwd = normalizeSnapshotCwd(entry.cwd);
+  const cwd = normalizeSnapshotCwd(entry.cwd, entry.tab_title);
   const selected = isOrchestratorCwd(cwd) && orchestratorResumeCommand();
   const parts = selected ? [] : splitCmdline(entry.cmdline);
 
@@ -139,12 +159,16 @@ function spawnPane(entry, opts = {}) {
       console.error(`[restore] failed pane ${entry.pane_id}: ${res.error ? res.error.message : 'exit ' + res.status + ' ' + (res.stderr || '').trim()}`);
       return false;
     }
-    console.log(`[restore] spawned ${entry.ai} pane (was ${entry.pane_id}, now ${(res.stdout || '').trim()}) cwd=${cwd}`);
+    const newPaneId = (res.stdout || '').trim();
+    if (entry.tab_title && newPaneId) {
+      applyTabTitle(newPaneId, entry.tab_title, opts);
+    }
+    console.log(`[restore] spawned ${entry.ai} pane (was ${entry.pane_id}, now ${newPaneId}) cwd=${cwd}`);
     return true;
   }
 
   // Path B: no cmdline → spawn a shell, then type the agent's resume command.
-  const cmd = selected || resumeCommandFor(entry.ai);
+  const cmd = selected || resumeCommandFor(entry.ai, cwd);
   if (opts.dryRun) { console.log(`[dry-run] spawn shell @ ${cwd} → "${cmd}"`); return true; }
   const spawnArgs = ['cli', '--prefer-mux', '--no-auto-start', 'spawn'];
   if (cwd) spawnArgs.push('--cwd', cwd);
@@ -155,6 +179,9 @@ function spawnPane(entry, opts = {}) {
     return false;
   }
   const newPaneId = (res.stdout || '').trim();
+  if (entry.tab_title && newPaneId) {
+    applyTabTitle(newPaneId, entry.tab_title, opts);
+  }
 
   // El pane necesita que su shell arranque antes de poder recibir texto. Sin
   // esta espera el send-text llega a un pane que todavia no lee stdin y se
@@ -170,6 +197,10 @@ function spawnPane(entry, opts = {}) {
   if (alive === false) {
     console.error(`[restore] MURIO pane ${newPaneId} (era ${entry.pane_id}) cwd=${cwd} — el proceso salio al arrancar; NO cuenta como restaurado`);
     return false;
+  }
+  // Re-apply tab title after process initialization in case shell reset it
+  if (entry.tab_title && newPaneId) {
+    applyTabTitle(newPaneId, entry.tab_title, opts);
   }
   const nota = alive === null ? ' (no se pudo verificar: wezterm cli list fallo)' : '';
   console.log(`[restore] spawned ${entry.ai || 'shell'} pane (was ${entry.pane_id}, now ${newPaneId}) cwd=${cwd} → ${cmd}${nota}`);
@@ -192,18 +223,30 @@ function excludeAlreadyLive(entries, livePanes) {
   const selectedLive = (livePanes || []).some(p => (p.agent || p.ai) && isOrchestratorCwd(p.cwd || p.project))
     && Boolean(orchestratorResumeCommand());
   const liveKeys = new Set();
+  const liveTabs = new Set();
   for (const p of livePanes || []) {
     const proj = identity.projectFromCwd(p.cwd || p.project || '');
     const agent = p.agent || p.ai || null;
     if (proj && agent) liveKeys.add(`${agent}:${proj.toLowerCase()}`);
+    if (p.tab_title) liveTabs.add(String(p.tab_title).trim().toLowerCase());
   }
   const keep = [];
   const skipped = [];
+  const FORBIDDEN = new Set(['hermeskid', 'kid-hermes', 'nereidas', 'crm']);
   for (const e of entries) {
     const proj = identity.projectFromCwd(e.cwd || '');
+    const tabClean = String(e.tab_title || '').trim().toLowerCase();
+    const projLower = (proj || '').toLowerCase();
+    if (FORBIDDEN.has(tabClean) || FORBIDDEN.has(projLower)) {
+      skipped.push({ ...e, reason: 'forbidden/exited' });
+      continue;
+    }
     const key = proj && e.ai ? `${e.ai}:${proj.toLowerCase()}` : null;
-    if ((selectedLive && isOrchestratorCwd(e.cwd)) || (key && liveKeys.has(key))) skipped.push(e);
-    else keep.push(e);
+    if ((selectedLive && isOrchestratorCwd(e.cwd)) || (key && liveKeys.has(key)) || (tabClean && liveTabs.has(tabClean))) {
+      skipped.push({ ...e, reason: 'already-live' });
+    } else {
+      keep.push(e);
+    }
   }
   return { keep, skipped };
 }
@@ -213,7 +256,7 @@ function discoverLivePanes() {
     const discovery = require(path.resolve(__dirname, '..', 'src', 'pane-discovery.cjs'));
     return discovery.discoverPanes()
       .filter((p) => p.agent)
-      .map((p) => ({ cwd: p.project, agent: p.agent }));
+      .map((p) => ({ cwd: p.project, agent: p.agent, tab_title: p.tabTitle }));
   } catch {
     // Census down (mux busy) → no exclusions. Restoring a duplicate is worse
     // than restoring nothing, but blocking ALL restore on a flaky census is
@@ -225,18 +268,26 @@ function discoverLivePanes() {
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   const logPath = process.env.WEZBRIDGE_SESSION_SNAPSHOT_LOG || undefined;
-  // T-0234: richest recent group, NOT the latest — the first post-crash tick
-  // holds only the pane the operator already revived, and restoring that group
-  // both skips the fleet and duplicates the live session.
-  const entries = snap.readRichestRecentSnapshot({ logPath });
-  if (entries.length === 0) {
+  const windowMs = (opts.windowHours || 24) * 3600_000;
+  let entries;
+  if (opts.ts) {
+    const all = snap.readAllSnapshots({ logPath });
+    entries = all.filter((e) => e.snapshot_ts === opts.ts);
+  } else {
+    entries = snap.readRichestRecentSnapshot({ logPath, windowMs });
+  }
+  if (!entries || entries.length === 0) {
     console.error('[restore] no snapshot found. Has the session-snapshot daemon ever run?');
     console.error(`[restore]   expected: ${logPath || snap.DEFAULT_LOG}`);
     process.exit(1);
   }
   const { keep, skipped } = excludeAlreadyLive(entries, discoverLivePanes());
   for (const s of skipped) {
-    console.log(`[restore] SKIP ${s.ai} @ ${s.cwd} — that agent is already live in this cwd (duplicate --continue is the mm-99c4 corruption class)`);
+    if (s.reason === 'forbidden/exited') {
+      console.log(`[restore] SKIP ${s.ai} @ ${s.cwd} (tab: ${s.tab_title}) — user requested closed (/exit)`);
+    } else {
+      console.log(`[restore] SKIP ${s.ai} @ ${s.cwd} — that agent is already live in this cwd (duplicate --continue is the mm-99c4 corruption class)`);
+    }
   }
   const filtered = opts.filter
     ? keep.filter((e) => opts.filter.test(e.cwd || '') || opts.filter.test(e.cmdline || ''))
@@ -264,4 +315,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { parseArgs, splitCmdline, normalizeSnapshotCwd, excludeAlreadyLive, resumeCommandFor };
+module.exports = { parseArgs, splitCmdline, normalizeSnapshotCwd, excludeAlreadyLive, resumeCommandFor, applyTabTitle, spawnPane };

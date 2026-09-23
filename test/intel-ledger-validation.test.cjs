@@ -51,6 +51,17 @@ const row = (over = {}, file) => {
 };
 const rules = (rows, opts) => validate(rows, opts).violations.map((v) => v.rule).sort();
 
+test('T0470 terminal unknown kinds are reported debt; every reactivable state still fails', () => {
+  for (const state of ['done', 'cancelled']) {
+    const result = validate([row({state,kind:'historical-kind'})], {kinds:['general']});
+    assert.deepEqual(result.violations, []);
+    assert.deepEqual(result.debt.kinds_historicos, [{id:'T-0001',state,kind:'historical-kind'}]);
+  }
+  for (const state of ['queued','ready','running','review','blocked','failed']) {
+    assert.deepEqual(rules([row({state,kind:'unknown'})], {kinds:['general']}), ['kind-fuera-de-vocabulario']);
+  }
+});
+
 // --- el hallazgo vivo -------------------------------------------------------
 
 test('el plano de control VIVO no tiene tarjetas abiertas sin blocked_by', () => {
