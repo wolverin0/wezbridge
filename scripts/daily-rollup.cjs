@@ -135,6 +135,30 @@ function summarizeRulings(rulings) {
   return { total: (rulings || []).length, byRuling, items: rulings || [] };
 }
 
+/**
+ * Hilos A2A del día: un result a2a-results.jsonl es UN mensaje, no UN hilo —
+ * el mismo (corr, from_pane, to_pane) suele aparecer varias veces por dia
+ * (reintentos, polls). Agrupa y se queda con el ÚLTIMO resultado del hilo ese
+ * día (por `time`), que es lo que el operador de hecho quiere saber: cómo
+ * terminó el hilo hoy, no cuántos mensajes cruzó.
+ */
+function summarizeThreads(results) {
+  const byKey = new Map();
+  for (const r of results || []) {
+    const corr = r.corr || '—';
+    const fromPane = r.from_pane ?? '—';
+    const toPane = r.to_pane ?? '—';
+    const key = `${corr}|${fromPane}|${toPane}`;
+    const prev = byKey.get(key);
+    if (!prev || String(r.time) > String(prev.time)) {
+      byKey.set(key, {
+        corr, from_pane: fromPane, to_pane: toPane, result: r.v2 || 'missing', time: r.time,
+      });
+    }
+  }
+  return [...byKey.values()].sort((a, b) => String(a.corr).localeCompare(String(b.corr)));
+}
+
 function summarizeQueues(queues) {
   const perProject = {};
   for (const q of queues || []) {
@@ -154,6 +178,113 @@ function summarizeQueues(queues) {
     { undelivered: 0, flagged: 0 },
   );
   return { perProject, ...totals };
+}
+
+// ---------------------------------------------------------------------------
+// PURE — tarjetas del día (T-0551, absorbe T-0246)
+// ---------------------------------------------------------------------------
+
+const TERMINAL_STATES = new Set(['done', 'failed', 'cancelled']);
+
+/** Eventos del ledger para UNA tarjeta, en orden cronológico. events.jsonl es
+ * la única fuente con HISTORIA (los .json de tasks/ son snapshot actual), así
+ * que redespachos y duración salen de acá, no del archivo de la tarjeta. */
+function eventsForTask(events, id) {
+  return (events || [])
+    .filter((e) => e && e.task_id === id)
+    .sort((a, b) => String(a.time).localeCompare(String(b.time)));
+}
+
+/** ¿Quién pidió el despacho? actions.jsonl trae `corr` desde T-0303 (spawn_pane
+ * / queue_deliver con corr=task id) — se usa como PRIMARIA. rulings.jsonl
+ * (quién resolvió la carta) es el fallback cuando no hubo un despacho activo
+ * (p.ej. una carta que se cerró directo por ruling del operador). */
+function dispatcherFor(id, actionsAll, rulingsAll) {
+  const dispatches = (actionsAll || [])
+    .filter((a) => a && a.corr === id && ['spawn_pane', 'queue_deliver'].includes(a.action));
+  if (dispatches.length) return dispatches[dispatches.length - 1].actor || '—';
+  const ruling = (rulingsAll || []).find((r) => r && r.task === id);
+  if (ruling) return ruling.by || ruling.source || '—';
+  return '—';
+}
+
+/** Redespachos = veces que se volvió a mandar trabajo para el MISMO corr, de
+ * más. Cuenta spawn_pane/queue_deliver en actions.jsonl + envíos en las colas
+ * de proyecto, ambos con corr=id, histórico completo (no solo el día). */
+function redispatchCount(id, actionsAll, queueRecordsAll) {
+  const dispatchActions = (actionsAll || [])
+    .filter((a) => a && a.corr === id && ['spawn_pane', 'queue_deliver'].includes(a.action)).length;
+  const queueSends = (queueRecordsAll || []).filter((q) => q && q.corr === id).length;
+  const total = dispatchActions + queueSends;
+  return total > 1 ? total - 1 : 0;
+}
+
+/**
+ * UNA fila de "Tarjetas del día". Todo lo que puede leerse del snapshot
+ * (repo, evidence, criterios) sale de `task`; duración/redespachos/espera
+ * salen de la HISTORIA en `events` porque el snapshot solo tiene el estado
+ * final. `model`/`effort`/`runtime` hoy casi siempre son `—` — el ledger
+ * todavía no los graba por tarjeta (pendiente, ver brief 2026-09-23) — pero
+ * el campo se lee si aparece, así esto no necesita tocarse cuando se agregue.
+ */
+function buildCardRow(task, events, actionsAll, rulingsAll, queueRecordsAll) {
+  const id = task.id;
+  const evs = eventsForTask(events, id);
+  const closingEvent = [...evs].reverse()
+    .find((e) => e.event === 'task.updated' && TERMINAL_STATES.has(e.state)) || null;
+  const cutoff = closingEvent ? closingEvent.time : null;
+  const runningEvents = evs.filter((e) => e.event === 'task.updated' && e.state === 'running'
+    && (!cutoff || String(e.time) <= String(cutoff)));
+  const startEvent = runningEvents.length ? runningEvents[runningEvents.length - 1] : null;
+
+  const leaseEvents = evs.filter((e) => e.event === 'task.leased');
+  const owner = (task.lease && task.lease.owner)
+    || (leaseEvents.length ? leaseEvents[leaseEvents.length - 1].owner : null)
+    || '—';
+
+  let durationHours = null;
+  if (startEvent && closingEvent) {
+    const ms = new Date(closingEvent.time).getTime() - new Date(startEvent.time).getTime();
+    if (Number.isFinite(ms) && ms >= 0) durationHours = Math.round((ms / 3600000) * 10) / 10;
+  }
+
+  const operatorGateEvents = evs.filter((e) => e.event === 'task.updated' && e.blocked_by === 'operator'
+    && (!cutoff || String(e.time) <= String(cutoff)));
+  let decisionWaitHours = null;
+  if (operatorGateEvents.length) {
+    const gateStart = operatorGateEvents[0].time;
+    const endTime = closingEvent ? closingEvent.time : new Date().toISOString();
+    const ms = new Date(endTime).getTime() - new Date(gateStart).getTime();
+    if (Number.isFinite(ms) && ms >= 0) decisionWaitHours = Math.round((ms / 3600000) * 10) / 10;
+  }
+
+  let outcome = task.state || '?';
+  if (task.state === 'done' && /ABANDON/i.test(task.evaluator_evidence || '')) outcome = 'done (ABANDON en evidencia)';
+
+  return {
+    id,
+    repo: task.repo || '—',
+    owner,
+    dispatchedBy: dispatcherFor(id, actionsAll, rulingsAll),
+    model: task.model || '—',
+    effort: task.effort || '—',
+    durationHours,
+    outcome,
+    redispatches: redispatchCount(id, actionsAll, queueRecordsAll),
+    decisionWaitHours,
+    source: `tasks/${id}.json + events.jsonl`,
+  };
+}
+
+/** Filas del día: tarjetas cuyo ÚLTIMO cambio de estado (state_changed_at,
+ * escrito SOLO en transiciones reales por writeTask — ver ledger.cjs) cayó en
+ * `date`. Una tarjeta con varias transiciones el mismo día sólo aparece una
+ * vez, con su estado final; el detalle intermedio vive en events.jsonl. */
+function buildCardRows(tasks, events, date, { actionsAll, rulingsAll, queueRecordsAll } = {}) {
+  return (tasks || [])
+    .filter((t) => t && isOnDate(t.state_changed_at, date))
+    .map((t) => buildCardRow(t, events, actionsAll, rulingsAll, queueRecordsAll))
+    .sort((a, b) => a.id.localeCompare(b.id));
 }
 
 // ---------------------------------------------------------------------------
@@ -241,17 +372,51 @@ const trunc = (s, n) => { const t = String(s || '').replace(/\s+/g, ' ').trim();
 
 function renderRollup(data) {
   const {
-    date, generatedAt, turns, actions, results, rulings, gates, census, ledger, queues,
+    date, generatedAt, turns, actions, results, rulings, gates, census, ledger, queues, cards, threads,
   } = data;
   const L = [];
   // Doc-head: 7 líneas densas y greppeables (regla de instrucción global).
   L.push(`# Rollup diario del operador — ${date}`);
-  L.push(`Generado ${generatedAt} por scripts/daily-rollup.cjs — determinista, $0, sin LLM. Fuente: _intel/{turns,actions.jsonl,a2a-results.jsonl,rulings.jsonl,queues,tasks} + gates latest + schtasks.`);
-  L.push('Cubre: gates, turnos del waker (clases + % sin acción, meta <20%), acciones de flota, results A2A con ledger de decisiones (menor confianza primero), rulings, colas por proyecto, census de scheduled tasks (Last Result, clase silent-failure), resumen del ledger, autoeval del orquestador.');
-  L.push('Key terms: waker_skip, silent-failure, contract-signal, auto_ack, auto_close_shadow, spawn_refused, misroutes, decisions ledger.');
+  L.push(`Generado ${generatedAt} por scripts/daily-rollup.cjs — determinista, $0, sin LLM. Fuente: _intel/{turns,actions.jsonl,a2a-results.jsonl,rulings.jsonl,queues,tasks,events.jsonl} + gates latest + schtasks.`);
+  L.push('Cubre: gates, turnos del waker (clases + % sin acción, meta <20%), acciones de flota, results A2A con ledger de decisiones (menor confianza primero), tarjetas del día (por carril/owner, model/effort, duración, redespachos, espera de decisión), hilos A2A del día, decisiones del operador, rulings, colas por proyecto, census de scheduled tasks (Last Result, clase silent-failure), resumen del ledger, autoeval del orquestador.');
+  L.push('Key terms: waker_skip, silent-failure, contract-signal, auto_ack, auto_close_shadow, spawn_refused, misroutes, decisions ledger, redespacho, espera de decisión.');
   L.push('Leer cuando: revisión matinal del operador. El histórico vive en _intel/rollups/.');
   L.push('Regla: cada número cita su fuente; un número sin fuente es prosa.');
   L.push('Ventana: día LOCAL del operador; la corrida de 02:30 cierra el día anterior.');
+  L.push('');
+
+  L.push(`## Tarjetas del día (${(cards || []).length} — fuente _intel/tasks/*.json state_changed_at + events.jsonl)`);
+  if (!(cards || []).length) {
+    L.push('- ninguna tarjeta cambió de estado hoy.');
+  } else {
+    L.push('| id | repo | carril/owner | model/effort | pidió | duración | resultado | redespachos | espera decisión | fuente |');
+    L.push('|---|---|---|---|---|---|---|---|---|---|');
+    for (const c of cards) {
+      const duration = c.durationHours === null ? '—' : `${c.durationHours}h`;
+      const wait = c.decisionWaitHours === null ? '—' : `${c.decisionWaitHours}h`;
+      L.push(`| ${c.id} | ${c.repo} | ${c.owner} | ${c.model}/${c.effort} | ${c.dispatchedBy} | ${duration} | ${c.outcome} | ${c.redispatches} | ${wait} | ${c.source} |`);
+    }
+  }
+  L.push('');
+
+  L.push(`## Hilos A2A del día (${(threads || []).length} — fuente a2a-results.jsonl, último resultado por hilo)`);
+  if (!(threads || []).length) {
+    L.push('- sin hilos A2A hoy.');
+  } else {
+    L.push('| corr | de → a | resultado |');
+    L.push('|---|---|---|');
+    for (const t of threads) L.push(`| ${t.corr} | pane-${t.from_pane} → pane-${t.to_pane} | ${t.result} |`);
+  }
+  L.push('');
+
+  L.push(`## Decisiones del operador (${rulings.total} — fuente rulings.jsonl)`);
+  if (!rulings.items.length) {
+    L.push('- sin decisiones hoy.');
+  } else {
+    for (const r of rulings.items) {
+      L.push(`- ${r.task} → ${r.ruling}${r.by ? ` (${r.by})` : ''}${r.until ? ` (hasta ${r.until})` : ''}: ${trunc(r.why, 140)}`);
+    }
+  }
   L.push('');
 
   L.push('## Gates');
@@ -282,11 +447,8 @@ function renderRollup(data) {
   }
   L.push('');
 
-  L.push(`## Rulings (${rulings.total} — fuente rulings.jsonl)`);
+  L.push(`## Rulings — histograma (${rulings.total} — fuente rulings.jsonl; detalle en "Decisiones del operador" arriba)`);
   L.push(`- ${fmtHist(rulings.byRuling)}`);
-  for (const r of rulings.items) {
-    L.push(`  - ${r.task} → ${r.ruling}${r.until ? ` (hasta ${r.until})` : ''}: ${trunc(r.why, 140)}`);
-  }
   L.push('');
 
   L.push('## Colas por proyecto (fuente _intel/queues/)');
@@ -343,6 +505,44 @@ function readJsonl(file, date, tsField) {
     return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).flatMap((l) => {
       try { const o = JSON.parse(l); return isOnDate(o[tsField], date) ? [o] : []; } catch { return []; }
     });
+  } catch { return []; }
+}
+
+/** Histórico completo, sin filtro de fecha — para redespachos/duración de
+ * tarjetas, que pueden haber arrancado días antes de cerrarse hoy. */
+function readJsonlAll(file) {
+  try {
+    return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).flatMap((l) => {
+      try { return [JSON.parse(l)]; } catch { return []; }
+    });
+  } catch { return []; }
+}
+
+function collectEvents(dir) {
+  return readJsonlAll(path.join(dir, 'events.jsonl'));
+}
+
+function collectAllActions(dir) {
+  return readJsonlAll(path.join(dir, 'actions.jsonl'));
+}
+
+function collectAllRulings(dir) {
+  return readJsonlAll(path.join(dir, 'rulings.jsonl'));
+}
+
+function collectAllQueueRecords(dir) {
+  const { listQueues } = require(path.join(REPO, 'src', 'project-queue.cjs'));
+  return listQueues({ base: dir })
+    .flatMap((project) => readJsonlAll(path.join(dir, 'queues', `${project}.jsonl`)));
+}
+
+function collectAllTasks(dir) {
+  try {
+    return fs.readdirSync(path.join(dir, 'tasks'))
+      .filter((f) => f.endsWith('.json'))
+      .flatMap((f) => {
+        try { return [JSON.parse(fs.readFileSync(path.join(dir, 'tasks', f), 'utf8'))]; } catch { return []; }
+      });
   } catch { return []; }
 }
 
@@ -428,13 +628,21 @@ function collectCensus() {
 function generateRollup({ now = new Date(), date, dryRun = false, censusRows } = {}) {
   const dir = intelDir();
   const day = date || reportDateFor(now);
+  const resultsRaw = readJsonl(path.join(dir, 'a2a-results.jsonl'), day, 'time');
+  const allTasks = collectAllTasks(dir);
+  const events = collectEvents(dir);
+  const actionsAll = collectAllActions(dir);
+  const rulingsAll = collectAllRulings(dir);
+  const queueRecordsAll = collectAllQueueRecords(dir);
   const data = {
     date: day,
     generatedAt: now.toISOString(),
     turns: summarizeTurns(collectTurns(dir, day)),
     actions: summarizeActions(readJsonl(path.join(dir, 'actions.jsonl'), day, 'ts')),
-    results: summarizeResults(readJsonl(path.join(dir, 'a2a-results.jsonl'), day, 'time')),
+    results: summarizeResults(resultsRaw),
+    threads: summarizeThreads(resultsRaw),
     rulings: summarizeRulings(readJsonl(path.join(dir, 'rulings.jsonl'), day, 'at')),
+    cards: buildCardRows(allTasks, events, day, { actionsAll, rulingsAll, queueRecordsAll }),
     gates: {
       steward: readFirstLine(path.join(dir, 'steward-gate-latest.txt')),
       boardFresh: readFirstLine(path.join(dir, 'board-fresh-gate-latest.txt')),
@@ -454,7 +662,10 @@ function generateRollup({ now = new Date(), date, dryRun = false, censusRows } =
       logAction('daily_rollup', {
         target: outFile,
         why: `rollup diario ${day}`,
-        extra: { turns: data.turns.total, actions: data.actions.total, results: data.results.total, silent_failures: data.census.silent.length },
+        extra: {
+          turns: data.turns.total, actions: data.actions.total, results: data.results.total,
+          silent_failures: data.census.silent.length, cards: data.cards.length,
+        },
       });
     } catch { /* la observabilidad no rompe el rollup */ }
   }
@@ -464,6 +675,25 @@ function generateRollup({ now = new Date(), date, dryRun = false, censusRows } =
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
+
+/**
+ * ¿Corre esto en una sesión con alguien mirando? SESSIONNAME existe en
+ * sesiones interactivas de Windows (RDP/consola) y está AUSENTE cuando el
+ * Task Scheduler dispara la tarea oculta (contexto de servicio) — es la señal
+ * barata que ya usa run-hidden.vbs indirectamente (ver ese archivo). Sin
+ * SESSIONNAME, `start` no tiene a quién mostrarle nada y solo ensucia logs.
+ */
+function isInteractiveSession() {
+  return Boolean(process.env.SESSIONNAME) && process.stdout.isTTY !== false;
+}
+
+function openHtml(htmlPath) {
+  try {
+    const { spawnSync: sp } = require('node:child_process');
+    sp('cmd.exe', ['/c', 'start', '""', htmlPath], { windowsHide: true });
+    return true;
+  } catch { return false; }
+}
 
 function main() {
   const dryRun = process.argv.includes('--dry-run');
@@ -476,7 +706,15 @@ function main() {
   try {
     const { file, data } = generateRollup({ date, dryRun });
     console.log(`${new Date().toISOString()} daily-rollup${dryRun ? ' (dry-run)' : ''}: ${file}`);
-    console.log(`  turnos=${data.turns.total} acciones=${data.actions.total} results=${data.results.total} rulings=${data.rulings.total} silent-failures=${data.census.silent.length}`);
+    console.log(`  turnos=${data.turns.total} acciones=${data.actions.total} results=${data.results.total} rulings=${data.rulings.total} silent-failures=${data.census.silent.length} tarjetas=${data.cards.length}`);
+    try {
+      const { renderRollupHtml } = require(path.join(__dirname, 'rollup-to-html.cjs'));
+      const htmlFile = renderRollupHtml(file);
+      console.log(`  html: ${htmlFile}`);
+      if (isInteractiveSession() && !dryRun) openHtml(htmlFile);
+    } catch (err) {
+      console.error(`  rollup-to-html no corrió (no rompe el rollup): ${err.message}`);
+    }
     return 0;
   } catch (err) {
     console.error(`daily-rollup BROKE: ${err.stack || err.message}`);
@@ -488,6 +726,8 @@ if (require.main === module) process.exit(main());
 module.exports = {
   reportDateFor, localDateOf, isOnDate,
   summarizeTurns, summarizeActions, summarizeResults, summarizeRulings, summarizeQueues, summarizeCancellations,
+  summarizeThreads, buildCardRows, buildCardRow, eventsForTask, dispatcherFor, redispatchCount,
   sortDecisions, parseSchtasksCsv, classifyCensusRow, summarizeCensus, CONTRACT_NONZERO,
-  renderRollup, generateRollup,
+  renderRollup, generateRollup, isInteractiveSession,
+  collectAllTasks, collectEvents, collectAllActions, collectAllRulings, collectAllQueueRecords,
 };
