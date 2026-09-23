@@ -25,6 +25,7 @@
  *   node scripts/sp-bridge.cjs sync-intake         # Intake -> _intel/intake/<taskId>.json + write-back del T-id
  *   node scripts/sp-bridge.cjs sync-briefs        # cinco briefs -> Avisos, SHA idempotente
  *   node scripts/sp-bridge.cjs sync                # decisions, intake, outcomes, briefs (schtask)
+ *   node scripts/sp-bridge.cjs check-notes         # T-0494: lista fleet: con blocker desactualizado (solo lee, no toca SP)
  */
 const fs = require('node:fs');
 const os = require('node:os');
@@ -115,6 +116,12 @@ function saveMap(map, intel = INTEL) {
   fs.renameSync(tmp, f);
 }
 const extMarker = (ext) => `[ext:${ext}]`;
+// T-0494: delimitadores del bloque "blocker" de la nota de decisiones. Todo lo
+// que appendNoteOnce agrega (estado, result, /act) queda SIEMPRE fuera de este
+// bloque, asi refrescar el blocker nunca pisa esa historia.
+const BLOCKER_START = '[[sp-bridge:blocker]]';
+const BLOCKER_END = '[[/sp-bridge:blocker]]';
+const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // ---------------------------------------------------------------- operaciones de alto nivel
 function createHub(client, { intel = INTEL, log = () => {}, boardUrl = BOARD_URL, boardToken = null } = {}) {
@@ -141,11 +148,64 @@ function createHub(client, { intel = INTEL, log = () => {}, boardUrl = BOARD_URL
       return decisionActions(boardUrl, boardToken, taskId).map((a) => `${a.label}: ${a.url}`).join('\n');
     } catch { return ''; }
   }
+  // T-0494 fix-up: el bloque delimitado NUNCA embebe los enlaces /act — quedan
+  // exclusivamente a cargo de appendNoteOnce(ACT_LINKS_KEY) (abajo, en creacion
+  // y en el branch de tarea existente), asi refrescar el blocker nunca duplica
+  // los enlaces que ya viven fuera del bloque.
   function decisionNotes(c) {
-    const links = actLinksBlock(c.id);
-    return `${c.blocker || 'esperando tu decision'}\n\nDecidir en el tablero: ${boardUrl} (o /decidir ${c.id} en el pane)`
-      + (links ? `\n${links}` : '')
+    const body = `${c.blocker || 'esperando tu decision'}\n\nDecidir en el tablero: ${boardUrl} (o /decidir ${c.id} en el pane)`
       + `\ncorr: ${c.corr || '-'} · repo: ${c.repo || '-'}`;
+    return `${BLOCKER_START}\n${body}\n${BLOCKER_END}`;
+  }
+  // T-0494: la nota solo se escribia al CREAR la tarea; si infra cambiaba el
+  // blocker despues (misma tarjeta, pregunta nueva) los syncs siguientes nunca
+  // la actualizaban (4/20 tareas abiertas con blocker superado, medido 20/09).
+  // map[ext].blocker guarda el ULTIMO blocker escrito: si cambio, se reemplaza
+  // solo el bloque delimitado por BLOCKER_START/END, dejando intacto todo lo
+  // que appendNoteOnce agrego despues (estado, result, /act).
+  async function refreshBlockerOnce(ext, c) {
+    const map = loadMap(intel);
+    const e = map[ext];
+    if (!e) return false;
+    const nextBlocker = c.blocker || '';
+    if (e.blocker === nextBlocker) return false;
+    const tasks = await client.getTasks();
+    const t = tasks.find((x) => x.id === e.taskId);
+    if (!t) return false;
+    const head = decisionNotes(c);
+    const current = t.notes || '';
+    const re = new RegExp(`${escapeRegExp(BLOCKER_START)}[\\s\\S]*?${escapeRegExp(BLOCKER_END)}`);
+    // T-0494 fix-up: solo la nota LEGACY (sin delimitadores) recibe el separador,
+    // y solo una vez — a partir de este refresh la nota ya tiene delimitadores,
+    // asi que los refrescos siguientes van por la rama re.test() (reemplazo).
+    const LEGACY_SEP = '── nota anterior (pregunta superada) ──';
+    const nextNotes = re.test(current) ? current.replace(re, head) : `${head}\n\n${LEGACY_SEP}\n\n${current}`.trim();
+    if (nextNotes !== current) await client.updateTask(e.taskId, { notes: nextNotes });
+    e.blocker = nextBlocker;
+    saveMap(map, intel);
+    return true;
+  }
+  // T-0494 AC4: detector puramente de archivo (map.json + tarjetas), sin tocar
+  // el cliente de SP — seguro de correr contra el estado real en modo lectura.
+  function checkNotes(cards = readCards()) {
+    const map = loadMap(intel);
+    const out = [];
+    for (const [ext, e] of Object.entries(map)) {
+      if (!ext.startsWith('fleet:') || e.doneAt) continue;
+      const id = taskIdOf(ext);
+      if (activeExt(map, id) !== ext) continue; // las vueltas viejas ya cerraron
+      const card = cards.find((x) => x && x.id === id);
+      if (!card || !isOperatorGated(card)) continue;
+      const cardBlocker = card.blocker || '';
+      if (e.blocker === undefined || e.blocker !== cardBlocker) {
+        out.push({
+          id, ext,
+          noteHead: String(e.blocker === undefined ? '(sin registrar: entrada anterior a T-0494)' : e.blocker).slice(0, 60),
+          blockerHead: cardBlocker.slice(0, 60),
+        });
+      }
+    }
+    return out;
   }
 
   async function ensureProject(title) {
@@ -320,11 +380,26 @@ function createHub(client, { intel = INTEL, log = () => {}, boardUrl = BOARD_URL
       });
       if (r.created) {
         out.created += 1;
-        if (boardToken) { const m = loadMap(intel); if (m[ext]) { m[ext].notesAppended = [ACT_LINKS_KEY]; saveMap(m, intel); } }
-      } else if (boardToken) {
-        // Tarea creada antes de que existieran los enlaces firmados: se le pegan UNA vez.
-        const links = actLinksBlock(c.id);
-        if (links && await appendNoteOnce(ext, links, ACT_LINKS_KEY)) out.linked += 1;
+        const m = loadMap(intel);
+        if (m[ext]) {
+          m[ext].blocker = c.blocker || '';
+          saveMap(m, intel);
+        }
+        if (boardToken) {
+          // T-0494 fix-up: los enlaces /act se pegan por appendNoteOnce igual que
+          // en el branch de tarea existente — una sola fuente de verdad para la
+          // key ACT_LINKS_KEY, sin marcarla "ya puesta" sin haberla escrito.
+          const links = actLinksBlock(c.id);
+          if (links && await appendNoteOnce(ext, links, ACT_LINKS_KEY)) out.linked += 1;
+        }
+      } else {
+        // T-0494: tarea existente — si infra cambio el blocker, refrescarlo.
+        await refreshBlockerOnce(ext, c);
+        if (boardToken) {
+          // Tarea creada antes de que existieran los enlaces firmados: se le pegan UNA vez.
+          const links = actLinksBlock(c.id);
+          if (links && await appendNoteOnce(ext, links, ACT_LINKS_KEY)) out.linked += 1;
+        }
       }
     }
     const map = loadMap(intel);
@@ -373,7 +448,7 @@ function createHub(client, { intel = INTEL, log = () => {}, boardUrl = BOARD_URL
   }
 
   const syncBriefs = () => require('./sp-briefs.cjs').syncBriefs({ client, intel, ensureProject, ensureTag });
-  return { ensureProject, ensureProjects, ensureTag, createTaskOnce, completeOnce, appendNoteOnce, syncDecisions, syncIntake, syncOutcomes, syncBriefs, recordDecision, readCards };
+  return { ensureProject, ensureProjects, ensureTag, createTaskOnce, completeOnce, appendNoteOnce, syncDecisions, syncIntake, syncOutcomes, syncBriefs, recordDecision, readCards, checkNotes };
 }
 
 // ---------------------------------------------------------------- CLI
@@ -404,6 +479,16 @@ function boardConfigFromEnv(env = process.env) {
 async function main() {
   const { pos, opts } = parse(process.argv.slice(2));
   const cmd = pos[0];
+  // T-0494 AC4: check-notes es puramente de archivo (map.json + tarjetas) —
+  // nunca crea un client (evita tocar el dataDir REAL de la app de escritorio,
+  // aunque sea solo mkdirSync) para poder correrlo de lectura contra el estado vivo.
+  if (cmd === 'check-notes') {
+    const hub = createHub(null, {});
+    const stale = hub.checkNotes();
+    for (const s of stale) console.log(`${s.id}\tnote="${s.noteHead}"\tblocker="${s.blockerHead}"`);
+    console.log(JSON.stringify({ stale: stale.length }));
+    return stale.length ? 1 : 0;
+  }
   const client = createClient();
   const hub = createHub(client, { log: (m) => console.log(m), ...boardConfigFromEnv() });
   const stamp = () => new Date().toISOString();
@@ -437,7 +522,7 @@ async function main() {
       console.log(JSON.stringify(r.record));
       return r.ok ? 0 : 1;
     }
-    default: console.error('uso: sp-bridge.cjs ping|ensure-projects|task|remind|done|decided|sync-decisions|sync-intake|sync-outcomes|sync-briefs|sync'); return 2;
+    default: console.error('uso: sp-bridge.cjs ping|ensure-projects|task|remind|done|decided|sync-decisions|sync-intake|sync-outcomes|sync-briefs|sync|check-notes'); return 2;
   }
 }
 

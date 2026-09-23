@@ -354,3 +354,151 @@ test('T-0492 E: done/cancelled nunca crean una decision aunque blocked_by siga e
   const r2 = await e.hub.syncDecisions([card({ id: 'T-1002', state: 'cancelled' })]);
   assert.equal(r2.created, 0, 'cancelled no gatea');
 });
+
+// ---------------------------------------------------------------------------
+// T-0494 — la nota de SP solo llevaba el blocker de la tarjeta AL CREARSE: si
+// infra la cambiaba despues (misma tarjeta, nueva pregunta), los syncs
+// siguientes nunca la actualizaban. Medido 20/09: 4/20 tareas abiertas del
+// operador en SP con un blocker superado (T-0480, T-0472, T-0420, T-0346).
+// Evidence: _intel/evidence/wezbridge/2026-09-20-pregunta-congelada-en-sp.md
+test('T-0494 AC1 fail-first: la tarjeta ya tiene entrada en map.json y el blocker cambio despues de createdAt => el siguiente sync pone el blocker NUEVO en la nota', async () => {
+  const e = env();
+  const c1 = card({ id: 'T-0480', blocker: 'operator gate: pregunta vieja' });
+  const r1 = await e.hub.syncDecisions([c1]);
+  assert.equal(r1.created, 1);
+  const t = () => e.plugin.model.tasks.find((x) => x.title.startsWith('T-0480'));
+  assert.match(t().notes, /pregunta vieja/, 'la nota arranca con el blocker original');
+
+  // infra cambia la pregunta sin que la tarjeta se des-gatee (mismo escenario que T-0480/T-0472/T-0420/T-0346)
+  const c2 = { ...c1, blocker: 'operator gate: pregunta NUEVA, la vieja ya no aplica' };
+  await e.hub.syncDecisions([c2]);
+  assert.match(t().notes, /pregunta NUEVA, la vieja ya no aplica/, 'el sync tiene que refrescar el blocker en la nota');
+  assert.doesNotMatch(t().notes, /pregunta vieja/, 'el blocker superado no puede seguir en la nota');
+});
+
+test('T-0494 AC1 legacy: una entrada de map.json de ANTES de este fix (sin campo blocker guardado) tambien se autocorrige en el primer sync', async () => {
+  const e = envWithBoard();
+  const c1 = card({ id: 'T-0472', blocker: 'pregunta original' });
+  await e.hub.syncDecisions([c1]);
+  // simula el map.json viejo: sin el campo "blocker" que este fix agrega
+  const map = sp.loadMap(e.intel);
+  delete map['fleet:T-0472'].blocker;
+  fs.writeFileSync(sp.mapFile(e.intel), JSON.stringify(map, null, 2));
+  const t = () => e.plugin.model.tasks.find((x) => x.title.startsWith('T-0472'));
+  // el operador ya resolvio la pregunta original hace rato; infra puso una nueva
+  const c2 = { ...c1, blocker: 'pregunta post-fix' };
+  await e.hub.syncDecisions([c2]);
+  assert.match(t().notes, /pregunta post-fix/, 'entrada legacy sin campo blocker igual se refresca');
+});
+
+test('T-0494 AC2 idempotencia: dos syncs SEGUIDOS sin cambio de blocker no agregan ni pierden ninguna linea (estado, result, /act)', async () => {
+  const e = envWithBoard();
+  fs.mkdirSync(path.join(e.intel, 'results'), { recursive: true });
+  const c = card({ id: 'T-0420', blocker: 'pregunta estable' });
+  await e.hub.syncDecisions([c]);
+  const running = { ...c, state: 'running', blocked_by: 'agent', gate: null };
+  await e.hub.syncOutcomes([running]);
+  fs.writeFileSync(path.join(e.intel, 'results', 'T-0420-result.md'), '# T-0420\ncriteria:\n- AC1: pass - ok\n');
+  await e.hub.syncOutcomes([running]);
+  const t = () => e.plugin.model.tasks.find((x) => x.title.startsWith('T-0420'));
+  const notesBefore = t().notes;
+  const notesAppendedBefore = [...sp.loadMap(e.intel)['fleet:T-0420'].notesAppended];
+
+  // dos syncs de mas, mismo blocker: nada tiene que moverse
+  await e.hub.syncDecisions([running]);
+  await e.hub.syncDecisions([running]);
+
+  const notesAfter = t().notes;
+  const notesAppendedAfter = sp.loadMap(e.intel)['fleet:T-0420'].notesAppended;
+  assert.equal(notesAfter, notesBefore, 'sin cambio de blocker la nota no se toca');
+  assert.equal(notesAfter.length, notesBefore.length, 'largo identico');
+  assert.deepEqual(notesAppendedAfter, notesAppendedBefore, 'appendNoteOnce keys intactas (estado, result, /act)');
+});
+
+test('T-0494 AC4 check-notes: detecta la tarjeta con blocker superado y NO detecta la que esta al dia', async () => {
+  const e = env();
+  const stale = card({ id: 'T-0346', blocker: 'pregunta vieja de T-0346' });
+  const fresh = card({ id: 'T-0347', blocker: 'pregunta al dia' });
+  await e.hub.syncDecisions([stale, fresh]);
+
+  assert.deepEqual(e.hub.checkNotes([stale, fresh]).map((s) => s.id).sort(), [], 'recien creadas: ninguna esta stale');
+
+  // infra cambia el blocker de T-0346 pero todavia no corrio el sync que lo refresca
+  const staleNow = { ...stale, blocker: 'pregunta NUEVA de T-0346' };
+  const report = e.hub.checkNotes([staleNow, fresh]);
+  assert.deepEqual(report.map((s) => s.id), ['T-0346'], 'solo la tarjeta con blocker desactualizado aparece');
+  assert.match(report[0].noteHead, /pregunta vieja de T-0346/);
+  assert.match(report[0].blockerHead, /pregunta NUEVA de T-0346/);
+
+  // y despues de refrescar, check-notes queda limpio
+  await e.hub.syncDecisions([staleNow, fresh]);
+  assert.deepEqual(e.hub.checkNotes([staleNow, fresh]), [], 'refrescada => ya no aparece');
+});
+
+// ---------------------------------------------------------------------------
+// T-0494 fix-up — refreshBlockerOnce reconstruia el bloque delimitado via
+// decisionNotes(c), que EMBEBE los enlaces /act cuando hay boardToken; syncDecisions
+// tambien pega esos mismos enlaces por appendNoteOnce(ACT_LINKS_KEY) cuando la key
+// no esta en notesAppended => duplicado permanente. Y una nota legacy sin
+// delimitadores dejaba la pregunta vieja pegada arriba de la nueva sin separador.
+const countApprovedLinks = (notes) => (notes.match(/\/act\?task=\S+&verb=approved/g) || []).length;
+
+test('T-0494 fix-up A fail-first: tarea creada SIN boardToken, el siguiente sync trae boardToken y un blocker nuevo => un solo link /act aprobado en la nota', async () => {
+  const e = env(); // sin boardToken
+  const c1 = card({ id: 'T-0530', blocker: 'pregunta original sin token' });
+  await e.hub.syncDecisions([c1]);
+  const t = () => e.plugin.model.tasks.find((x) => x.title.startsWith('T-0530'));
+  assert.doesNotMatch(t().notes, /\/act\?/, 'sin boardToken no hay enlaces todavia');
+
+  // ahora infra tiene boardToken Y cambia el blocker en el mismo sync
+  const conToken = sp.createHub(e.client, { intel: e.intel, boardUrl: 'http://192.0.2.10:4272/', boardToken: 'tok-fixup' });
+  const c2 = { ...c1, blocker: 'pregunta NUEVA con token' };
+  await conToken.syncDecisions([c2]);
+  assert.match(t().notes, /pregunta NUEVA con token/, 'el blocker se refresco');
+  assert.equal(countApprovedLinks(t().notes), 1, `los enlaces /act aprobados tienen que aparecer UNA sola vez: ${t().notes}`);
+});
+
+test('T-0494 fix-up B legacy TRUE: nota vieja sin delimitadores conserva Estado/Result intactos, separador una sola vez, y un segundo sync sin cambios no la toca', async () => {
+  const e = envWithBoard();
+  const c = card({ id: 'T-0531', blocker: 'pregunta vieja legacy' });
+  await e.hub.syncDecisions([c]);
+  const t = () => e.plugin.model.tasks.find((x) => x.title.startsWith('T-0531'));
+
+  // simula una nota de ANTES de T-0494: plana, sin delimitadores [[sp-bridge:blocker]],
+  // con lineas de Estado/Result ya agregadas por appendNoteOnce, y sin map[ext].blocker.
+  const legacyBody = 'pregunta vieja legacy\n\nDecidir en el tablero: http://192.0.2.10:4272/ (o /decidir T-0531 en el pane)'
+    + `\ncorr: ${c.corr} · repo: ${c.repo}`
+    + '\nEstado: blocked -> running (pane-1) · 2026-09-20 03:00Z'
+    + '\nResult: _intel/results/T-0531-result.md\n- AC1: pass - ok';
+  t().notes = legacyBody;
+  const map = sp.loadMap(e.intel);
+  delete map['fleet:T-0531'].blocker;
+  fs.writeFileSync(sp.mapFile(e.intel), JSON.stringify(map, null, 2));
+
+  const c2 = { ...c, blocker: 'pregunta post-legacy' };
+  await e.hub.syncDecisions([c2]);
+  const afterRefresh = t().notes;
+  assert.match(afterRefresh, /pregunta post-legacy/, 'la nota nueva aparece');
+  assert.match(afterRefresh, /pregunta vieja legacy/, 'la nota vieja sigue visible debajo del separador (historia conservada)');
+  const sepMatches = afterRefresh.match(/── nota anterior \(pregunta superada\) ──/g) || [];
+  assert.equal(sepMatches.length, 1, `el separador aparece exactamente una vez: ${afterRefresh}`);
+  assert.match(afterRefresh, /Estado: blocked -> running \(pane-1\) · 2026-09-20 03:00Z/, 'la linea de Estado sobrevive byte-identica');
+  assert.match(afterRefresh, /Result: _intel\/results\/T-0531-result\.md\n- AC1: pass - ok/, 'la linea de Result sobrevive byte-identica');
+
+  const c3 = { ...c2 }; // mismo blocker: segundo sync no debe tocar nada
+  await e.hub.syncDecisions([c3]);
+  assert.equal(t().notes, afterRefresh, 'un segundo sync sin cambio de blocker no vuelve a tocar la nota (separador no se duplica)');
+});
+
+test('T-0494 fix-up C: tarea NUEVA creada con boardToken => enlaces /act una sola vez al crearse y siguen siendo uno solo tras un cambio de blocker', async () => {
+  const e = envWithBoard();
+  const c1 = card({ id: 'T-0532', blocker: 'pregunta inicial con token' });
+  await e.hub.syncDecisions([c1]);
+  const t = () => e.plugin.model.tasks.find((x) => x.title.startsWith('T-0532'));
+  assert.equal(countApprovedLinks(t().notes), 1, `la tarea nueva tiene que traer sus enlaces al crearse, una sola vez: ${t().notes}`);
+
+  const c2 = { ...c1, blocker: 'pregunta cambiada con token' };
+  await e.hub.syncDecisions([c2]);
+  assert.match(t().notes, /pregunta cambiada con token/);
+  assert.equal(countApprovedLinks(t().notes), 1, `tras refrescar el blocker los enlaces siguen siendo UNO solo: ${t().notes}`);
+});
