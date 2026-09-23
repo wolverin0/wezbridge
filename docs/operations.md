@@ -13,7 +13,8 @@ Source edits do not update already-loaded MCP processes.
 > responding", hay >1 wezterm-mux-server, o vas a setear env de guards/grader/inbox.
 > Términos clave: WEZBRIDGE_*, restore-session, probeMux, degraded, inconclusive,
 > session-snapshot, --no-auto-start, gui-watchdog, Recover-WezTermGui, mux_split,
-> espacio único de pane_id (--prefer-mux + sock, T-0260), WEZBRIDGE_PREFER_MUX=0, gui_only.
+> espacio único de pane_id (--prefer-mux + sock, T-0260), WEZBRIDGE_PREFER_MUX=0, gui_only,
+> dead-man switch (VM omni-deadman.sh + DaemonSentinel touch, T-0529), deadman-touch.json.
 
 ## Espacio único de pane_id: el mux (T-0260, 2026-09-02)
 
@@ -81,6 +82,19 @@ Matar toda instancia stale:
 ```bash
 for pid in $(wmic process where "Name='node.exe' and CommandLine like '%dashboard-server%'" get ProcessId /format:value 2>/dev/null | grep -oE "[0-9]+"); do taskkill //PID $pid //F; done
 ```
+
+## Dead-man switch (VM, T-0529)
+`WezBridge-DaemonSentinel`'s own alert channel (Claude-pane poke) can go
+silent, so it also SSHes to the ubuntu VM on every **up** run and touches
+`~/omniclaude.heartbeat` (skipped on down/wedged/suspect — VM silence then
+means "daemon down" too). VM cron `~/bin/omni-deadman.sh` (`*/15 * * * *`)
+alerts to Telegram when that file is stale >1800s, re-alerts every 6h while
+stale, sends one "recovered" message when it clears. State:
+`~/.omni-deadman.state` (`episode_start`/`last_alert` epochs); test suite:
+`~/bin/test-omni-deadman.sh`. Visible without SSH:
+`_intel/evidence/wezbridge/deadman-touch.json` (`{ok, at, error?}` or
+`{ok:false, skipped:true, reason}`) and `deadman_touch` in every
+`daemon-sentinel.jsonl` line.
 
 ## Latitud WSL
 El operador no usa WSL personalmente — los agentes tienen latitud completa para spawnear panes
