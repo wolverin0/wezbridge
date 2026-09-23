@@ -176,6 +176,11 @@ test('boot: never overwrites an existing active_tasks.md', async () => {
 // the day someone "fixes" it to fs.writeFileSync(tmp) + fs.renameSync(tmp,
 // real) WITHOUT updating this test — that's the point. Don't delete this
 // without replacing it with a real atomic-write test.
+//
+// T-0400 classification: KNOWN-GAP tripwire, not the T-0307/T-0400 grep-hole
+// class — it does not claim any guard currently RUNS; it deliberately
+// documents one that does NOT exist yet, and is designed to fail (not stay
+// silently green) the moment the write path changes shape.
 test('KNOWN GAP: boot seed write is not atomic (temp+rename) — tripwire, not a pass/fail on safety', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'tasks-watcher.cjs'), 'utf8');
   const bootBlock = src.slice(src.indexOf('// --- Boot ---'));

@@ -296,6 +296,13 @@ test('listQueues: enumerates projects that have a queue file', () => {
 });
 
 // ── no new coordinator: the module must never grow the always-on shape ──────
+// T-0400 classification: NEGATIVE assertion / anti-pattern tripwire, not the
+// T-0307/T-0400 grep-hole class. There is no "protected block" here whose
+// removal an `if (false)` mutation could hide — the assertion is about the
+// ABSENCE of a pattern (setInterval) across the whole module, and asserting
+// absence-of-text is exactly what a source scan CAN prove soundly (an
+// `if (false)`-guarded setInterval would still literally contain the string
+// 'setInterval' and correctly fail this same check).
 
 test('project-queue is NOT a coordinator: no setInterval anywhere in the module', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'project-queue.cjs'), 'utf8');

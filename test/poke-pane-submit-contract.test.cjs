@@ -7,6 +7,14 @@
  * private copy), integrity is checked BEFORE Enter (exit 9), a composer holding
  * someone else's text is refused before writing (exit 10), and multi-line
  * payloads are flattened to one line with the log saying so.
+ *
+ * T-0400 classification: CONSTANTS TRIPWIRE, not the T-0307/T-0400 grep-hole
+ * class. Every assertion here is a shape/wording/string-literal check
+ * (require path, exit-code literal, timeout/pause values) — there is no
+ * "protected behavior" an `if (false)` mutation could silently disable while
+ * these stay green, because none of them claims to have INVOKED anything.
+ * The real behavioral proof (does fragmented ACTUALLY die with 9, for real
+ * input) lives in poke-pane-one-prompt.test.cjs's AC4 (real) test.
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
