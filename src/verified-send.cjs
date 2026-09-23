@@ -16,7 +16,10 @@
 function inputBoxContent(tailLines) {
   const markers = tailLines.filter((l) => /^[\s│|]*[❯>›]/.test(l));
   const last = markers[markers.length - 1] || '';
-  return last.replace(/^[\s│|]*[❯>›]\s*/, '').replace(/[\s│|]+$/, '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const content = last.replace(/^[\s│|]*[❯>›]\s*/, '').replace(/[\s│|]+$/, '').replace(/\s+/g, ' ').trim().toLowerCase();
+  // Codex animation can share the placeholder line; preserve actual braille input.
+  const withoutAnimation = content.replace(/[\u2800-\u28ff]/g, '').replace(/\s+/g, ' ').trim();
+  return COMPOSER_PLACEHOLDERS.includes(withoutAnimation) ? withoutAnimation : content;
 }
 
 // ── T-0242 / AC6 — el composer retiene texto AJENO, no entregar encima ──────
