@@ -2005,6 +2005,12 @@ async function handleBridgeHealth() {
     orca: orcaLive || require('./orca-census.cjs').readPersistedCensus() || 'unknown (daemon down and no _intel/orca-census.json)',
     ok: wezterm.reachable, // wezterm is the only hard dependency for core MCP tools
   };
+  // T-0550: lane orchestrators from the roster (_intel/orchestrators.json),
+  // cross-matched against the orca census above.
+  try {
+    const { loadRoster, mergeLanes } = require('./lane-roster.cjs');
+    health.lanes = mergeLanes(loadRoster(), health.orca);
+  } catch (e) { health.lanes = []; }
   // Two mux sockets serving the same panes under different ids is invisible
   // until envelopes start dying (mm-0dc1: 10 dead letters addressed to a pane
   // that was nobody in the sending server's space). It is a top-level verdict

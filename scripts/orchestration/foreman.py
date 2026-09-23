@@ -107,11 +107,59 @@ def find_worker_done(screen, task_id):
             found = (m.group(1), m.group(2), m.group(3).strip())
     return found
 
+# T-0548: el worker declara en su bloque criteria el modelo/effort que realmente corrio.
+# Se toma la ULTIMA ocurrencia real; un valor con '<' es la plantilla del despacho que quedo
+# como eco en pantalla (task_router la escribe asi a proposito), no la respuesta del worker.
+MODEL_EFFORT_RE = re.compile(r"model_effort_used:\s*`?([^\s`]+)")
+LEDGER_CJS = os.environ.get("WEZBRIDGE_LEDGER_PATH") or os.path.join(_PY_APPS, "_docs-curation", "ledger.cjs")
+CARD_ID_RE = re.compile(r"^T-\d{4}$")
+
+
+def find_model_effort_used(screen):
+    found = None
+    for line in screen.splitlines():
+        for m in MODEL_EFFORT_RE.finditer(line):
+            val = m.group(1).strip().rstrip(".,;")
+            if val and "<" not in val and ">" not in val:
+                found = val
+    return found
+
+
+def record_model_effort(task_id, value, state=None):
+    """Escribe model_effort_used en el estado y lo SUMA a la evidencia de la tarjeta.
+    Solo para ids de ledger (T-NNNN). Un fallo del ledger se reporta y no mata la supervision."""
+    if not value:
+        return False
+    if state is not None:
+        state["model_effort_used"] = value
+    if not CARD_ID_RE.match(task_id or ""):
+        return False
+    try:
+        res = subprocess.run(["node", LEDGER_CJS, "update", task_id, "--evidence-append",
+                              f"model_effort_used: {value} (Foreman {_now_iso()})"],
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+        if res.returncode != 0:
+            sys.stderr.write(f"[foreman] ledger no registro model_effort_used de {task_id}: {res.stderr.strip()}\n")
+            return False
+        if state is not None:
+            state["model_effort_recorded"] = True
+        return True
+    except (OSError, subprocess.SubprocessError) as e:
+        sys.stderr.write(f"[foreman] ledger no disponible para {task_id}: {e}\n")
+        return False
+
+
 def _finish(state, status, outcome=None, report=None):
     if state is None:
         return
     state.update({"status": status, "outcome": outcome, "report": report, "finished_at": _now_iso()})
     save_state(state)
+
+
+def _close(task_id, screen, state, outcome, extra):
+    """Cierre real: registra model_effort_used (si el worker lo declaro) antes de persistir."""
+    record_model_effort(task_id, find_model_effort_used(screen), state)
+    _finish(state, "done", outcome, extra)
 
 
 def supervise_task(task_id, term_id, max_wait_sec=300, poll_interval=10, deadline=None, state=None):
@@ -140,7 +188,7 @@ def supervise_task(task_id, term_id, max_wait_sec=300, poll_interval=10, deadlin
         if hit:
             done_task_id, outcome, extra = hit
             print(f"[+] Task {task_id} completada por worker! Outcome: {outcome}")
-            _finish(state, "done", outcome, extra)
+            _close(task_id, screen, state, outcome, extra)
             notify_orchestrator(f"[WORKER_DONE] task_id={task_id} outcome={outcome} {extra}")
             return {"status": "completed", "outcome": outcome, "details": extra}
 
@@ -168,7 +216,7 @@ def supervise_task(task_id, term_id, max_wait_sec=300, poll_interval=10, deadlin
     if hit:
         done_task_id, outcome, extra = hit
         print(f"[+] Task {task_id} completada por worker en chequeo final! Outcome: {outcome}")
-        _finish(state, "done", outcome, extra)
+        _close(task_id, final_screen, state, outcome, extra)
         notify_orchestrator(f"[WORKER_DONE] task_id={task_id} outcome={outcome} {extra}")
         return {"status": "completed", "outcome": outcome, "details": extra}
 

@@ -240,7 +240,13 @@ const server = http.createServer(async (req, res) => {
     // T-0525: `orca` = census of the Orca terminals the fleet actually runs in.
     let orca;
     try { orca = require('./orca-census.cjs').healthBlock(); } catch (e) { orca = { last_error: e.message }; }
-    return sendJson(res, 200, { services: require('./daemon-status.cjs').snapshot(), orca });
+    // T-0550: `lanes` = the _intel/orchestrators.json roster cross-matched against orca.
+    let lanes = [];
+    try {
+      const { loadRoster, mergeLanes } = require('./lane-roster.cjs');
+      lanes = mergeLanes(loadRoster(), orca);
+    } catch { lanes = []; }
+    return sendJson(res, 200, { services: require('./daemon-status.cjs').snapshot(), orca, lanes });
   }
   if (pathname === '/api/panes' && method === 'GET') return handlers.handleGetPanes(req, res);
   if (pathname === '/api/sessions' && method === 'GET') return handlers.handleGetSessions(req, res);
