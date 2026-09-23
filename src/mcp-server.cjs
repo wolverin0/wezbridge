@@ -1013,24 +1013,6 @@ function handleToolCall(name, args) {
         };
       }
 
-      // Resolve persona if provided
-      let personaPath = null;
-      if (args.persona) {
-        if (!isValidPersonaName(args.persona)) {
-          return {
-            content: [{ type: 'text', text: 'Error: invalid persona name' }],
-            isError: true,
-          };
-        }
-        personaPath = resolvePersona(args.persona);
-        if (!personaPath) {
-          return {
-            content: [{ type: 'text', text: `persona "${args.persona}" not found in ~/.claude/agents/` }],
-            isError: true,
-          };
-        }
-      }
-
       // Which CLI boots in the pane. 'shell' leaves the pane as a plain shell
       // (no command typed) — useful for scratch panes and e2e tests.
       // Affinity (B2, frente 3): _intel/affinity.json maps project → {agent,
@@ -1081,6 +1063,26 @@ function handleToolCall(name, args) {
           content: [{ type: 'text', text: `Error: persona/resume/continue/permission flags only apply to agent "claude" (got agent="${agent}")` }],
           isError: true,
         };
+      }
+
+      // Resolve persona if provided. Runs after the claude-only-flags gate above
+      // so a persona named for a non-claude agent fails with that clear message
+      // instead of a confusing "not found in ~/.claude/agents/" lookup error.
+      let personaPath = null;
+      if (args.persona) {
+        if (!isValidPersonaName(args.persona)) {
+          return {
+            content: [{ type: 'text', text: 'Error: invalid persona name' }],
+            isError: true,
+          };
+        }
+        personaPath = resolvePersona(args.persona);
+        if (!personaPath) {
+          return {
+            content: [{ type: 'text', text: `persona "${args.persona}" not found in ~/.claude/agents/` }],
+            isError: true,
+          };
+        }
       }
 
       return (async () => {
