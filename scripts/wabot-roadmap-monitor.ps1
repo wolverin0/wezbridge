@@ -112,7 +112,7 @@ function Invoke-VerifiedPoke {
         $priorSocket = $env:WEZTERM_UNIX_SOCKET
         try {
             $env:WEZTERM_UNIX_SOCKET = $socket
-            $arguments = @($pokeScript, '--tab-title', 'wabot', '--file', $messagePath)
+            $arguments = @($pokeScript, '--tab-title', 'wabot', '--file', $messagePath, '--allow-long')
             if ($ProbeOnly) { $arguments += '--dry-run' }
             $output = @(& node @arguments 2>&1)
             $exitCode = $LASTEXITCODE

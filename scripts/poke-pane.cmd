@@ -19,7 +19,7 @@ if "%~1"=="" ( echo %DATE% %TIME% poke-pane.cmd FAIL: missing project arg >> "%L
 if "%~2"=="" ( echo %DATE% %TIME% poke-pane.cmd FAIL: missing message-file arg >> "%LOG%" & exit /b 2 )
 if not exist "%~2" ( echo %DATE% %TIME% poke-pane.cmd FAIL: message file not found: %~2 >> "%LOG%" & exit /b 2 )
 
-node "%DIR%poke-pane.cjs" --project "%~1" --file "%~2" >> "%LOG%" 2>&1
+node "%DIR%poke-pane.cjs" --project "%~1" --file "%~2" --allow-long >> "%LOG%" 2>&1
 set "RC=%ERRORLEVEL%"
 if not "%RC%"=="0" echo %DATE% %TIME% poke-pane.cmd exit=%RC% >> "%LOG%"
 exit /b %RC%
