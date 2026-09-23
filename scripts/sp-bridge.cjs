@@ -123,7 +123,14 @@ function createHub(client, { intel = INTEL, log = () => {}, boardUrl = BOARD_URL
   // T-0405: la decision es del operador si la tarjeta esta bloqueada por el
   // (blocked_by) o su compuerta lo dice (gate). Mirar solo gate dejo 4 de 6
   // tarjetas fuera de SP el 2026-09-06 (gate null/undefined, blocked_by=operator).
-  const isOperatorGated = (c) => Boolean(c) && c.state === 'blocked' && (gateOf(c) === 'operator' || c.blocked_by === 'operator');
+  // T-0492: exigir c.state === 'blocked' dejaba afuera a las gateadas que viven
+  // en review (T-0332/T-0333/T-0418/T-0462/T-0483, medidas 2026-09-20: finished
+  // work esperando el juicio del operador, invisibles en SP). La pregunta es del
+  // operador sin importar el estado FSM — mismo universo abierto que usa
+  // fleet-board.isOperatorWaiting (OPEN_STATES sin done/cancelled: terminales,
+  // nada que decidir ahi aunque blocked_by haya quedado en operator como residuo).
+  const OPERATOR_GATE_OPEN_STATES = new Set(['ready', 'queued', 'running', 'review', 'blocked', 'failed']);
+  const isOperatorGated = (c) => Boolean(c) && OPERATOR_GATE_OPEN_STATES.has(c.state) && (gateOf(c) === 'operator' || c.blocked_by === 'operator');
   // Enlaces firmados de /act (aprobar/cancelar/posponer): valen como firma del
   // operador (T-0349) y abren desde el telefono si boardUrl es la URL publica.
   const ACT_LINKS_KEY = 'act-links-v1';
