@@ -185,10 +185,18 @@ def load_tiers(intel=None):
         raise CardError(f"{path} is missing; it maps model ids to aliases and tiers. Refusing to guess.")
 
 
+# T-0554: sentinel distinguishing "a lane matched the repo but has no live handle" (roster
+# is authoritative -> placeholder, no legacy fallthrough) from "no lane matched" (None ->
+# legacy lookup is fine).
+NO_LIVE_HANDLE = object()
+
+
 def resolve_roster_terminal(repo, intel=None):
     """T-0554: resolve a card's repo to a live lane handle from _intel/orchestrators.json
     (mirrors src/lane-roster.cjs's loadRoster semantics). Missing file, bad JSON, no
     `lanes` list, or no lane whose `repos` contains `repo` all degrade to None — never raises.
+    A lane match whose handle is null/empty returns NO_LIVE_HANDLE instead of None so callers
+    don't silently fall back to the legacy registry.
     """
     path = os.path.join(intel or intel_dir(), "orchestrators.json")
     try:
@@ -201,7 +209,11 @@ def resolve_roster_terminal(repo, intel=None):
         return None
     for lane in lanes:
         if isinstance(lane, dict) and repo and repo in (lane.get("repos") or []):
-            return lane.get("handle")
+            handle = lane.get("handle")
+            if handle:
+                return handle
+            sys.stderr.write(f"task_router: lane {lane.get('lane')!r} has no live handle in orchestrators.json\n")
+            return NO_LIVE_HANDLE
     return None
 
 
@@ -282,10 +294,16 @@ def build_from_card(card, tiers, brief=None, terminal=None, worktree=None):
             notes.append(f"no worker-tN matches tier={card.get('tier')} {model}/{effort}; "
                          f"general-purpose cannot pin effort={effort}")
         out["agent_call"] = {"subagent_type": agent, "model": alias, "prompt": prompt}
-        # T-0554: no explicit --terminal -> roster (_intel/orchestrators.json) by repo,
-        # then the legacy WORKER_REGISTRY, then the placeholder.
-        term = (terminal or resolve_roster_terminal(card.get("repo"))
-                or _legacy_terminal_for_repo(card.get("repo")) or "<TERMINAL_ID>")
+        # T-0554: no explicit --terminal -> roster (_intel/orchestrators.json) by repo. A lane
+        # match with no live handle is authoritative (placeholder, no legacy fallthrough);
+        # only "no lane matched" falls through to the legacy WORKER_REGISTRY.
+        roster_term = resolve_roster_terminal(card.get("repo"))
+        if terminal:
+            term = terminal
+        elif roster_term is NO_LIVE_HANDLE:
+            term = "<TERMINAL_ID>"
+        else:
+            term = roster_term or _legacy_terminal_for_repo(card.get("repo")) or "<TERMINAL_ID>"
         # POSIX quoting: the fleet runs these from Git Bash.
         out["pane_command"] = " ".join(
             shlex.quote(a) for a in ["orca", "terminal", "send", "--terminal", term, "--text", prompt, "--enter"])

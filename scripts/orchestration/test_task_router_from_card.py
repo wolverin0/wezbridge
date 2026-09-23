@@ -148,6 +148,18 @@ class FromCardTest(unittest.TestCase):
         argv = shlex.split(r.stdout.split("# Pane dispatch (orca):\n", 1)[1])
         self.assertIn("term_5bc6d4ef-16e4-40e0-bd5d-765cb075e781", argv)
 
+    def test_lane_matches_with_null_handle_uses_placeholder_not_legacy(self):
+        # T-0554: roster is authoritative once a lane owns the repo -- a null handle must NOT
+        # fall through to the dead legacy term_5bc6d4ef... handle for pedrito.
+        with open(os.path.join(self.intel, "orchestrators.json"), "w", encoding="utf-8") as f:
+            json.dump({"lanes": [{"lane": "pedrito", "repos": ["pedrito"], "handle": None}]}, f)
+        r = self.cli("--from-card", "T-0904")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        argv = shlex.split(r.stdout.split("# Pane dispatch (orca):\n", 1)[1])
+        self.assertIn("<TERMINAL_ID>", argv)
+        self.assertNotIn("term_5bc6d4ef-16e4-40e0-bd5d-765cb075e781", argv)
+        self.assertIn("no live handle", r.stderr)
+
     def test_malformed_roster_falls_back_to_legacy_registry(self):
         with open(os.path.join(self.intel, "orchestrators.json"), "w", encoding="utf-8") as f:
             f.write("{not valid json")
