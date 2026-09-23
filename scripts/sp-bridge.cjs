@@ -148,10 +148,12 @@ function createHub(client, { intel = INTEL, log = () => {}, boardUrl = BOARD_URL
       return decisionActions(boardUrl, boardToken, taskId).map((a) => `${a.label}: ${a.url}`).join('\n');
     } catch { return ''; }
   }
+  // T-0494 fix-up: el bloque delimitado NUNCA embebe los enlaces /act — quedan
+  // exclusivamente a cargo de appendNoteOnce(ACT_LINKS_KEY) (abajo, en creacion
+  // y en el branch de tarea existente), asi refrescar el blocker nunca duplica
+  // los enlaces que ya viven fuera del bloque.
   function decisionNotes(c) {
-    const links = actLinksBlock(c.id);
     const body = `${c.blocker || 'esperando tu decision'}\n\nDecidir en el tablero: ${boardUrl} (o /decidir ${c.id} en el pane)`
-      + (links ? `\n${links}` : '')
       + `\ncorr: ${c.corr || '-'} · repo: ${c.repo || '-'}`;
     return `${BLOCKER_START}\n${body}\n${BLOCKER_END}`;
   }
@@ -173,7 +175,11 @@ function createHub(client, { intel = INTEL, log = () => {}, boardUrl = BOARD_URL
     const head = decisionNotes(c);
     const current = t.notes || '';
     const re = new RegExp(`${escapeRegExp(BLOCKER_START)}[\\s\\S]*?${escapeRegExp(BLOCKER_END)}`);
-    const nextNotes = re.test(current) ? current.replace(re, head) : `${head}\n\n${current}`.trim();
+    // T-0494 fix-up: solo la nota LEGACY (sin delimitadores) recibe el separador,
+    // y solo una vez — a partir de este refresh la nota ya tiene delimitadores,
+    // asi que los refrescos siguientes van por la rama re.test() (reemplazo).
+    const LEGACY_SEP = '── nota anterior (pregunta superada) ──';
+    const nextNotes = re.test(current) ? current.replace(re, head) : `${head}\n\n${LEGACY_SEP}\n\n${current}`.trim();
     if (nextNotes !== current) await client.updateTask(e.taskId, { notes: nextNotes });
     e.blocker = nextBlocker;
     saveMap(map, intel);
@@ -377,8 +383,14 @@ function createHub(client, { intel = INTEL, log = () => {}, boardUrl = BOARD_URL
         const m = loadMap(intel);
         if (m[ext]) {
           m[ext].blocker = c.blocker || '';
-          if (boardToken) m[ext].notesAppended = [ACT_LINKS_KEY];
           saveMap(m, intel);
+        }
+        if (boardToken) {
+          // T-0494 fix-up: los enlaces /act se pegan por appendNoteOnce igual que
+          // en el branch de tarea existente — una sola fuente de verdad para la
+          // key ACT_LINKS_KEY, sin marcarla "ya puesta" sin haberla escrito.
+          const links = actLinksBlock(c.id);
+          if (links && await appendNoteOnce(ext, links, ACT_LINKS_KEY)) out.linked += 1;
         }
       } else {
         // T-0494: tarea existente — si infra cambio el blocker, refrescarlo.
