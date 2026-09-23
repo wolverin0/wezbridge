@@ -38,6 +38,7 @@ if not errorlevel 1 (
 )
 
 set "WEZBRIDGE_CLAWTROL_ENV=%REPO%\scripts\clawtrol-DISABLED-does-not-exist.env"
+set "WEZBRIDGE_WATCHDOG=0"
 
 cd /d "%REPO%"
 echo [%DATE% %TIME%] starting pane recorder >> "%LOG%"
