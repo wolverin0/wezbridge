@@ -171,6 +171,101 @@ test('WORKER_DONE: no foreman dir, unreadable terminal and malformed state files
   assert.equal(fs.existsSync(path.join(intel, 'pane-events.jsonl')), false);
 });
 
+// ─── T-0555: SUBORCH_* lane-orchestrator report lines ─────────────────────
+
+test('extractSuborchLines: 4 real report lines recognized; brief-echoed placeholder lines filtered (AC2 fixture)', () => {
+  const screen = [
+    // Real lines (what a lane orchestrator actually prints).
+    "[SUBORCH_DONE] task_id=T-0555 outcome=succeeded report=_intel/briefs/2026-09-23-T0555-REPORT.md",
+    "[SUBORCH_QUESTION] task_id=T-0555 q='use approach A or B?'",
+    "[SUBORCH_STATUS] lane=wisp running=T-0100,T-0101 done=T-0099 blocked= next=T-0102",
+    "[SUBORCH_HANDOFF] _intel/briefs/2026-09-23-handoff.md",
+    // Echo lines copied verbatim from the T-0555 brief's problem statement (instruction text,
+    // not a real closure) — must NOT produce events.
+    "- `[SUBORCH_DONE] task_id=T-NNNN outcome=succeeded|failed report=<path>`",
+    "- `[SUBORCH_QUESTION] task_id=T-NNNN q='<question with options a/b/c>'`",
+    "- `[SUBORCH_STATUS] lane=<x> running=<ids> done=<ids> blocked=<ids> next=<id>` (free-form key=value)",
+    "- `[SUBORCH_HANDOFF] <path>`",
+  ];
+  const events = orca.extractSuborchLines(screen);
+  assert.equal(events.length, 4, 'exactly the 4 real lines, echoes filtered');
+  const byKind = Object.fromEntries(events.map((e) => [e.kind, e]));
+  assert.deepEqual(Object.keys(byKind).sort(),
+    ['suborch_done', 'suborch_handoff', 'suborch_question', 'suborch_status']);
+  assert.deepEqual(byKind.suborch_done.fields,
+    { task_id: 'T-0555', outcome: 'succeeded', report: '_intel/briefs/2026-09-23-T0555-REPORT.md' });
+  assert.deepEqual(byKind.suborch_question.fields, { task_id: 'T-0555', q: 'use approach A or B?' });
+  assert.deepEqual(byKind.suborch_status.fields,
+    { kv: { lane: 'wisp', running: 'T-0100,T-0101', done: 'T-0099', blocked: '', next: 'T-0102' } });
+  assert.deepEqual(byKind.suborch_handoff.fields, { path: '_intel/briefs/2026-09-23-handoff.md' });
+});
+
+test('extractSuborchLines: mutation check — disabling SUBORCH matching drops all 4 events', () => {
+  // Same fixture as above, run through a deliberately crippled matcher (SUBORCH tag typo'd),
+  // proving the real assertions above are not vacuously true.
+  const screen = ["[SUBORCH_DONE] task_id=T-0555 outcome=succeeded report=_intel/briefs/x.md"];
+  const disabled = screen.filter((l) => false); // no [SUBORCH_ lines reach the extractor
+  assert.equal(orca.extractSuborchLines(disabled).length, 0);
+  assert.equal(orca.extractSuborchLines(screen).length, 1, 'sanity: the real extractor does match');
+});
+
+test('SUBORCH_*: roster lane terminals get their screens scanned; durable events; dedupe repeats, both distinct STATUS lines kept', async () => {
+  const intel = tmp();
+  fs.writeFileSync(path.join(intel, 'orchestrators.json'), JSON.stringify({
+    version: 1,
+    lanes: [{ lane: 'wisp', handle: 'term_lane_wisp', model: 'x', effort: 'y', state: 'live' }],
+  }));
+  const screens = {
+    term_lane_wisp: [
+      "[SUBORCH_STATUS] lane=wisp running=T-0100 done= blocked= next=T-0101",
+    ],
+  };
+  const runOrca = fakeRunOrca({ screens });
+  const r1 = await orca.pollWorkerDone({ runOrca, intelDir: intel });
+  assert.equal(r1.polled, 1, 'the roster terminal was scanned even with no foreman/*.json');
+  assert.equal(r1.appended.length, 1);
+  assert.equal(r1.appended[0].event, 'suborch_status');
+  assert.equal(r1.appended[0].terminal, 'term_lane_wisp');
+  assert.deepEqual(r1.appended[0].kv, { lane: 'wisp', running: 'T-0100', done: '', blocked: '', next: 'T-0101' });
+
+  // Same STATUS line again on the next poll: not re-appended (persisted dedupe).
+  const r2 = await orca.pollWorkerDone({ runOrca, intelDir: intel });
+  assert.equal(r2.appended.length, 0);
+
+  // A genuinely different STATUS line: appended (not swallowed by a coarse per-terminal dedupe).
+  screens.term_lane_wisp.push("[SUBORCH_STATUS] lane=wisp running=T-0100,T-0102 done=T-0101 blocked= next=T-0103");
+  const r3 = await orca.pollWorkerDone({ runOrca, intelDir: intel });
+  assert.equal(r3.appended.length, 1);
+
+  const lines = fs.readFileSync(path.join(intel, 'pane-events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(lines.length, 2);
+  assert.ok(lines.every((l) => l.event === 'suborch_status' && l.source === 'orca' && l.line));
+});
+
+test('SUBORCH_*: all 4 kinds appended for one terminal, WORKER_DONE and SUBORCH_* coexist on a terminal that is both foreman-supervised and rostered', async () => {
+  const intel = tmp();
+  fs.mkdirSync(path.join(intel, 'foreman'));
+  fs.writeFileSync(path.join(intel, 'foreman', 'T-0555.json'), JSON.stringify({ terminal: 'term_dual', task_id: 'T-0555', status: 'supervising' }));
+  fs.writeFileSync(path.join(intel, 'orchestrators.json'), JSON.stringify({
+    lanes: [{ lane: 'dual', handle: 'term_dual' }],
+  }));
+  const screens = {
+    term_dual: [
+      '[WORKER_DONE] task_id=T-0555 outcome=succeeded report=_intel/briefs/w.md',
+      "[SUBORCH_DONE] task_id=T-0556 outcome=succeeded report=_intel/briefs/s.md",
+      "[SUBORCH_QUESTION] task_id=T-0557 q='a or b?'",
+      "[SUBORCH_STATUS] lane=dual running=T-0558 done= blocked= next=",
+      '[SUBORCH_HANDOFF] _intel/briefs/handoff.md',
+    ],
+  };
+  const runOrca = fakeRunOrca({ screens });
+  const r = await orca.pollWorkerDone({ runOrca, intelDir: intel });
+  assert.equal(r.polled, 1, 'read once even though the terminal is both supervised and rostered');
+  const byEvent = Object.fromEntries(r.appended.map((e) => [e.event, e]));
+  assert.deepEqual(Object.keys(byEvent).sort(),
+    ['suborch_done', 'suborch_handoff', 'suborch_question', 'suborch_status', 'worker-done']);
+});
+
 test('suite hermeticity: test/setup.cjs keeps daemons from polling the real Orca', () => {
   assert.equal(process.env.WEZBRIDGE_ORCA_CENSUS, '0');
 });

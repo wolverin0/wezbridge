@@ -91,20 +91,54 @@ def notify_orchestrator(message):
             sys.stderr.write(f"Error running notify_orchestrator: {e}\n")
 
 
-SENTINEL_RE = re.compile(r"\[WORKER_DONE\]\s+task_id=([^\s<>]+)\s+outcome=(succeeded|failed)(.*)")
-# Lineas que son ECO de un despacho/instruccion del orquestador, no un cierre del worker.
-ECHO_MARKERS = ("[ORCHESTRATOR]", "[MISSION]", "[MISI", "emiti", "emití", "report=<")
+# T-0555: lane orchestrators close with [SUBORCH_DONE] (same grammar as [WORKER_DONE]); a Foreman
+# supervising a lane-orchestrator terminal must recognize both. --sentinel narrows this on demand.
+SENTINEL_TAGS = {"worker": ("WORKER_DONE",), "suborch": ("SUBORCH_DONE",), "both": ("WORKER_DONE", "SUBORCH_DONE")}
 
-def find_worker_done(screen, task_id):
+
+def build_sentinel_re(mode="both"):
+    tags = SENTINEL_TAGS.get(mode, SENTINEL_TAGS["both"])
+    return re.compile(r"\[(?:%s)\]\s+task_id=([^\s<>]+)\s+outcome=(succeeded|failed)(.*)" % "|".join(tags))
+
+
+SENTINEL_RE = build_sentinel_re("both")  # default: every existing caller (codex_worker.py, tests) keeps matching WORKER_DONE
+# Lineas que son ECO de un despacho/instruccion del orquestador, no un cierre del worker.
+# T-0555: se suman los placeholders literales del bloque de cierre SUBORCH_* citado en un brief
+# (misma logica que orca-census.cjs: mismo filtro, extendido en ambos lados a la vez).
+ECHO_MARKERS = ("[ORCHESTRATOR]", "[MISSION]", "[MISI", "emiti", "emití", "report=<",
+                "task_id=T-NNNN", "q='<", "outcome=succeeded|failed", "running=<ids>")
+
+SUBORCH_QUESTION_RE = re.compile(r"\[SUBORCH_QUESTION\]\s+task_id=([^\s<>]+)\s+q=(.+)")
+
+
+def find_worker_done(screen, task_id, sentinel_re=None):
     """(task_id, outcome, extra) del ULTIMO cierre real en pantalla, o None.
-    Ignora el texto plantilla y el eco de instrucciones (2026-09-22: dos falsos positivos)."""
+    Ignora el texto plantilla y el eco de instrucciones (2026-09-22: dos falsos positivos).
+    sentinel_re (T-0555) por defecto matchea WORKER_DONE y SUBORCH_DONE; ver build_sentinel_re."""
+    found = None
+    pattern = sentinel_re or SENTINEL_RE
+    for line in screen.splitlines():
+        if any(m in line for m in ECHO_MARKERS):
+            continue
+        m = pattern.search(line)
+        if m and (task_id in m.group(1) or m.group(1) == task_id):
+            found = (m.group(1), m.group(2), m.group(3).strip())
+    return found
+
+
+def find_suborch_question(screen):
+    """(task_id, q) de la ULTIMA [SUBORCH_QUESTION] real en pantalla, o None (T-0555).
+    Mismo filtro de eco que find_worker_done."""
     found = None
     for line in screen.splitlines():
         if any(m in line for m in ECHO_MARKERS):
             continue
-        m = SENTINEL_RE.search(line)
-        if m and (task_id in m.group(1) or m.group(1) == task_id):
-            found = (m.group(1), m.group(2), m.group(3).strip())
+        m = SUBORCH_QUESTION_RE.search(line)
+        if m:
+            q = m.group(2).strip()
+            if len(q) >= 2 and q[0] == q[-1] and q[0] in ("'", '"'):
+                q = q[1:-1]
+            found = (m.group(1), q)
     return found
 
 # T-0548: el worker declara en su bloque criteria el modelo/effort que realmente corrio.
@@ -162,13 +196,20 @@ def _close(task_id, screen, state, outcome, extra):
     _finish(state, "done", outcome, extra)
 
 
-def supervise_task(task_id, term_id, max_wait_sec=300, poll_interval=10, deadline=None, state=None):
-    """Polls a worker terminal until [WORKER_DONE] is detected or timeout.
+def supervise_task(task_id, term_id, max_wait_sec=300, poll_interval=10, deadline=None, state=None, sentinel="both"):
+    """Polls a worker terminal until [WORKER_DONE]/[SUBORCH_DONE] is detected or timeout.
     deadline (epoch) manda sobre max_wait_sec: un --resume conserva el deadline original.
-    state (dict) se persiste en cada poll; None = sin persistencia (compatibilidad)."""
+    state (dict) se persiste en cada poll; None = sin persistencia (compatibilidad).
+    sentinel (T-0555): 'worker' (solo WORKER_DONE), 'suborch' (solo SUBORCH_DONE) o 'both' (default,
+    compatibilidad con toda supervision existente)."""
     if deadline is None:
         deadline = time.time() + max_wait_sec
     last_prompt_nudge = 0
+    sentinel_re = build_sentinel_re(sentinel)
+    # JSON no tiene tuplas: lo persistido vuelve como lista; se normaliza para que la
+    # comparacion de dedupe contra el tuple de find_suborch_question funcione tras un --resume.
+    _prev_q = state.get("_last_forwarded_question") if state is not None else None
+    last_forwarded_question = tuple(_prev_q) if _prev_q else None
 
     print(f"[*] Foreman supervisando '{task_id}' en {term_id} (timeout: {max_wait_sec}s, "
           f"restan {max(0, int(deadline - time.time()))}s)...", flush=True)
@@ -181,16 +222,28 @@ def supervise_task(task_id, term_id, max_wait_sec=300, poll_interval=10, deadlin
             state["last_screen_sha1"] = hashlib.sha1(screen.encode("utf-8", "replace")).hexdigest()
             save_state(state)
 
-        # 1. Check for WORKER_DONE. outcome tiene que ser literal succeeded|failed:
+        # 1. Check for WORKER_DONE/SUBORCH_DONE. outcome tiene que ser literal succeeded|failed:
         #    el texto plantilla del despacho (outcome=<succeeded|failed>) queda eco en
         #    pantalla y disparaba un falso positivo (medido 2026-09-22, T-0511).
-        hit = find_worker_done(screen, task_id)
+        hit = find_worker_done(screen, task_id, sentinel_re=sentinel_re)
         if hit:
             done_task_id, outcome, extra = hit
             print(f"[+] Task {task_id} completada por worker! Outcome: {outcome}")
             _close(task_id, screen, state, outcome, extra)
             notify_orchestrator(f"[WORKER_DONE] task_id={task_id} outcome={outcome} {extra}")
             return {"status": "completed", "outcome": outcome, "details": extra}
+
+        # 1b. [SUBORCH_QUESTION] (T-0555): una lane orchestrator supervisada pide una decision.
+        #     Se reenvia una sola vez por pregunta (dedupe por texto exacto, no por tiempo: a
+        #     diferencia del nudge de confirmacion, esto no es un timer de reintento).
+        q_hit = find_suborch_question(screen)
+        if q_hit and q_hit != last_forwarded_question:
+            q_task_id, q_text = q_hit
+            notify_orchestrator(f"[SUBORCH_QUESTION] task_id={q_task_id} q='{q_text}'")
+            last_forwarded_question = q_hit
+            if state is not None:
+                state["_last_forwarded_question"] = list(q_hit)
+                save_state(state)
 
         # 2. Check if stuck on confirmation
         stuck_phrases = [
@@ -212,7 +265,7 @@ def supervise_task(task_id, term_id, max_wait_sec=300, poll_interval=10, deadlin
 
     # Final check before timeout to avoid race condition
     final_screen = read_terminal_screen(term_id)
-    hit = find_worker_done(final_screen, task_id)
+    hit = find_worker_done(final_screen, task_id, sentinel_re=sentinel_re)
     if hit:
         done_task_id, outcome, extra = hit
         print(f"[+] Task {task_id} completada por worker en chequeo final! Outcome: {outcome}")
@@ -234,6 +287,9 @@ def main(argv=None):
                         help="Reanudar desde _intel/foreman/<TASK_ID>.json conservando terminal y deadline")
     parser.add_argument("--fresh", action="store_true",
                         help="Ignorar un estado 'supervising' previo y reiniciar el timeout")
+    parser.add_argument("--sentinel", choices=sorted(SENTINEL_TAGS.keys()), default="both",
+                        help="Que sentinel de cierre esperar: worker ([WORKER_DONE]), "
+                             "suborch ([SUBORCH_DONE], T-0555) o both (default, ambos)")
     args = parser.parse_args(argv)
     run(args, parser)
 
@@ -274,7 +330,8 @@ def run(args, parser):
                  "resume_count": 0, "outcome": None, "report": None}
     state.update({"pid": os.getpid(), "status": "supervising"})
     save_state(state)
-    return supervise_task(task_id, terminal, max_wait_sec=max_wait, deadline=deadline, state=state)
+    return supervise_task(task_id, terminal, max_wait_sec=max_wait, deadline=deadline, state=state,
+                           sentinel=getattr(args, "sentinel", "both"))
 
 if __name__ == "__main__":
     main()
