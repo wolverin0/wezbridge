@@ -178,3 +178,59 @@ test('target resolution finds NO live pane at all (dead selector): pending is al
   assert.equal(flagIds.length, 1, 'must be flagged, not silently dropped');
   assert.match(flags[flagIds[0]].reason, /target-unreachable/);
 });
+
+// ── bug found by independent verification: '(unresolved)' clock never resets ─
+
+test('a single transient resolve blip at t=0, then a HEALTHY target for well over the window, then a NEW intent hitting one more resolve blip: must NOT be immediately flagged', async () => {
+  const env = makeEnv();
+  const WINDOW = 5000;
+  let resolveCalls = 0;
+  let nowMs = 1_000_000;
+  const w = createWaker({
+    eventsPath: env.eventsPath,
+    stateDir: env.stateDir,
+    discoverPanes: () => [{ paneId: TARGET_ID, project: 'G:/Py Apps/wezbridge', title: 'orch', status: 'idle' }],
+    // resolveTarget is only called by deliverPending while pending is
+    // non-empty, so it fires exactly once per intent lifecycle here: call 1
+    // is the t=0 blip on the FIRST intent, call 2 resolves it (delivered,
+    // pending drained), call 3 is the single-tick blip on the SECOND intent.
+    resolveTarget: () => {
+      resolveCalls += 1;
+      if (resolveCalls === 1 || resolveCalls === 3) return null;
+      return TARGET_ID;
+    },
+    send: fakeSend(),
+    settleTicks: 1,
+    cooldownMs: 0,
+    debounceMs: 0,
+    maxAttempts: 3,
+    unreachableWindowMs: WINDOW,
+    now: () => nowMs,
+    log: () => {},
+    watchRepos: ['walksim'],
+  });
+
+  // t=0 (clock starts): transient resolve failure starts the '(unresolved)' clock.
+  beacon(env, { repo: 'walksim', session: 'first', time: new Date(nowMs).toISOString(), event: 'turn-end' });
+  await w.tick(); // resolveCalls=1 -> null -> noteUnreachable('(unresolved)', ...)
+  nowMs += 1000;
+
+  // Next tick: target resolves fine and is idle -> the first intent is
+  // delivered, pending drains to empty.
+  await w.tick(); // resolveCalls=2 -> TARGET_ID, status idle -> delivered
+  assert.equal(Object.keys(w._state.pending).length, 0, 'first intent must have been delivered');
+  assert.equal(Object.keys(readFlags(w)).length, 0, 'a healthy, resolving target must never be flagged');
+
+  // Target stays healthy/reachable (no pending intents -> resolveTarget is
+  // not even invoked) for well over the window: 35 minutes of wall-clock.
+  nowMs += 35 * 60_000;
+
+  // A brand-new intent arrives and hits a single-tick resolve blip.
+  beacon(env, { repo: 'walksim', session: 'second', time: new Date(nowMs).toISOString(), event: 'turn-end' });
+  await w.tick(); // resolveCalls=3 -> null -> noteUnreachable('(unresolved)', ...) again
+
+  const flags = readFlags(w);
+  assert.equal(Object.keys(flags).length, 0,
+    'a single-tick resolve blip on a fresh intent must not be flagged as 35min-unreachable — the (unresolved) clock from the FIRST blip must have been cleared once the target resolved again');
+  assert.equal(Object.keys(w._state.pending).length, 1, 'the new intent must still be pending, not flagged away');
+});
