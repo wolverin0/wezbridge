@@ -1,4 +1,4 @@
-<!-- doc-head: Wezbridge document authority map; September source consolidation -->
+<!-- doc-head: Wezbridge authority map; suite evidence and September consolidation -->
 Read docs/CONSOLIDATION-20260910.md for integrated source, verification and private-artifact boundaries.
 Read docs/T0408-SP-HEARTBEAT.md for stale SP detection, live P1 evidence and pending runtime activation.
 T0421-ONE-LANE.md covers explicit dispatch; its discarded graph ancestors remain excluded.
@@ -14,6 +14,7 @@ Read when: you need to know which doc to trust, what replaced what, or what is s
 
 | File | Verdict | Last change | Reason |
 |---|---|---|---|
+| docs/T0470-SUITE-CONTRACT.md | CURRENT | 2026-09-14 | Zero-fail suite, structured audit reporter, historical terminal kinds and named walksim skip. |
 | docs/T0408-SP-HEARTBEAT.md | CURRENT | 2026-09-09 | Fifteen-minute SP heartbeat, existing sentinel/P1 route, isolated simulation and runtime activation boundary. |
 | docs/T0417-LEASE-OWNERS.md | CURRENT | 2026-09-09 | Registered project owners, generic executor recognition, contract parity guard and read-only CLI counts. |
 | docs/T0421-ONE-LANE.md | CURRENT | 2026-09-08 | Explicit project+pane, durable receipt, guarded A2A, result return to Jarvis; replaces the graph delivery plan. |
