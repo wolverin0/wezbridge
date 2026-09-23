@@ -188,7 +188,13 @@ function lastTransition(task) {
  *   2. _intel/runs/<id>/log.md — long oversight loops report here and can go
  *      many hours between ledger transitions (T-0008, at pass 50 with 38h of
  *      ledger silence)
- *   3. a ruling recorded against the task
+ *   3. a ruling recorded against the task — but NOT every ruling. `operator-
+ *      gated` and `deferred` say, in their own text, that the card is
+ *      explicitly parked: nobody is on it. Counting those as liveness let the
+ *      orchestrator's own parking ruling silence the alarm it was supposed to
+ *      trip (T-0472, RULING_NOT_LIVENESS below). `resolved`, `cancelled`,
+ *      `approved` and `dispatched` stay counted — see RULING_NOT_LIVENESS for
+ *      why `dispatched` in particular is kept in.
  *   4. DECLARED CHILD tasks transitioning — a parent is worked THROUGH its
  *      children, which is precisely how T-0146 looked dead while eleven of
  *      them closed under it. Sharing a corr is NOT the relationship (T-0167).
@@ -240,6 +246,25 @@ function lastProgress(task, now, dir = intelDir(), ctx = null) {
 }
 
 /**
+ * T-0472 — words a ruling can carry that must NOT count as channel-3 liveness.
+ * `operator-gated` and `deferred` are the orchestrator recording, in the
+ * ruling's own text, that the card is explicitly PARKED: nobody is working
+ * it, it is waiting on the operator or pushed to later. Folding that into
+ * "someone showed a sign of life" let the orchestrator's own parking act
+ * reset the quiet clock every time it fired — a self-suppression loop,
+ * measured on the live board 2026-09-18 at 31 cards, 20 operator-gated + 8
+ * deferred, 31 of 31 written by source=orchestrator-pane (worst case: 527h of
+ * pushed alarm on a card silent 703h). `resolved`/`cancelled`/`approved` are
+ * real closing acts and stay counted. `dispatched` also stays counted —
+ * deliberately: it asserts a handoff actually happened, a different claim
+ * from "nobody is on this", and narrowing to exactly these two words keeps
+ * the pre-existing tested contract (a dispatched ruling counts as progress,
+ * test/fleet-steward-progress.test.cjs:133) intact rather than guessing at a
+ * broader rule nothing here asked for.
+ */
+const RULING_NOT_LIVENESS = new Set(['operator-gated', 'deferred']);
+
+/**
  * Pre-index the two cross-record channels once per audit rather than per task:
  * rulings are one file scan, children are one pass over the task list.
  *
@@ -251,6 +276,7 @@ function lastProgress(task, now, dir = intelDir(), ctx = null) {
 function buildContext(tasks, dir = intelDir()) {
   const rulingAt = new Map();
   for (const r of loadRulings(dir)) {
+    if (RULING_NOT_LIVENESS.has(r.ruling)) continue;
     const at = ms(r.at);
     if (r.task && at > (rulingAt.get(r.task) || 0)) rulingAt.set(r.task, at);
   }
