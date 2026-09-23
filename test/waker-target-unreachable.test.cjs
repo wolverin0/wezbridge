@@ -146,3 +146,35 @@ test('a shorter configured window flags sooner than a longer one (same elapsed n
   for (let i = 0; i < 3; i++) { await wLong.tick(); c2.advance(1000); }
   assert.equal(Object.keys(readFlags(wLong)).length, 0, 'long window: not flagged yet after the same 3s');
 });
+
+// ── "dead selector" from the problem statement: no live pane resolves AT ALL ─
+
+test('target resolution finds NO live pane at all (dead selector): pending is also flagged as target-unreachable after the window', async () => {
+  const env = makeEnv();
+  const WINDOW = 4000;
+  let nowMs = 1_000_000;
+  const w = createWaker({
+    eventsPath: env.eventsPath,
+    stateDir: env.stateDir,
+    discoverPanes: () => [],
+    resolveTarget: () => null, // mirrors pane-identity resolve() with zero hits
+    send: fakeSend(),
+    settleTicks: 1,
+    cooldownMs: 0,
+    debounceMs: 0,
+    maxAttempts: 3,
+    unreachableWindowMs: WINDOW,
+    now: () => nowMs,
+    log: () => {},
+    watchRepos: ['walksim'],
+  });
+  beacon(env, { repo: 'walksim', session: 's', time: new Date(1_000_000).toISOString(), event: 'turn-end' });
+
+  for (let i = 0; i < 5; i++) { await w.tick(); nowMs += 1000; }
+
+  const flags = readFlags(w);
+  const flagIds = Object.keys(flags);
+  assert.equal(Object.keys(w._state.pending).length, 0, 'a permanently unresolved target must not hold intents forever either');
+  assert.equal(flagIds.length, 1, 'must be flagged, not silently dropped');
+  assert.match(flags[flagIds[0]].reason, /target-unreachable/);
+});

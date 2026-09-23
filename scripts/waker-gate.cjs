@@ -71,14 +71,34 @@ function main() {
   const flags = readJson(path.join(STATE, 'flags.json'), {});
   const flaggedIds = Object.keys(flags);
   if (flaggedIds.length > 0) {
-    console.log(`waker-gate: RED — ${flaggedIds.length} intent(s) hit the attempt cap and were flagged as undeliverable:`);
-    for (const id of flaggedIds.slice(0, 5)) {
-      const f = flags[id];
-      console.log(`  ${id}  repo=${f.repo || '?'}  flagged_at=${f.flagged_at || '?'}`);
-      // El MOTIVO, no solo el conteo: desde W4 un intent muere por dos razones
-      // muy distintas — el cap de intentos fallidos, o "unverified twice"
-      // (composer ilegible). Sin el motivo el operador mira el pane equivocado.
-      if (f.reason) console.log(`      reason: ${f.reason}`);
+    // T-0419: a flag now has THREE possible causes, split into two categories
+    // that point at DIFFERENT places to look. "consumer not consuming" (the
+    // attempt cap, or "unverified twice") means the poke WAS attempted against
+    // a live target and still failed — look at delivery. "destination
+    // unreachable" (reason starts with target-unreachable) means no poke was
+    // ever attempted because the target itself vanished/stayed unknown — look
+    // at the PANE, not the waker's delivery path. Printing them as one
+    // undifferentiated "attempt cap" bucket sent the operator to the wrong
+    // place for exactly this case.
+    const unreachable = flaggedIds.filter((id) => /^target-unreachable/.test(String(flags[id].reason || '')));
+    const consumerSide = flaggedIds.filter((id) => !unreachable.includes(id));
+    const printGroup = (ids) => {
+      for (const id of ids.slice(0, 5)) {
+        const f = flags[id];
+        console.log(`  ${id}  repo=${f.repo || '?'}  flagged_at=${f.flagged_at || '?'}`);
+        // El MOTIVO, no solo el conteo: desde W4 un intent muere por dos razones
+        // muy distintas — el cap de intentos fallidos, o "unverified twice"
+        // (composer ilegible). Sin el motivo el operador mira el pane equivocado.
+        if (f.reason) console.log(`      reason: ${f.reason}`);
+      }
+    };
+    if (unreachable.length) {
+      console.log(`waker-gate: RED — ${unreachable.length} intent(s) flagged: DESTINATION UNREACHABLE (never attempted — the target pane itself is gone/unknown, not the waker's delivery):`);
+      printGroup(unreachable);
+    }
+    if (consumerSide.length) {
+      console.log(`waker-gate: RED — ${consumerSide.length} intent(s) flagged: CONSUMER NOT CONSUMING (attempt cap reached or twice-unverified — a poke WAS attempted against a live target):`);
+      printGroup(consumerSide);
     }
     console.log('These never resolve themselves. Someone must look, then clear flags.json.');
     process.exit(1);

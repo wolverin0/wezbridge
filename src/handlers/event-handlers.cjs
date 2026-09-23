@@ -544,6 +544,20 @@ function createEventHandlers(ctx) {
         });
         log(`orchestrator-waker NOT armed: ${wakerCfg.reason}`);
       } else {
+        // T-0419: optional tuning knob, separate from the arming decision
+        // above. Precedence: _intel/orch-waker.json's `unreachableWindowMs`
+        // (read here, passed as an explicit opt) > WEZBRIDGE_ORCH_WAKER_
+        // UNREACHABLE_MS env (read inside createWaker, only when opts leaves
+        // it undefined) > DEFAULTS.unreachableWindowMs. Only set the key at
+        // all when the file has it — an explicit opts key of `undefined`
+        // would still count as "caller fixed it" and suppress the env path.
+        let unreachableWindowMs;
+        try {
+          const raw = JSON.parse(fs.readFileSync(path.join(intelDir, 'orch-waker.json'), 'utf8'));
+          if (Number.isFinite(raw.unreachableWindowMs) && raw.unreachableWindowMs >= 0) {
+            unreachableWindowMs = raw.unreachableWindowMs;
+          }
+        } catch { /* absent/unparseable -> DEFAULTS/env decide, same fail-open as arming */ }
         const waker = createWaker({
           eventsPath: path.join(intelDir, 'pane-events.jsonl'),
           stateDir: path.join(intelDir, '.orch-waker-state'),
@@ -551,6 +565,7 @@ function createEventHandlers(ctx) {
           // T-0321: el waker lee el censo del worker; nunca wezterm sincrono en el loop.
           discoverPanes: ipc.discoverPanes,
           send: verifiedSend,
+          ...(unreachableWindowMs !== undefined ? { unreachableWindowMs } : {}),
           log,
         });
         waker.startWatcher();
