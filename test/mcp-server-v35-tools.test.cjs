@@ -9,46 +9,16 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { spawn } = require('node:child_process');
 const path = require('node:path');
-
-const ENTRY = path.join(__dirname, '..', 'src', 'mcp-server.cjs');
-const E2E = process.env.WEZBRIDGE_E2E === '1';
-
-// Generous per-call budget: each call boots a fresh mcp-server (socket
+// T-0400: spawn-and-JSON-RPC boilerplate now lives in test/helpers/mcp-call.cjs
+// (shared with test/a2a-send-spills-before-refusing.test.cjs). Same call/env
+// shape as before — each call still boots a fresh mcp-server (socket
 // discovery: tasklist + probe, version probe) and competes with the live
 // daemon's pane polling — worst-case spawn under contention is ~25s
 // (10s timeout + 10s retry + shell-init sleep).
-function callTool(name, args, env = {}, timeoutMs = 60000) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [ENTRY], {
-      cwd: path.join(__dirname, '..'),
-      env: { WEZTERM_PANE: '1', ...process.env, ...env },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`timed out; stderr=${stderr}`)); }, timeoutMs);
-    child.stderr.on('data', (c) => { stderr += c; });
-    child.stdout.on('data', (c) => {
-      stdout += c;
-      const nl = stdout.indexOf('\n');
-      if (nl === -1) return;
-      clearTimeout(timer);
-      const line = stdout.slice(0, nl).trim();
-      child.stdin.end();
-      child.kill('SIGTERM');
-      try { resolve(JSON.parse(line)); }
-      catch (err) { reject(new Error(`invalid JSON: ${err.message}; stdout=${stdout}; stderr=${stderr}`)); }
-    });
-    child.on('error', reject);
-    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) + '\n');
-  });
-}
+const { callTool, resultText } = require('./helpers/mcp-call.cjs');
 
-function resultText(res) {
-  return res.result.content[0].text;
-}
+const E2E = process.env.WEZBRIDGE_E2E === '1';
 
 // ─── a2a_send validation (no wezterm touched — fail-fast paths) ────────────
 
