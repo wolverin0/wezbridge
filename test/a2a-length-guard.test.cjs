@@ -12,6 +12,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { a2aLengthRefusal, A2A_BODY_SOFT_LIMIT } = require('../src/a2a-length-guard.cjs');
 
@@ -71,15 +72,36 @@ test('non-string bodies are measured, not crashed on', () => {
 // defect this fleet found 11 times in one repo.
 // ---------------------------------------------------------------------------
 
-test('a2a_send calls the guard, and calls it BEFORE sending', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'mcp-server.cjs'), 'utf8');
-  const handler = src.slice(src.indexOf("case 'a2a_send'"));
-  const callAt = handler.indexOf('a2aLengthRefusal(');
-  const sendAt = handler.indexOf('sendPromptDeferredEnter');
-  assert.ok(callAt > -1, 'a2a_send must CALL a2aLengthRefusal, not merely mention the constant');
-  assert.ok(sendAt > -1, 'sanity: the send call should still be present');
-  assert.ok(callAt < sendAt,
-    'the guard must run BEFORE the send — refusing after delivery is what we already had, and it did not work');
+// T-0400: was a source-order check (index of the call vs. index of the send
+// literal) — an `if (false)` around the real refusal check leaves those two
+// literals in the same relative order, so the regex/index comparison stays
+// green while nothing stops the send. Rewritten to invoke the real
+// mcp-server against test/mocks/wezterm-echo-mock.cjs (the ONE double that
+// actually echoes what reached the pane — the default static mock never
+// would, so "nothing was sent" would be true trivially against it) and prove
+// BOTH halves for real: the call is refused, AND the envelope never reaches
+// the pane.
+test('a2a_send calls the guard, and calls it BEFORE sending', async (t) => {
+  const { callTool, resultText, fixture } = require('./helpers/mcp-call.cjs');
+  const dir = fixture(t, 'a2a-length-guard-');
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-length-guard-echo-'));
+  t.after(() => fs.rmSync(stateDir, { recursive: true, force: true }));
+  const env = {
+    WEZBRIDGE_INTEL_DIR: dir,
+    WEZBRIDGE_WEZTERM_BIN: path.join(__dirname, 'mocks', 'wezterm-echo-mock.cjs'),
+    WEZBRIDGE_MOCK_ECHO_STATE: path.join(stateDir, 'state.json'),
+  };
+  const corr = 'len-guard-real-1';
+  const res = await callTool('a2a_send', { to_pane: 1, from_pane: 777, corr, type: 'request', body: body(1500) }, env);
+  assert.equal(res.result.isError, true);
+  assert.match(resultText(res), /REFUSED/);
+  assert.match(resultText(res), /1500 chars/);
+
+  // If the guard ran AFTER the send (or not at all), the echo mock would have
+  // recorded the envelope, and it would show up here — the exact regression
+  // an index-order source check cannot catch.
+  const read = await callTool('read_output', { pane_id: 1, lines: 20 }, env);
+  assert.doesNotMatch(resultText(read), new RegExp(corr), 'the refused envelope must never reach the pane — the guard must run BEFORE the send');
 });
 
 test('allow_long is exposed in the tool schema, or the escape hatch is unreachable', () => {
