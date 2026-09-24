@@ -233,7 +233,7 @@ test('T-0339 P5: a second run while one is still dispatching writes its own reco
   const dir = path.join(f.intelDir, 'routine-findings');
   fs.mkdirSync(dir, { recursive: true });
   const live = { routine: 'gmail-recordatorios', repo: 'wezbridge', run_id: 'live-run', phase: 'dispatching',
-    started_at: new Date(Date.now() - 60000).toISOString(), findings_file: 'gmail-recordatorios-live-run.json' };
+    started_at: new Date(Date.now() - 60000).toISOString() };
   fs.writeFileSync(path.join(dir, 'run-gmail-recordatorios-live-run.json'), JSON.stringify(live));
   const result = await runGmailRoutine(f, f.deps);
   assert.equal(f.spawns.length, 0, 'no second claude child');
