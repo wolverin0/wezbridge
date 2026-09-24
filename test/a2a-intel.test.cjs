@@ -559,6 +559,20 @@ test('dedupeResultLines: mismo id repetido N veces colapsa a 1 (id gana sobre cu
   assert.equal(out[0].time, '2026-09-02T01:00:00.000Z', 'la copia mas temprana sobrevive');
 });
 
+// T-0571: distinct results carrying distinct ids must survive even when corr
+// AND body are byte-identical — the id-fallback (corr + sha1(body)) key is
+// what collapsed two genuinely different results in one cursor batch when
+// callers didn't pass id (see T-0571 brief).
+test('dedupeResultLines: mismo corr y mismo body pero id DISTINTO no colapsan — son results distintos', () => {
+  const { dedupeResultLines } = require('../src/a2a-intel.cjs');
+  const lines = [
+    { id: 'r-1', corr: 'c-same', time: '2026-09-02T01:00:00.000Z', body: 'criteria:\n- a: pass' },
+    { id: 'r-2', corr: 'c-same', time: '2026-09-02T01:05:00.000Z', body: 'criteria:\n- a: pass' },
+  ];
+  const out = dedupeResultLines(lines);
+  assert.equal(out.length, 2, 'distinct ids must never collapse, even with identical corr+body');
+});
+
 test('dedupeResultLines: lineas legacy SIN id dedupean por corr+cuerpo (el shape real del incidente 996509539944f94d)', () => {
   const { dedupeResultLines } = require('../src/a2a-intel.cjs');
   const lines = Array.from({ length: 151 }, (_, i) => ({
