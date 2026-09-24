@@ -243,6 +243,39 @@ test('sendReconnect: classifies unknown on timeout (neither success nor failure 
   assert.equal(r.result, 'unknown');
 });
 
+test('sendReconnect: a stale "Successfully reconnected" from an earlier run (still visible above the new command echo) must not count — real fail after the new echo wins', async () => {
+  // Regression for T-0569: an operator ran `/mcp reconnect memorymaster` by hand earlier
+  // today; that success block is still in the visible screen/scrollback when this run's
+  // command echo appears, followed later by a real failure. Only text after the LAST
+  // (newest) command echo may be classified.
+  const staleThenFailTail = [
+    '❯ /mcp reconnect memorymaster',
+    '  ⎿  Successfully reconnected to memorymaster',
+    '● unrelated chatter',
+    '❯ /mcp reconnect memorymaster',
+    '● Thinking…',
+    '  ⎿  Failed to reconnect: server unreachable',
+    '❯',
+  ];
+  const runOrca = fakeRunOrca({ sendResults: { term_claude_idle1: [staleThenFailTail] } });
+  const r = await sendReconnect({ runOrca, handle: 'term_claude_idle1', server: 'memorymaster', sleep: noSleep, pollMs: 1, timeoutMs: 1 });
+  assert.equal(r.result, 'fail');
+});
+
+test('sendReconnect: stale success + new echo with nothing after yet is unknown, not ok', async () => {
+  const staleThenNothingTail = [
+    '❯ /mcp reconnect memorymaster',
+    '  ⎿  Successfully reconnected to memorymaster',
+    '● unrelated chatter',
+    '❯ /mcp reconnect memorymaster',
+  ];
+  const runOrca = fakeRunOrca({
+    sendResults: { term_claude_idle1: [staleThenNothingTail, staleThenNothingTail] },
+  });
+  const r = await sendReconnect({ runOrca, handle: 'term_claude_idle1', server: 'memorymaster', sleep: noSleep, pollMs: 1, timeoutMs: 2 });
+  assert.equal(r.result, 'unknown');
+});
+
 test('runBroadcast: exit code is 1 when any targeted pane does not classify ok', async () => {
   const runOrca = fakeRunOrca({
     sendResults: {
