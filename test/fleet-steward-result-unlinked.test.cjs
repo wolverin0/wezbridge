@@ -163,3 +163,61 @@ test('W2: result-unlinked rankea junto a lo que el operador debe, no en el fondo
   assert.strictEqual(f[0].category, 'result-unlinked',
     'trabajo TERMINADO que el tablero no registro vale mas que trabajo que nadie empezo');
 });
+
+// ── T-0478: un corr AMBIGUO (compartido por 2+ tarjetas) no debe quedar
+// "ambiguous" para siempre si el CUERPO del result nombra un T-id que es UNO
+// DE LOS DE LA FAMILIA que comparte ese corr. resultCardForCorr() debia
+// devolver null incondicionalmente en exact.length>1; esto verifica que ahora
+// usa el body SOLO para elegir dentro de la familia, nunca fuera de ella. ──
+
+const sharedCards = () => ([
+  { id: 'T-0468', corr: 'shared-corr-fam', repo: 'wezbridge', state: 'running', title: 'card A (0468)' },
+  { id: 'T-0469', corr: 'shared-corr-fam', repo: 'wezbridge', state: 'running', title: 'card B (0469)' },
+]);
+
+test('T-0478 AC1: corr ambiguo + body nombrando "T-0468" liga a la tarjeta T-0468 de la familia', () => {
+  const dir = intelWith(
+    [unlinked({ corr: 'shared-corr-fam', reason: 'ambiguous' })],
+    sharedCards(),
+    [{ corr: 'shared-corr-fam', time: hoursAgo(3), body: 'listo, ver T-0468 para el detalle' }],
+  );
+  const f = steward.audit([], NOW, dir).findings;
+  assert.strictEqual(f.length, 1);
+  assert.strictEqual(f[0].repo, 'wezbridge', 'el corr debe resolver a una tarjeta de la familia, no quedar sin dueno');
+  assert.strictEqual(f[0].title, 'card A (0468)', 'debe elegir puntualmente T-0468, no cualquiera de la familia');
+});
+
+test('T-0478 AC1: variante sin guion "T0468" (word-bounded) tambien liga a T-0468', () => {
+  const dir = intelWith(
+    [unlinked({ corr: 'shared-corr-fam', reason: 'ambiguous' })],
+    sharedCards(),
+    [{ corr: 'shared-corr-fam', time: hoursAgo(3), body: 'cerrado por T0468, sin novedades' }],
+  );
+  const f = steward.audit([], NOW, dir).findings;
+  assert.strictEqual(f.length, 1);
+  assert.strictEqual(f[0].title, 'card A (0468)', 'la variante TNNNN debe resolver igual que T-NNNN');
+});
+
+test('T-0478 AC2: body nombrando un T-id que NO comparte el corr (fuera de la familia) sigue ambiguo', () => {
+  const dir = intelWith(
+    [unlinked({ corr: 'shared-corr-fam', reason: 'ambiguous' })],
+    sharedCards(),
+    [{ corr: 'shared-corr-fam', time: hoursAgo(3), body: 'esto en realidad es sobre T-0999, no relacionado' }],
+  );
+  const f = steward.audit([], NOW, dir).findings;
+  assert.strictEqual(f.length, 1);
+  assert.strictEqual(f[0].repo, 'unknown', 'un id fuera de la familia NUNCA debe resolver el corr ambiguo');
+  assert.strictEqual(f[0].title, 'result corr=shared-corr-fam');
+});
+
+test('T-0478 AC2: body sin ningun T-id sigue ambiguo', () => {
+  const dir = intelWith(
+    [unlinked({ corr: 'shared-corr-fam', reason: 'ambiguous' })],
+    sharedCards(),
+    [{ corr: 'shared-corr-fam', time: hoursAgo(3), body: 'listo, sin mas detalle' }],
+  );
+  const f = steward.audit([], NOW, dir).findings;
+  assert.strictEqual(f.length, 1);
+  assert.strictEqual(f[0].repo, 'unknown', 'sin T-id en el body el corr ambiguo no puede resolverse');
+  assert.strictEqual(f[0].title, 'result corr=shared-corr-fam');
+});

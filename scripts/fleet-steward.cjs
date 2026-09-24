@@ -396,20 +396,40 @@ function firstResultTimes(dir) {
   // keeps this reader consistent with daily-rollup/result-linker so a future
   // refactor of this function can't silently reintroduce the count-inflation
   // bug those readers had.
+  // T-0478: also keep the EARLIEST body per corr (same min-time reduction),
+  // so an ambiguous corr can be resolved against the body that named it.
   const times = new Map();
+  const bodies = new Map();
   for (const result of dedupeResultLines(readJsonl(path.join(dir, 'a2a-results.jsonl')))) {
     const at = ms(result && result.time);
     if (!result || !result.corr || !at) continue;
     const previous = times.get(result.corr);
-    if (!previous || at < previous) times.set(result.corr, at);
+    if (!previous || at < previous) { times.set(result.corr, at); bodies.set(result.corr, result.body); }
   }
-  return times;
+  return { times, bodies };
 }
 
-function resultCardForCorr(corr, cards) {
+// T-0478: word-bounded T-id inside free-form result body text, both spellings
+// (`T-0468` and `T0468`). Deliberately loose (any 4-digit id, anywhere in the
+// body) because resultCardForCorr() below restricts the match to the FAMILY
+// sharing the ambiguous corr — a false match outside that family is
+// structurally impossible, so the regex itself does not need to be strict.
+const TASK_ID_IN_BODY = /\bT-?(\d{4})\b/;
+function taskIdFromBody(body) {
+  const m = TASK_ID_IN_BODY.exec(String(body || ''));
+  return m ? `T-${m[1]}` : null;
+}
+
+function resultCardForCorr(corr, cards, body) {
   const exact = cards.filter((card) => card.corr === corr);
   if (exact.length === 1) return exact[0];
-  if (exact.length > 1) return null;
+  if (exact.length > 1) {
+    // Ambiguous corr: only resolvable if the result body names ONE OF THE
+    // CARDS SHARING THIS CORR (the family). A T-id outside that family is not
+    // evidence for THIS corr — stay ambiguous rather than guess.
+    const id = taskIdFromBody(body);
+    return id ? exact.find((card) => card.id === id) || null : null;
+  }
   const id = taskIdFromCorr(corr);
   return id ? cards.find((card) => card.id === id) || null : null;
 }
@@ -442,7 +462,7 @@ function individualResultFinding(result, card, now) {
 function auditResultLinks(dir = intelDir(), now = Date.now()) {
   // Primer intento fallido por corr: los reintentos del cursor no reinician el
   // reloj ni multiplican el item.
-  const arrivedAt = firstResultTimes(dir);
+  const { times: arrivedAt, bodies: resultBodies } = firstResultTimes(dir);
   const first = new Map();
   for (const e of readJsonl(path.join(dir, 'events.jsonl'))) {
     if (!e || e.event !== 'result.unlinked' || !e.corr) continue;
@@ -458,7 +478,7 @@ function auditResultLinks(dir = intelDir(), now = Date.now()) {
   const recentOrphans = [];
   const archived = [];
   for (const r of first.values()) {
-    const card = resultCardForCorr(r.corr, cards);
+    const card = resultCardForCorr(r.corr, cards, resultBodies.get(r.corr));
     if (card && CLOSED_TASK_STATES.has(card.state)) continue;
     if (now - r.at > HOURS(RESULT_UNLINKED_WINDOW_HOURS)) {
       if (!card) archived.push(r);
