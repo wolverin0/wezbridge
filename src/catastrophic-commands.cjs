@@ -303,7 +303,11 @@ function isDangerousTarget(rawTarget, trackedCwd, context) {
     const ownScratch = rx(String.raw`^t:/claudecodetemp/claude/[^/]+/${escaped}(/.*)?$`);
     if (ownScratch.test(resolved)) return false;
   }
-  if (CLAUDE_DEEP_RE.test(resolved)) return true; // shared dir, deeper than a direct child, not ours
+  // Deeper than a direct child of claude/ (i.e. looks like <slug>/<session-id>/...): only deny as
+  // "someone else's session" when we actually KNOW our own session id and it didn't match above —
+  // without a sessionId we cannot tell this apart from the caller's own scratchpad, and the brief
+  // requires NOT blocking rm -r generally when own-scope can't be determined.
+  if (sid && CLAUDE_DEEP_RE.test(resolved)) return true;
   return false;
 }
 

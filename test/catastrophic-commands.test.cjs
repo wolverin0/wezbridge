@@ -294,6 +294,13 @@ test('when context is unknown, explicit dangerous roots still deny but generic r
   allow('rm -rf build');
 });
 
+test('without a known sessionId, a deep claude/<slug>/<x>/... path is NOT auto-denied (cannot tell it apart from own scratchpad)', () => {
+  // Regression guard: only deny "someone else's session" once we KNOW our own session id and it
+  // didn't match. Without it, this must fall back to "don't block generic rm -r".
+  allow('rm -rf T:/claudecodetemp/claude/some-project/some-session-id/scratchpad/x');
+  allow2('rm -rf T:/claudecodetemp/claude/some-project/some-session-id/scratchpad/x', { cwd: '/wherever' });
+});
+
 test('AC3: common worker-flow strings are not newly blocked', () => {
   allow('git worktree remove --force');
   allow('rm -rf "$TMPDIR/x"');
