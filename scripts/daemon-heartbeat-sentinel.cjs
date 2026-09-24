@@ -129,7 +129,7 @@ function logLine(obj) {
   } catch { /* evidence must never crash the sentinel */ }
 }
 
-/** Find the orchestrator pane (Claude session whose project basename is the repo). */
+/** Find the orchestrator pane (Claude session whose project basename is the repo). LEGACY WezTerm path only. */
 async function findOrchestratorPane() {
   const discovery = require(path.join(REPO, 'src', 'pane-discovery.cjs'));
   const repo = (process.env.WEZBRIDGE_ORCH_REPO || 'wezbridge').toLowerCase();
@@ -139,7 +139,50 @@ async function findOrchestratorPane() {
   return hit ? hit.paneId ?? hit.pane_id : null;
 }
 
-async function deliverPoke(message, recheck) {
+/**
+ * T-0599 fixup: the WezTerm-only poke was itself the finding — the fleet
+ * lives in Orca (T-0596) and nobody has a live WezTerm pane to receive
+ * sendPromptDeferredEnter anymore. Same pattern as decision-relay.cjs's
+ * attemptSendOrca: resolve the orchestrator's live Orca terminal by
+ * project/lane (src/orca-target.cjs — NOT a stored pane id, which
+ * renumbers), send + read-back verify (src/orca-send.cjs), self-send guard
+ * via ORCA_TERMINAL_HANDLE (harmless here — this runs from Task Scheduler,
+ * not a pane, so ORCA_TERMINAL_HANDLE is normally unset, but the guard costs
+ * nothing and keeps parity with every other Orca sender). WezTerm stays
+ * legacy behind WEZBRIDGE_WEZTERM_TRANSPORT=1, same flag as T-0596/T-0599.
+ * Dedupe/cooldown/deadman semantics are untouched — they live in evaluate()
+ * and main(), upstream of this function.
+ */
+async function deliverPokeOrca(message, recheck, {
+  resolveOrcaTargetFn = require(path.join(REPO, 'src', 'orca-target.cjs')).resolveOrcaTarget,
+  sendToOrcaTerminalFn = require(path.join(REPO, 'src', 'orca-send.cjs')).sendToOrcaTerminal,
+} = {}) {
+  const repo = (process.env.WEZBRIDGE_ORCH_REPO || 'wezbridge').toLowerCase();
+  const orcaHit = await resolveOrcaTargetFn(repo);
+  if (!orcaHit.handle || orcaHit.ambiguous.length) {
+    return { delivered: false, reason: orcaHit.ambiguous.length ? 'ambiguous-pane' : 'no orchestrator pane found' };
+  }
+  if (process.env.ORCA_TERMINAL_HANDLE && orcaHit.handle === process.env.ORCA_TERMINAL_HANDLE) {
+    // Same guard a2a_send and decision-relay.cjs apply: never deliver to self.
+    return { delivered: false, handle: orcaHit.handle, reason: 'self-send' };
+  }
+  const currentMessage = recheck ? recheck() : message;
+  if (!currentMessage) return { delivered: false, handle: orcaHit.handle, reason: 'daemon recovered before alert delivery' };
+  const text = `[daemon-sentinel] ${currentMessage} Evidencia: _intel/evidence/wezbridge/daemon-sentinel.jsonl`;
+  const sent = await sendToOrcaTerminalFn(orcaHit.handle, text);
+  try {
+    require(path.join(REPO, 'src', 'action-log.cjs')).logAction('sentinel_poke', {
+      target: `orca:${orcaHit.handle}`, why: currentMessage.slice(0, 120), extra: { submitted: sent.submitted, delivered: sent.delivered },
+    });
+  } catch { /* attribution is best-effort, delivery already happened */ }
+  if (sent.ok !== true) {
+    return { delivered: false, handle: orcaHit.handle, submitted: sent.submitted, reason: sent.error || 'send-unverified' };
+  }
+  return { delivered: true, handle: orcaHit.handle, submitted: sent.submitted };
+}
+
+/** LEGACY WezTerm poke path, kept behind WEZBRIDGE_WEZTERM_TRANSPORT=1. */
+async function deliverPokeWezTerm(message, recheck) {
   const verified = require(path.join(REPO, 'src', 'verified-send.cjs'));
   const paneId = await findOrchestratorPane();
   if (paneId === null || paneId === undefined) return { delivered: false, reason: 'no orchestrator pane found' };
@@ -162,6 +205,16 @@ async function deliverPoke(message, recheck) {
     });
   } catch { /* attribution is best-effort, delivery already happened */ }
   return { delivered: true, paneId, submitted };
+}
+
+/**
+ * Dispatch: Orca by default (fleet lives in Orca, T-0596/T-0599), WezTerm
+ * only behind WEZBRIDGE_WEZTERM_TRANSPORT=1. `deps` is test-injection only
+ * (resolveOrcaTargetFn/sendToOrcaTerminalFn) — main() never passes it.
+ */
+async function deliverPoke(message, recheck, deps) {
+  if (process.env.WEZBRIDGE_WEZTERM_TRANSPORT === '1') return deliverPokeWezTerm(message, recheck);
+  return deliverPokeOrca(message, recheck, deps);
 }
 
 /**
@@ -313,4 +366,7 @@ if (require.main === module) {
   });
 }
 
-module.exports = { evaluate, deliverAlert, touchVmHeartbeat, REPOKE_MS, HTTP_FAIL_STREAK_ALERT, SENTINEL_PROBE_TIMEOUT_MS };
+module.exports = {
+  evaluate, deliverAlert, deliverPoke, deliverPokeOrca, deliverPokeWezTerm, findOrchestratorPane,
+  touchVmHeartbeat, REPOKE_MS, HTTP_FAIL_STREAK_ALERT, SENTINEL_PROBE_TIMEOUT_MS,
+};
