@@ -2,9 +2,17 @@
 """
 Task Router & Dispatcher for Orca Orchestrator
 
-Routes incoming technical requests to the appropriate worker in Orca,
-constructs a structured mission brief with acceptance criteria and a completion sentinel,
-dispatches it via `orca terminal send`, and registers the task in the database.
+Routes incoming technical requests to the appropriate worker, constructs a structured
+mission brief with acceptance criteria and a completion sentinel, dispatches it through
+bin/a2a-send-cli.cjs (the a2a_send control plane), and registers the task in the database.
+
+T-0596 paso 2: this file no longer resolves or hardcodes any terminal handle (WezTerm
+pane id or Orca handle) itself. Every dispatch names a PROJECT — a2a-send-cli.cjs
+(bin/a2a-send-cli.cjs -> src/mcp-server.cjs's a2a_send) resolves that project to a live
+WezTerm pane or Orca terminal AT SEND TIME, via the same resolver queue-drain uses
+(src/pane-identity.cjs + src/orca-target.cjs), and durably queues it when nothing is
+live. The old WORKER_REGISTRY `default_term_id`s were stale handles from a machine
+that no longer has them; a project name never goes stale the way a handle does.
 """
 
 import sys
@@ -19,63 +27,45 @@ import shlex
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8")
 
+_REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+A2A_SEND_CLI = os.environ.get("A2A_SEND_CLI") or os.path.join(_REPO, "bin", "a2a-send-cli.cjs")
+NODE_BIN = os.environ.get("WEZBRIDGE_NODE_BIN") or "node"
+
+# project_pattern is the PROJECT NAME a2a-send-cli.cjs resolves at send time (WezTerm
+# pane or Orca terminal, whichever is live) — never a terminal id. Kept only for
+# classify_intent's keyword routing (the deprecated --domain/--title/--prompt path).
 WORKER_REGISTRY = {
     "wabot": {
         "name": "WhatsApp Bot Worker",
         "project_pattern": "whatsappbot",
-        "default_term_id": "term_db1a50e0-9530-41ff-beea-b89686d5c690",
         "description": "WhatsApp Bot backend, stages, services, tests, UCRM/Evolution integrations",
         "test_cmd": "npm test"
     },
     "wisp_rf": {
         "name": "WISP RF Optimizer Worker",
         "project_pattern": "bot-rf-optimizer",
-        "default_term_id": "term_aaf2da4f-75df-4c84-a1cd-53021c1b13bd",
         "description": "RF tower analysis, Ubiquiti airMAX/LTU, spectrum audits, dispatches, MikroTik queues",
         "test_cmd": "python -m unittest"
     },
     "pedrito": {
         "name": "Pedrito AFIP / Facturación Worker",
         "project_pattern": "pedrito",
-        "default_term_id": "term_5bc6d4ef-16e4-40e0-bd5d-765cb075e781",
         "description": "AFIP billing, receipt generation, ARCA scraping",
         "test_cmd": "npm test"
     },
     "yolo26": {
         "name": "YOLO26 Sales Worker",
         "project_pattern": "yolo26",
-        "default_term_id": "term_e05bade9-0a0e-428c-b990-22e839100397",
         "description": "Leads, sales automation, CRM prospecting",
         "test_cmd": "npm test"
     },
     "sales_hub": {
         "name": "Argentina Sales Hub Worker",
         "project_pattern": "argentina-sales-hub",
-        "default_term_id": "term_33c28202-d5a0-45f7-b21e-9ba3252d0fda",
         "description": "Sales hub dashboard and pipeline tracking",
         "test_cmd": "npm test"
     }
 }
-
-def resolve_live_terminal(worker_key):
-    """Dynamically resolves the live terminal ID from `orca terminal list`."""
-    cfg = WORKER_REGISTRY.get(worker_key)
-    if not cfg:
-        return None
-
-    pattern = cfg["project_pattern"].lower()
-    try:
-        res = subprocess.run(["orca", "terminal", "list"], capture_output=True, text=True, encoding="utf-8", errors="replace")
-        if res.returncode == 0:
-            lines = res.stdout.splitlines()
-            for line in lines:
-                if line.startswith("term_") and pattern in line.lower():
-                    term_id = line.split()[0]
-                    return term_id
-    except Exception as e:
-        sys.stderr.write(f"Error querying orca terminal list: {e}\n")
-
-    return cfg.get("default_term_id")
 
 def classify_intent(text):
     """
@@ -107,12 +97,13 @@ def classify_intent(text):
     return "wabot"
 
 def dispatch(domain, title, description, criteria=None):
-    """Constructs the structured prompt and sends it to the target Orca terminal."""
+    """Constructs the structured prompt and sends it via a2a-send-cli.cjs to the
+    project's live pane/terminal (resolved AT SEND TIME, not here)."""
     if domain not in WORKER_REGISTRY:
         domain = classify_intent(f"{title} {description}")
 
     worker_info = WORKER_REGISTRY[domain]
-    term_id = resolve_live_terminal(domain)
+    project = worker_info["project_pattern"]
     task_id = f"task_{int(time.time())}_{domain}"
 
     criteria_str = "\n".join([f"- {c}" for c in (criteria or ["Verificar que todos los tests pasen.", "Dejar evidencia reproducible."])])
@@ -133,19 +124,21 @@ REGLAS DE EJECUCIÓN:
 [WORKER_DONE] task_id={task_id} outcome=succeeded report=<ruta_del_reporte_o_resumen>
 """
 
-    print(f"[*] Enrutando tarea a '{worker_info['name']}' (Terminal: {term_id})")
+    print(f"[*] Enrutando tarea a '{worker_info['name']}' (proyecto: {project})")
     print(f"[*] Task ID: {task_id}")
 
-    # Send to Orca terminal using standard orca flags
-    send_cmd = ["orca", "terminal", "send", "--terminal", term_id, "--text", dispatch_prompt, "--enter"]
+    # T-0596 paso 2: through a2a-send-cli.cjs (the a2a_send control plane), never a raw
+    # `orca terminal send` — it resolves the project to a live WezTerm pane or Orca
+    # terminal at send time and durably queues when nothing is live.
+    send_cmd = [NODE_BIN, A2A_SEND_CLI, "--to-project", project, "--type", "request", "--body", dispatch_prompt]
     res = subprocess.run(send_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    
+
     if res.returncode == 0:
-        print(f"[+] Tarea inyectada con éxito en {term_id}.")
-        return {"success": True, "task_id": task_id, "terminal_id": term_id, "domain": domain}
+        print(f"[+] Tarea inyectada con éxito en '{project}'.")
+        return {"success": True, "task_id": task_id, "project": project, "domain": domain}
     else:
-        print(f"[-] Error enviando tarea: {res.stderr}")
-        return {"success": False, "error": res.stderr}
+        print(f"[-] Error enviando tarea: {(res.stdout or '') + (res.stderr or '')}")
+        return {"success": False, "error": (res.stdout or "") + (res.stderr or "")}
 
 # ---------------------------------------------------------------- --from-card (T-0548)
 # The card is the source of the dispatch: ledger.cjs already validated runtime/model/effort
@@ -183,47 +176,6 @@ def load_tiers(intel=None):
             return json.load(f)
     except FileNotFoundError:
         raise CardError(f"{path} is missing; it maps model ids to aliases and tiers. Refusing to guess.")
-
-
-# T-0554: sentinel distinguishing "a lane matched the repo but has no live handle" (roster
-# is authoritative -> placeholder, no legacy fallthrough) from "no lane matched" (None ->
-# legacy lookup is fine).
-NO_LIVE_HANDLE = object()
-
-
-def resolve_roster_terminal(repo, intel=None):
-    """T-0554: resolve a card's repo to a live lane handle from _intel/orchestrators.json
-    (mirrors src/lane-roster.cjs's loadRoster semantics). Missing file, bad JSON, no
-    `lanes` list, or no lane whose `repos` contains `repo` all degrade to None — never raises.
-    A lane match whose handle is null/empty returns NO_LIVE_HANDLE instead of None so callers
-    don't silently fall back to the legacy registry.
-    """
-    path = os.path.join(intel or intel_dir(), "orchestrators.json")
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            roster = json.load(f)
-    except (OSError, ValueError):
-        return None
-    lanes = roster.get("lanes") if isinstance(roster, dict) else None
-    if not isinstance(lanes, list):
-        return None
-    for lane in lanes:
-        if isinstance(lane, dict) and repo and repo in (lane.get("repos") or []):
-            handle = lane.get("handle")
-            if handle:
-                return handle
-            sys.stderr.write(f"task_router: lane {lane.get('lane')!r} has no live handle in orchestrators.json\n")
-            return NO_LIVE_HANDLE
-    return None
-
-
-def _legacy_terminal_for_repo(repo):
-    """Old WORKER_REGISTRY, kept as the fallback when the roster has no answer."""
-    repo_l = (repo or "").lower()
-    for cfg in WORKER_REGISTRY.values():
-        if cfg["project_pattern"].lower() in repo_l:
-            return cfg.get("default_term_id")
-    return None
 
 
 def repo_path(repo):
@@ -273,7 +225,7 @@ def _agent_for(tiers, card):
     return None
 
 
-def build_from_card(card, tiers, brief=None, terminal=None, worktree=None):
+def build_from_card(card, tiers, brief=None, worktree=None):
     """Pure translation card -> dispatch dict. Raises CardError on a card that cannot be dispatched."""
     runtime, model, effort = card.get("runtime"), card.get("model"), card.get("effort")
     if not runtime or not model:
@@ -294,19 +246,15 @@ def build_from_card(card, tiers, brief=None, terminal=None, worktree=None):
             notes.append(f"no worker-tN matches tier={card.get('tier')} {model}/{effort}; "
                          f"general-purpose cannot pin effort={effort}")
         out["agent_call"] = {"subagent_type": agent, "model": alias, "prompt": prompt}
-        # T-0554: no explicit --terminal -> roster (_intel/orchestrators.json) by repo. A lane
-        # match with no live handle is authoritative (placeholder, no legacy fallthrough);
-        # only "no lane matched" falls through to the legacy WORKER_REGISTRY.
-        roster_term = resolve_roster_terminal(card.get("repo"))
-        if terminal:
-            term = terminal
-        elif roster_term is NO_LIVE_HANDLE:
-            term = "<TERMINAL_ID>"
-        else:
-            term = roster_term or _legacy_terminal_for_repo(card.get("repo")) or "<TERMINAL_ID>"
-        # POSIX quoting: the fleet runs these from Git Bash.
-        out["pane_command"] = " ".join(
-            shlex.quote(a) for a in ["orca", "terminal", "send", "--terminal", term, "--text", prompt, "--enter"])
+        # T-0596 paso 2: no roster/legacy handle resolution here anymore — this only NAMES
+        # the destination project (the card's repo). a2a-send-cli.cjs (bin/a2a-send-cli.cjs)
+        # resolves that project to a live WezTerm pane or Orca terminal AT SEND TIME (the
+        # SAME resolver a2a_send and queue-drain use: src/pane-identity.cjs's resolve() +
+        # src/orca-target.cjs), and durably queues the dispatch when nothing is live —
+        # never a stale terminal id baked in here.
+        args = [NODE_BIN, A2A_SEND_CLI, "--to-project", card.get("repo") or "", "--type", "request",
+                "--corr", card["id"], "--body", prompt]
+        out["pane_command"] = " ".join(shlex.quote(a) for a in args)
         out["notes"] = notes
     elif runtime == "codex":
         if not effort:
@@ -325,7 +273,7 @@ def print_from_card(d):
     if d["runtime"] == "claude":
         print("# Agent tool call (subagent dispatch):")
         print(json.dumps(d["agent_call"], ensure_ascii=False))
-        print("# Pane dispatch (orca):")
+        print("# Pane dispatch (a2a-send-cli):")
         print(d["pane_command"])
         for n in d.get("notes", []):
             sys.stderr.write(f"[task_router] note: {n}\n")
@@ -337,9 +285,8 @@ def print_from_card(d):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Task Router & Dispatcher for Orca Orchestrator")
     parser.add_argument("--from-card", metavar="T-NNNN",
-                        help="Print the exact dispatch command for a ledger card (Agent JSON / orca / codex exec)")
+                        help="Print the exact dispatch command for a ledger card (Agent JSON / a2a-send-cli / codex exec)")
     parser.add_argument("--brief", help="With --from-card: brief path the worker must read first")
-    parser.add_argument("--terminal", help="With --from-card (claude): orca terminal id for the pane dispatch line")
     parser.add_argument("--worktree", help="With --from-card (codex): --cd directory (default: the card repo path)")
     parser.add_argument("--domain", choices=list(WORKER_REGISTRY.keys()), help="[deprecated] Target worker domain")
     parser.add_argument("--title", help="[deprecated keyword path] Task title")
@@ -350,7 +297,7 @@ def main(argv=None):
     if args.from_card:
         try:
             d = build_from_card(load_card(args.from_card), load_tiers(), brief=args.brief,
-                                terminal=args.terminal, worktree=args.worktree)
+                                worktree=args.worktree)
         except CardError as e:
             sys.stderr.write(f"task_router error: {e}\n")
             return 1

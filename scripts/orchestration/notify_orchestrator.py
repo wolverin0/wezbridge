@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
 """
 notify_orchestrator.py
-Sends an automated report/message to the active Orchestrator terminal in Orca (wezbridge pane).
-Allows scheduled automations, workers, or night jobs to notify the Orchestrator directly.
+Sends an automated report/message to the active Orchestrator terminal (wezbridge lane).
+
+T-0596 paso 2: delivery goes through bin/a2a-send-cli.cjs (the wezbridge a2a_send control
+plane — dispatch gate, result-shape check, lease, durable queue, self-send guard, audit),
+NOT a hand-rolled `orca terminal send` with its own census/title-matching logic. The
+resolver (WezTerm pane -> Orca terminal, project/lane name, never a hardcoded handle) is
+the SAME one a2a_send and queue-drain use (src/orca-target.cjs / src/pane-identity.cjs);
+this file no longer duplicates it.
 """
 
 import sys
@@ -18,7 +24,12 @@ from datetime import datetime, timezone
 _PY_APPS = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
 _REPO = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 STATE_DIR = os.environ.get("FOREMAN_STATE_DIR") or os.path.join(_PY_APPS, "_intel", "foreman")
-ORCA = os.environ.get("ORCA_BIN") or "orca"
+# T-0596 paso 2: the orchestrator is addressed by PROJECT/lane name (alias map already
+# resolves 'orch'/'orchestrator'/'pauol' -> 'wezbridge' in pane-identity.cjs), never a
+# hardcoded terminal handle — a2a-send-cli.cjs resolves the live pane/terminal at send time.
+ORCHESTRATOR_PROJECT = os.environ.get("ORCHESTRATOR_PROJECT") or "wezbridge"
+A2A_SEND_CLI = os.environ.get("A2A_SEND_CLI") or os.path.join(_REPO, "bin", "a2a-send-cli.cjs")
+NODE_BIN = os.environ.get("WEZBRIDGE_NODE_BIN") or "node"
 NTFY_NOTIFIER = os.path.join(_REPO, "src", "ntfy-notifier.cjs")
 NTFY_AFTER_ATTEMPTS = 3
 CMD_TIMEOUT = 30
@@ -86,71 +97,22 @@ def enqueue(message, reason, attempts=1):
     return entry
 
 
-def find_orchestrator_terminal():
-    global LAST_ERROR
-    try:
-        res = subprocess.run([ORCA, "terminal", "list", "--json"], capture_output=True, text=True,
-                             encoding="utf-8", errors="replace", timeout=CMD_TIMEOUT)
-        if res.returncode != 0:
-            LAST_ERROR = f"orca terminal list rc={res.returncode}: {(res.stderr or '').strip()[:200]}"
-            return None
-        data = json.loads(res.stdout)
-        terminals = data.get("result", {}).get("terminals", [])
-        if not terminals and "terminals" in data:
-            terminals = data["terminals"]
-        
-        # 1. Check orchestrator_target.json
-        target_file = os.path.join(os.path.dirname(__file__), "orchestrator_target.json")
-        if os.path.exists(target_file):
-            try:
-                with open(target_file, "r", encoding="utf-8") as f:
-                    cfg = json.load(f)
-                    th = cfg.get("terminal_handle")
-                    if th:
-                        for t in terminals:
-                            if t.get("handle") == th and t.get("connected") and t.get("writable"):
-                                return th
-            except Exception:
-                pass
-
-        # 2. Look for terminal with FLEET ORCHESTRATOR or Fable in title
-        for t in terminals:
-            title = t.get("title", "").upper()
-            if ("FLEET ORCHESTRATOR" in title or "FABLE" in title) and t.get("connected") and t.get("writable"):
-                return t.get("handle")
-
-        # 3. Look for terminal in wezbridge
-        for t in terminals:
-            wt_path = t.get("worktreePath", "").replace("\\", "/").lower()
-            if "wezbridge" in wt_path and t.get("connected") and t.get("writable"):
-                return t.get("handle")
-        
-        # SIN fallback al "primer terminal": mandarle un prompt a un pane ajeno es peor
-        # que encolar (2026-09-23, T-0524). Sin orquestador identificable -> None -> outbox.
-        LAST_ERROR = "orca terminal list: ningun terminal orquestador identificable"
-        return None
-    except Exception as e:
-        LAST_ERROR = f"orca terminal list fallo: {type(e).__name__}: {e}"
-        return None
-
-
-def deliver(message, handle=None):
-    """Un intento de entrega a la terminal del orquestador. (ok, motivo)."""
+def deliver(message, to_project=None):
+    """Un intento de entrega a la terminal del orquestador, via bin/a2a-send-cli.cjs
+    (el control plane completo de a2a_send: resuelve WezTerm o Orca por proyecto/lane,
+    nunca un handle fijo). (ok, motivo)."""
     global LAST_ERROR
     LAST_ERROR = None
-    if not handle:
-        handle = find_orchestrator_terminal()
-    if not handle:
-        return False, LAST_ERROR or "no se encontro terminal del orquestador"
-    cmd = [ORCA, "terminal", "send", "--terminal", handle, "--text", message, "--enter"]
+    project = to_project or ORCHESTRATOR_PROJECT
+    cmd = [NODE_BIN, A2A_SEND_CLI, "--to-project", project, "--type", "progress", "--body", message]
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
                              timeout=CMD_TIMEOUT)
     except Exception as e:
-        return False, f"orca terminal send fallo: {type(e).__name__}: {e}"
+        return False, f"a2a-send-cli fallo: {type(e).__name__}: {e}"
     if res.returncode == 0:
-        return True, f"entregado a {handle}"
-    return False, f"orca terminal send rc={res.returncode}: {(res.stderr or '').strip()[:200]}"
+        return True, f"entregado a {project} (a2a-send-cli)"
+    return False, f"a2a-send-cli rc={res.returncode}: {((res.stdout or '') + (res.stderr or '')).strip()[:200]}"
 
 
 def send_ntfy(message):
@@ -168,9 +130,9 @@ def send_ntfy(message):
     return False, f"ntfy rc={res.returncode}: {((res.stderr or '') + (res.stdout or '')).strip()[:200]}"
 
 
-def notify(message, handle=None, queue=True):
+def notify(message, to_project=None, queue=True):
     """Entrega o encola. Devuelve True/False e imprime UNA linea con el motivo."""
-    ok, reason = deliver(message, handle)
+    ok, reason = deliver(message, to_project)
     if ok:
         print(f"[notify] ok: {reason}")
         return True
