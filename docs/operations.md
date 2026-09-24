@@ -1,8 +1,8 @@
 <!-- doc-head: Runtime operation, recovery and removal of pane-count limiting -->
-Read for environment settings, MCP reload boundaries, mux identity and GUI recovery.
-Pane-count limiting was removed by operator decision 2026-09-10; legacy env limits are ignored. Gmail routine transport: headless (T-0339).
-Source edits do not update already-loaded MCP processes.
-`scripts/quota-dispatcher.cjs` and `scripts/foreman-supervisor-jev.cjs` were retired (T-0582) — census found no live trigger (cron/schtasks/package.json/require/spawn).
+Read for environment settings, MCP reload boundaries, mux identity, GUI recovery and Orca transport.
+Pane-count limiting was removed by operator decision 2026-09-10; legacy env limits are ignored. Gmail routine transport: headless (T-0339, unmigrated).
+Source edits do not update already-loaded MCP processes. `scripts/quota-dispatcher.cjs`/`foreman-supervisor-jev.cjs` retired (T-0582).
+T-0599 (2026-09-24): decision-relay + orchestrator-waker WezTerm-sender disposition, see "Otros senders migrados a Orca". Fixup: daemon-heartbeat-sentinel.cjs's deliverPoke (missed originally) migrated too.
 curandero daemon-4200-dead probea /health sin -L: ya daba 503 antes de este cambio; su correccion (usar /api/health) es T-0593 en infra.
 Sección "Automation → ledger router (T-0598)": inventario de automatizaciones programadas, el
 contrato de findings JSON (`_intel/automation-findings/<task>-<fecha>.json`) y
@@ -219,6 +219,33 @@ el transporte por default para `a2a_send({to_project})` y para el drenaje de col
 **Regla dura de smoke-testing:** nunca probar entrega en vivo contra el pane/terminal que la pide
 — usar el doble de Orca (`test/mocks/orca-mock.cjs`) o un terminal idle distinto. Un smoke que se
 manda a sí mismo mide el self-send guard, no la entrega.
+
+## Otros senders migrados a Orca (T-0599, 2026-09-24)
+
+Un verifier sobre el PR de T-0596 encontró otros senders que seguían entregando por WezTerm
+contra un pane id ya resuelto — muertos con la flota en Orca. Por sender:
+
+- **`decision-relay.cjs`** (el sobre `[decision] operator approved/cancelled ...`): por default
+  ahora resuelve/entrega con las MISMAS `resolveOrcaTarget`/`sendToOrcaTerminal` que `a2a_send`;
+  WezTerm queda detrás de `WEZBRIDGE_WEZTERM_TRANSPORT=1`. Backlog seal propio (AC4): una decision
+  con `at` anterior a `ORCA_DRAIN_NOT_BEFORE`/`WEZBRIDGE_DRAIN_NOT_BEFORE` nunca se entrega en
+  vivo — se resuelve `decision.undeliverable` (`reason: backlog-sealed`) sin reintento. Detalle
+  completo y la razón de NO enrutar por el handler completo de `a2a_send` (lease/cola duplicada):
+  `_intel/briefs/2026-09-24-T0599-wezterm-senders.md` y `docs/a2a-protocol.md`'s sección T-0599.
+- **`orchestrator-waker.cjs`**: sigue siendo WezTerm-only (pokea pane-0 fijo, sin equivalente
+  Orca) pero ahora tambien exige `WEZBRIDGE_WEZTERM_TRANSPORT=1` ademas de su propio
+  `WEZBRIDGE_ORCH_WAKER=1` — sin el flag de transporte, el daemon lo reporta `armed:false,
+  deliberate:true` en vez de armarlo contra un transporte muerto.
+- **`gmail-routine-dispatch.cjs`**: inventariado, SIN TOCAR — bajo observacion en vivo para
+  T-0339 hasta que corran las pasadas del 25 y 26/09 08:30 ART.
+- **`scripts/daemon-heartbeat-sentinel.cjs`'s `deliverPoke`** (fixup, faltaba del inventario
+  original): el poke de la tarea programada de Windows `WezBridge-DaemonSentinel` (cada 5 min)
+  entregaba directo contra un pane WezTerm resuelto por `findOrchestratorPane()`, sin flag ni
+  camino Orca — con la flota en Orca, el poke no llegaba a nadie. Ahora `deliverPoke` despacha a
+  `deliverPokeOrca` (default, mismas `resolveOrcaTarget`/`sendToOrcaTerminal` que `a2a_send`,
+  proyecto `wezbridge`/`WEZBRIDGE_ORCH_REPO`, self-send guard vía `ORCA_TERMINAL_HANDLE`) o a
+  `deliverPokeWezTerm` (legado, detrás de `WEZBRIDGE_WEZTERM_TRANSPORT=1`). Dedupe/cooldown/
+  deadman de `evaluate()` sin tocar.
 
 ## Mux-wedge — LEER ENTERO ANTES DE ACTUAR
 Observado UNA vez, 2026-07-02, en wezterm 20240203. El build instalado es muy posterior

@@ -5,6 +5,12 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { appendRuling } = require('../src/rulings.cjs');
+// T-0599: this file exercises the WezTerm-pane busy/idle census gating
+// (gateDelivery's pane-busy/wrong-pane/wrong-cwd deferrals), which only
+// exists on the legacy WezTerm path now that Orca is the default transport
+// (see src/decision-relay.cjs). Without this, the default Orca path would
+// try to resolve a REAL Orca terminal in tests (no busy-pane concept there).
+process.env.WEZBRIDGE_WEZTERM_TRANSPORT = '1';
 const { createRelay } = require('../src/decision-relay.cjs');
 const { auditDecisions } = require('../scripts/fleet-steward.cjs');
 const discovery = require('../src/pane-discovery.cjs');

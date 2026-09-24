@@ -917,4 +917,8 @@ function listQueues({ base } = {}) {
   } catch { return []; }
 }
 
-module.exports = { DEFAULTS, entryId, enqueue, queueFile, queuesDir, sanitizeProject, createConsumer, listQueues, rescueFailedSend };
+module.exports = { DEFAULTS, entryId, enqueue, queueFile, queuesDir, sanitizeProject, createConsumer, listQueues, rescueFailedSend,
+  // T-0599: decision-relay's direct-delivery attempt (before it ever reaches
+  // this file's own queue) needs the SAME backlog-seal cutoff so a pre-Orca
+  // approval that never got delivered can't suddenly land now that Orca works.
+  ORCA_DRAIN_NOT_BEFORE, drainNotBeforeCutoff };

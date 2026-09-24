@@ -41,10 +41,20 @@ const crypto = require('node:crypto');
 
 const { buildEnvelope } = require('./a2a-intel.cjs');
 const DOUBLE_CLICK_MS = 120_000; // T-0405: dos rulings iguales a < 2 min son un doble clic, no dos decisiones
-const { enqueue } = require('./project-queue.cjs');
+const { enqueue, drainNotBeforeCutoff } = require('./project-queue.cjs');
 const { resolve: resolvePane } = require('./pane-identity.cjs');
 const { composerHoldsForeignText, classifyDelivery } = require('./verified-send.cjs');
 const { decisionDisposition } = require('./decision-authority.cjs');
+// T-0599: la flota vive en Orca (T-0596) — el transporte por default de este
+// relay pasa a ser el MISMO resolver+sender que ya usan a2a_send/findTarget
+// (src/orca-target.cjs, src/orca-send.cjs), y WezTerm queda legacy detras de
+// WEZBRIDGE_WEZTERM_TRANSPORT=1, mismo patron que T-0596 item 4. Ver el brief
+// de T-0599 ("por que decision-relay NO llama literalmente a a2a_send") para
+// la razon de NO enrutar por el handler completo de a2a_send: este modulo ya
+// tiene su PROPIA cola/dedupe/attempt-cap sobre la MISMA _intel/queues/, y
+// a2a_send toma lease + hace su propio enqueue — duplicaria entrega.
+const { resolveOrcaTarget } = require('./orca-target.cjs');
+const { sendToOrcaTerminal } = require('./orca-send.cjs');
 
 /**
  * Ninguna decision anterior a este instante se relaya. Es una constante, no una
@@ -121,8 +131,13 @@ function buildBody({ task, ruling, why, source, card, nextAction }) {
  *
  * deps:
  *   intelDir       — raiz de _intel (obligatorio: este modulo nunca adivina el real)
- *   discoverPanes  — () => panes estilo pane-discovery
- *   send           — { sendPromptDeferredEnter, verifyPromptSubmission }
+ *   discoverPanes  — () => panes estilo pane-discovery (SOLO usado por el camino
+ *                    WezTerm legado, detras de WEZBRIDGE_WEZTERM_TRANSPORT=1)
+ *   send           — { sendPromptDeferredEnter, verifyPromptSubmission } (idem, legado)
+ *   resolveOrcaTargetFn — (project) => Promise<{handle, ambiguous, warning}>, default
+ *                    src/orca-target.cjs's resolveOrcaTarget (T-0599, camino default)
+ *   sendToOrcaTerminalFn — (handle, body) => Promise<{delivered, submitted, ...}>,
+ *                    default src/orca-send.cjs's sendToOrcaTerminal (idem)
  *   runLedger      — (argv[]) => any, para `update <T> --next <llamada>`
  *   now, log, maxAttempts, cooldownMs, sinceBytes
  */
@@ -130,9 +145,21 @@ function createRelay(opts = {}) {
   const cfg = { ...DEFAULTS, ...opts };
   const {
     intelDir, discoverPanes, send, runLedger,
+    resolveOrcaTargetFn = resolveOrcaTarget,
+    sendToOrcaTerminalFn = sendToOrcaTerminal,
     now = Date.now, log = () => {},
   } = cfg;
   if (!intelDir) throw new Error('decision-relay: intelDir is required — this module never guesses the live _intel');
+  // T-0599: WezTerm es legado, detras del mismo flag que T-0596 item 4 uso en
+  // mcp-server.cjs/project-queue.cjs. Leido UNA vez por pasada (createRelay se
+  // instancia una vez por corrida del script, igual que el resto del modulo).
+  const wezTransportEnabled = process.env.WEZBRIDGE_WEZTERM_TRANSPORT === '1';
+  // T-0599 AC4: ninguna decision aprobada ANTES del sello de backlog de Orca
+  // se entrega en vivo ahora que Orca funciona — mismo corte que
+  // project-queue.cjs usa para su propia cola (ORCA_DRAIN_NOT_BEFORE /
+  // WEZBRIDGE_DRAIN_NOT_BEFORE), reutilizado aca para el intento de entrega
+  // DIRECTA (que corre antes de llegar a esa cola).
+  const backlogSealMs = drainNotBeforeCutoff({});
 
   const rulingsPath = path.join(intelDir, 'rulings.jsonl');
   const eventsPath = path.join(intelDir, 'events.jsonl');
@@ -379,6 +406,57 @@ function createRelay(opts = {}) {
     return { deliveredCode, submitted, verdict: classifyDelivery(deliveredCode, submitted) };
   }
 
+  /**
+   * Gate Orca-only (T-0599): sin idle/composer-foreign-text — Orca no expone
+   * eso (mismo comentario que mcp-server.cjs's a2a_send hace de su propia
+   * rama Orca: "no composer-foreign-text guard, no pinned-send"). Solo
+   * stalled-this-pass y cooldown, igual espiritu que gateDelivery.
+   */
+  function gateDeliveryOrca(project, stalled) {
+    if (stalled.has(project)) return { reason: 'pane-not-accepting' };
+    const last = state.lastAttemptAt[project];
+    if (last !== undefined && now() - last < cfg.cooldownMs) return { reason: 'cooldown' };
+    return { reason: null };
+  }
+
+  /** Un intento REAL contra un terminal Orca: consume intento y arma el cooldown. */
+  async function attemptSendOrca({ entry, project, body }) {
+    state.lastAttemptAt[project] = now();
+    entry.attempts += 1;
+    const envelope = buildEnvelope({
+      fromPane: null, fromProject: 'decision-relay',
+      toPane: null, toProject: project,
+      corr: entry.task, type: 'request', body,
+    });
+    let result = { handle: null, reason: null, verdict: 'unverified' };
+    try {
+      const orcaHit = await resolveOrcaTargetFn(project);
+      if (!orcaHit.handle || orcaHit.ambiguous.length) {
+        result.reason = orcaHit.ambiguous.length ? 'ambiguous-pane' : 'no-pane';
+        if (orcaHit.warning) log(`decision-relay[${project}]: ${orcaHit.warning}`);
+      } else if (process.env.ORCA_TERMINAL_HANDLE && orcaHit.handle === process.env.ORCA_TERMINAL_HANDLE) {
+        // T-0599, mismo guard que a2a_send: nunca entregarse a si mismo.
+        log(`decision-relay[${project}]: self-send refusado (${orcaHit.handle} == ORCA_TERMINAL_HANDLE) — difiero ${entry.task}`);
+        result.reason = 'self-send';
+      } else {
+        const orcaResult = await sendToOrcaTerminalFn(orcaHit.handle, envelope);
+        log(`decision-relay[${project}]: orca:${orcaHit.handle} corr=${entry.task} [submit:${orcaResult.submitted} deliver:${orcaResult.delivered}]${orcaResult.error ? ` error=${orcaResult.error}` : ''}`);
+        result = {
+          handle: orcaHit.handle,
+          deliveredCode: orcaResult.delivered,
+          submitted: orcaResult.submitted,
+          verdict: classifyDelivery(orcaResult.delivered, orcaResult.submitted),
+        };
+      }
+    } catch (err) {
+      log(`decision-relay[${project}]: orca send fallo: ${err.message}`);
+      result.reason = 'send-failed';
+    }
+    persistPending();
+    if (!result.verdict) result.verdict = 'unverified';
+    return result;
+  }
+
   function resolveUndeliverable(id, entry, project, paneId, reason, out) {
     markResolved(id);
     recordEvent({ event: 'decision.undeliverable', task: entry.task, project, pane: paneId, ruling: entry.ruling, reason });
@@ -409,20 +487,41 @@ function createRelay(opts = {}) {
       task: entry.task, ruling: entry.ruling, why: entry.why, source: entry.source, card, nextAction: worker.nextAction,
     });
 
-    const gated = gateDelivery(project, panes, stalled);
-    const paneId = gated.paneId;
+    // T-0599 AC4 — backlog seal (SOLO la rama Orca por default; el camino
+    // WezTerm legado detras del flag es comportamiento pre-existente, sin
+    // tocar): una decision aprobada ANTES de que Orca fuera transporte viable
+    // (ORCA_DRAIN_NOT_BEFORE / WEZBRIDGE_DRAIN_NOT_BEFORE) nunca se entrega en
+    // vivo solo porque Orca ahora SI funciona — el operador decidio que el
+    // backlog 20-24/09 no se re-entrega. Mismo corte que project-queue.cjs
+    // usa para su propia cola, aplicado aca ANTES del intento de entrega
+    // directa (que corre antes de llegar a esa cola).
+    if (!wezTransportEnabled) {
+      const entryAtMs = Date.parse(entry.at || '');
+      if (Number.isFinite(entryAtMs) && entryAtMs < backlogSealMs) {
+        return resolveUndeliverable(id, entry, project, null, 'backlog-sealed', out);
+      }
+    }
+
+    // T-0599: WezTerm (pane-identity + census idle/composer gating) SOLO
+    // detras del flag legado; el default es Orca (sin esas comprobaciones —
+    // Orca no las expone, mismo criterio que a2a_send's rama Orca).
+    const gated = wezTransportEnabled ? gateDelivery(project, panes, stalled) : gateDeliveryOrca(project, stalled);
+    const paneId = gated.paneId ?? null;
     let reason = gated.reason;
     let attempt = { deliveredCode: null, submitted: null, verdict: null };
     if (!reason) {
-      attempt = await attemptSend({ entry, project, paneId, body });
+      attempt = wezTransportEnabled
+        ? await attemptSend({ entry, project, paneId, body })
+        : await attemptSendOrca({ entry, project, body });
       if (attempt.verdict !== 'delivered') {
-        reason = attempt.verdict === 'failed' ? 'send-failed' : 'send-unverified';
-        // Un proyecto cuyo pane ya rechazo un envio en ESTA pasada no recibe
-        // mas intentos: martillarle el resto de la cola no ayuda a nadie.
+        reason = attempt.reason || (attempt.verdict === 'failed' ? 'send-failed' : 'send-unverified');
+        // Un proyecto cuyo pane/terminal ya rechazo un envio en ESTA pasada no
+        // recibe mas intentos: martillarle el resto de la cola no ayuda a nadie.
         stalled.add(project);
       }
     }
     const ok = attempt.verdict === 'delivered';
+    const transport = wezTransportEnabled ? 'wezterm' : 'orca';
 
     // SIEMPRE durable: la linea con ok:false es la lista de trabajo de
     // queue-drain, que reintenta gratis lo que este relay no pudo verificar.
@@ -431,6 +530,7 @@ function createRelay(opts = {}) {
       ruling: entry.ruling,
       decision_at: authority.latest.at,
       resolved_pane: paneId, submitted: attempt.submitted, delivered: attempt.deliveredCode, ok, body,
+      transport,
     }, { base: intelDir });
     if (!queued.ok) {
       log(`decision-relay[${project}]: enqueue fallo (${queued.error || 'sin detalle'})`);

@@ -531,18 +531,31 @@ function createEventHandlers(ctx) {
       const intelDir = process.env.WEZBRIDGE_INTEL_DIR
         || path.join(SRC_DIR, '..', '..', '_intel');
       const wakerCfg = resolveWakerConfig({ env: process.env, intelDir });
-      if (!wakerCfg.enabled) {
+      // T-0599: the waker pokes a FIXED pane-0 (not resolved by project like
+      // a2a_send/decision-relay), a notion Orca has no equivalent for (it
+      // resolves project/lane names, not "the orchestrator's pane"). With the
+      // fleet living in Orca (T-0596), its only transport (verified-send.cjs,
+      // WezTerm) is gated behind the SAME WEZBRIDGE_WEZTERM_TRANSPORT=1 flag
+      // as the other legacy WezTerm call sites — arming (WEZBRIDGE_ORCH_WAKER
+      // / orch-waker.json) alone is no longer enough. See the T-0599 brief's
+      // "orchestrator-waker.cjs — se queda WezTerm, gateado" for why this is
+      // NOT re-pointed at Orca here (that needs a redesign of its
+      // pane-0-fixed addressing model, out of this card's scope).
+      const wezTransportEnabled = process.env.WEZBRIDGE_WEZTERM_TRANSPORT === '1';
+      if (!wakerCfg.enabled || !wezTransportEnabled) {
         // `deliberate` travels with the status so the health check can tell a
         // DECISION from a FAULT. Without it, a disarm someone chose on purpose
         // is reported as a broken daemon for as long as the decision stands.
+        const reason = !wakerCfg.enabled ? wakerCfg.reason
+          : 'WezTerm transport disabled (WEZBRIDGE_WEZTERM_TRANSPORT!=1) — the waker has no Orca transport (T-0599), fleet lives in Orca';
         daemonStatus.set('orchestrator_waker', {
           armed: false,
-          reason: wakerCfg.reason,
-          deliberate: !!wakerCfg.deliberate,
+          reason,
+          deliberate: !wakerCfg.enabled ? !!wakerCfg.deliberate : true,
           decidedAt: wakerCfg.decidedAt || null,
           decision: wakerCfg.decision || null,
         });
-        log(`orchestrator-waker NOT armed: ${wakerCfg.reason}`);
+        log(`orchestrator-waker NOT armed: ${reason}`);
       } else {
         // T-0419: optional tuning knob, separate from the arming decision
         // above. Precedence: _intel/orch-waker.json's `unreachableWindowMs`

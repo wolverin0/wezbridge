@@ -27,3 +27,20 @@ inject('src/verified-send.cjs', {
   },
   verifyPromptSubmission: async () => 'submitted',
 });
+// T-0599 fixup: deliverPoke's default transport is now Orca (WEZBRIDGE_WEZTERM_TRANSPORT
+// unset in this fixture's spawned process — same as production default), so the real
+// sentinel process resolves/delivers through src/orca-target.cjs / src/orca-send.cjs, not
+// the pane-discovery/verified-send doubles above (those still back the legacy WezTerm path
+// when a test sets WEZBRIDGE_WEZTERM_TRANSPORT=1). Inject the Orca pair too so this
+// fixture's poke capture (`sentinel-pokes.jsonl`) keeps observing whichever path the
+// sentinel actually takes by default. 'during-discovery' mode simulates the heartbeat
+// refreshing WHILE the sentinel is resolving its delivery target — resolveOrcaTarget is the
+// Orca-path equivalent of the WezTerm path's discoverPanes() for that purpose.
+inject('src/orca-target.cjs', { resolveOrcaTarget: async () => {
+  if (mode === 'during-discovery') refresh();
+  return { handle: 'term_sentinel_test', matchedBy: 'lane', ambiguous: [], warning: null };
+} });
+inject('src/orca-send.cjs', { sendToOrcaTerminal: async (handle, text) => {
+  fs.appendFileSync(path.join(dir, 'sentinel-pokes.jsonl'), JSON.stringify({ text }) + '\n');
+  return { ok: true, submitted: 'submitted', delivered: 'ok', handle, retryId: null, tail: ['...'], error: null };
+} });
