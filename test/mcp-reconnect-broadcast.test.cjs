@@ -109,8 +109,8 @@ test('runBroadcast: only the 2 idle claude panes receive a send; codex, working 
   // classification read; the second is what sendReconnect's poll sees afterward.
   const runOrca = fakeRunOrca({
     sendResults: {
-      term_claude_idle1: [IDLE_TAIL, ['❯ ', '✔ Successfully reconnected to memorymaster.', '❯']],
-      term_claude_idle2: [IDLE_TAIL, ['❯ ', '✔ Successfully reconnected to memorymaster.', '❯']],
+      term_claude_idle1: [IDLE_TAIL, ['❯ /mcp reconnect memorymaster', '✔ Successfully reconnected to memorymaster.', '❯']],
+      term_claude_idle2: [IDLE_TAIL, ['❯ /mcp reconnect memorymaster', '✔ Successfully reconnected to memorymaster.', '❯']],
     },
   });
   const result = await runBroadcast({ server: 'memorymaster', runOrca, sleep: noSleep, selfHandle: null });
@@ -204,7 +204,7 @@ test('dry-run: lists targets and skips, sends nothing', async () => {
 
 test('sendReconnect: classifies ok on "Successfully reconnected"', async () => {
   const runOrca = fakeRunOrca({
-    sendResults: { term_claude_idle1: [['some scrollback'], ['❯ ', 'Successfully reconnected to memorymaster.']] },
+    sendResults: { term_claude_idle1: [['some scrollback'], ['❯ /mcp reconnect memorymaster', 'Successfully reconnected to memorymaster.']] },
   });
   const r = await sendReconnect({ runOrca, handle: 'term_claude_idle1', server: 'memorymaster', sleep: noSleep, pollMs: 1, timeoutMs: 2 });
   assert.equal(r.result, 'ok');
@@ -213,7 +213,7 @@ test('sendReconnect: classifies ok on "Successfully reconnected"', async () => {
 
 test('sendReconnect: classifies fail on error text', async () => {
   const runOrca = fakeRunOrca({
-    sendResults: { term_claude_idle1: [['❯ ', 'Failed to reconnect: server unreachable']] },
+    sendResults: { term_claude_idle1: [['❯ /mcp reconnect memorymaster', 'Failed to reconnect: server unreachable']] },
   });
   const r = await sendReconnect({ runOrca, handle: 'term_claude_idle1', server: 'memorymaster', sleep: noSleep, pollMs: 1, timeoutMs: 1 });
   assert.equal(r.result, 'fail');
@@ -279,8 +279,8 @@ test('sendReconnect: stale success + new echo with nothing after yet is unknown,
 test('runBroadcast: exit code is 1 when any targeted pane does not classify ok', async () => {
   const runOrca = fakeRunOrca({
     sendResults: {
-      term_claude_idle1: [IDLE_TAIL, ['❯ ', 'Successfully reconnected to memorymaster.']],
-      term_claude_idle2: [IDLE_TAIL, ['❯ ', 'Failed to reconnect: timeout']],
+      term_claude_idle1: [IDLE_TAIL, ['❯ /mcp reconnect memorymaster', 'Successfully reconnected to memorymaster.']],
+      term_claude_idle2: [IDLE_TAIL, ['❯ /mcp reconnect memorymaster', 'Failed to reconnect: timeout']],
     },
   });
   const result = await runBroadcast({ server: 'memorymaster', runOrca, sleep: noSleep, selfHandle: null });

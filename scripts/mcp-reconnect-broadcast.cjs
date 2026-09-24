@@ -118,19 +118,40 @@ async function sendReconnect({ runOrca = defaultRunOrca, handle, server, sleep =
     return { result: 'fail', excerpt: `send-error: ${e.message}`.slice(0, 200) };
   }
   const attempts = Math.max(1, Math.ceil(timeoutMs / pollMs));
+  const echoRe = commandEchoRegex(server);
   let lastTail = [];
   for (let i = 0; i < attempts; i++) {
     await sleep(pollMs);
     try { lastTail = await readScreen(runOrca, handle); }
     catch (e) { lastTail = [`read-error: ${e.message}`]; continue; }
-    // Scan the WHOLE returned screen, not just its last few lines: a busy pane's
+    const nonEmpty = lastTail.filter((l) => String(l).trim());
+    // Only classify text after the LAST echoed command line: an OLD "Successfully
+    // reconnected" from an earlier run (typed by hand, or still in scrollback) sits
+    // ABOVE the new command's echo and must never count as this attempt's result. If the
+    // echo isn't visible yet, keep polling instead of guessing.
+    let echoIdx = -1;
+    for (let j = nonEmpty.length - 1; j >= 0; j--) {
+      if (echoRe.test(nonEmpty[j])) { echoIdx = j; break; }
+    }
+    if (echoIdx < 0) continue;
+    // Scan the WHOLE remainder after the echo, not just the last few lines: a busy pane's
     // background-agent output keeps appending after the reconnect result prints, so a
     // narrow tail slice can miss a result that already scrolled up (see matchExcerpt).
-    const recent = lastTail.filter((l) => String(l).trim()).join('\n');
-    if (SUCCESS_RE.test(recent)) return { result: 'ok', excerpt: matchExcerpt(lastTail, SUCCESS_RE) };
-    if (FAIL_RE.test(recent)) return { result: 'fail', excerpt: matchExcerpt(lastTail, FAIL_RE) };
+    const after = nonEmpty.slice(echoIdx + 1);
+    const recent = after.join('\n');
+    if (SUCCESS_RE.test(recent)) return { result: 'ok', excerpt: matchExcerpt(nonEmpty.slice(echoIdx), SUCCESS_RE) };
+    if (FAIL_RE.test(recent)) return { result: 'fail', excerpt: matchExcerpt(nonEmpty.slice(echoIdx), FAIL_RE) };
   }
   return { result: 'unknown', excerpt: tailExcerpt(lastTail) };
+}
+
+/** Loosely matches the echoed prompt line for the reconnect command just sent, e.g.
+ * `❯ /mcp reconnect memorymaster`. Used to find where the NEW attempt's output starts,
+ * so a stale success/fail line left over from an earlier reconnect (run by hand or by a
+ * prior poll, still visible in scrollback) is never classified as this attempt's result. */
+function commandEchoRegex(server) {
+  const escaped = String(server).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\/mcp\\s+reconnect\\s+${escaped}\\b`, 'i');
 }
 
 function manualCommand(handle, server) {
