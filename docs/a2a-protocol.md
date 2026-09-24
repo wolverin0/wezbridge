@@ -4,8 +4,7 @@
 2026-09-24 (T-0599): decision-relay + orchestrator-waker WezTerm senders migrated/gated to match; gmail-routine-dispatch NOT migrated yet.
 2026-09-24 (T-0599 fixup): daemon-heartbeat-sentinel.cjs's deliverPoke (missed by the original T-0599 inventory) migrated to Orca by default, WezTerm gated.
 2026-09-24 (T-0600): Orca 'unknown' delivery is no longer treated as delivered (strict verdict + stays queued for retry); pre-send overlay/foreign-text guard on the Orca transport; a2a_send/CLI sender identity resolves via ORCA_TERMINAL_HANDLE when from_pane is absent (no widened dispatch authority).
-Covers sender guards, result criteria, queue identity, isolated T-0377 restore evidence, and Orca transport; read before dispatch or review.
-Transport receipt is not work acceptance. Runtime activation and loaded MCP revision require separate verification.
+Covers sender guards, result criteria, queue identity, isolated T-0377 restore evidence, and Orca transport; read before dispatch or review. Transport receipt is not work acceptance; runtime activation and loaded MCP revision require separate verification.
 <!-- /doc-head -->
 
 # A2A Protocol
