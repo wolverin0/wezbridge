@@ -542,10 +542,19 @@ function createHub(client, { intel = INTEL, log = () => {}, boardUrl = BOARD_URL
 }
 
 // ---------------------------------------------------------------- CLI
+// T-0577: flags usados como switch (no toman valor por default) — un `--confirm`
+// suelto al final ya no debe consumir undefined y caer en dry-run silencioso.
+const BOOL_FLAGS = new Set(['confirm']);
 function parse(argv) {
   const pos = []; const opts = {};
   for (let i = 0; i < argv.length; i += 1) {
-    if (argv[i].startsWith('--')) { opts[argv[i].slice(2)] = argv[i + 1]; i += 1; } else pos.push(argv[i]);
+    if (argv[i].startsWith('--')) {
+      const key = argv[i].slice(2);
+      const next = argv[i + 1];
+      if (BOOL_FLAGS.has(key) && (next === 'true' || next === 'false')) { opts[key] = next === 'true'; i += 1; }
+      else if (BOOL_FLAGS.has(key)) opts[key] = true;
+      else { opts[key] = next; i += 1; }
+    } else pos.push(argv[i]);
   }
   return { pos, opts };
 }
@@ -598,6 +607,7 @@ async function main() {
     const plan = hub.planActLinksCleanup();
     for (const p of plan) console.log(`${p.id}\text=${p.ext}\turlsBefore=${p.urlsBefore}\turlsAfter=${p.urlsAfter}\tblocker="${p.blockerHead}"`);
     console.log(JSON.stringify({ dryRun: true, wouldClean: plan.length }));
+    console.log('DRY-RUN: nothing written (use --confirm)');
     return 0;
   }
   const client = createClient();
@@ -685,5 +695,5 @@ async function syncOnce({ hub, logDir = path.join(__dirname, '..', 'logs'), inte
   }
 }
 
-module.exports = { PROTOCOL_VERSION, PROJECTS, AGENT_TAG, resolveDataDir, createClient, createHub, loadMap, saveMap, mapFile, extMarker, syncOnce };
+module.exports = { PROTOCOL_VERSION, PROJECTS, AGENT_TAG, resolveDataDir, createClient, createHub, loadMap, saveMap, mapFile, extMarker, syncOnce, parse };
 if (require.main === module) main().then((c) => process.exit(c)).catch((e) => { console.error(`sp-bridge: ${e.message}`); process.exit(1); });
