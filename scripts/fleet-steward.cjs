@@ -28,7 +28,7 @@
  */
 const fs = require('node:fs');
 const path = require('node:path');
-const { taskIdFromCorr } = require('../src/a2a-intel.cjs');
+const { taskIdFromCorr, dedupeResultLines } = require('../src/a2a-intel.cjs');
 const { auditRoutines } = require('./routine-audit.cjs');
 const { reconcileLeases, liveCensus: reconcilerCensus } = require('./lease-reconcile.cjs');
 const { lintSpecRefs, lintRulings } = require('./dispatch-lint.cjs');
@@ -387,8 +387,17 @@ function resultTaskCards(dir) {
 }
 
 function firstResultTimes(dir) {
+  // T-0564: dedupe defensively before the corr->earliest-time reduction below.
+  // Investigation (T-0564 AC1) found this Map-per-corr/min-time reduction was
+  // ALREADY immune to the amplified-resend shape (996509539944f94d: 186
+  // identical lines) — the min-time-per-corr collapse produces the same
+  // result with or without this line. Wired anyway for two reasons: it skips
+  // redundant iteration when a corr has dozens of duplicate lines, and it
+  // keeps this reader consistent with daily-rollup/result-linker so a future
+  // refactor of this function can't silently reintroduce the count-inflation
+  // bug those readers had.
   const times = new Map();
-  for (const result of readJsonl(path.join(dir, 'a2a-results.jsonl'))) {
+  for (const result of dedupeResultLines(readJsonl(path.join(dir, 'a2a-results.jsonl')))) {
     const at = ms(result && result.time);
     if (!result || !result.corr || !at) continue;
     const previous = times.get(result.corr);
