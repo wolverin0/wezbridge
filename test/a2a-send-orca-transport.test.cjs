@@ -133,6 +133,27 @@ test('AC2 (regression): WezTerm destinations are unaffected — a live WezTerm p
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test("SELF-SEND GUARD: a2a_send refuses when to_project resolves to the caller's own Orca terminal (ORCA_TERMINAL_HANDLE)", async () => {
+  const { root, intel, orcaState } = sandbox();
+  try {
+    writeRoster(intel, [{ lane: 'drillrepo', repos: ['drillrepo'], handle: 'term_self', state: 'live' }]);
+    const terminalsFile = writeTerminals(root, [
+      { handle: 'term_self', title: 'orchestrator', worktreePath: 'G:/Py Apps/drillrepo', connected: true, writable: true },
+    ]);
+    const res = await callTool('a2a_send', {
+      to_project: 'drillrepo', from_pane: 5, type: 'progress', corr: 'T-0596:self:20260924', body: 'no deberia salir nunca',
+    }, envFor(intel, orcaState, terminalsFile, { ORCA_TERMINAL_HANDLE: 'term_self' }));
+    assert.equal(res.result.isError, true, resultText(res));
+    assert.match(resultText(res), /self-send: BLOCKED a2a_send/);
+    assert.equal(fs.existsSync(path.join(intel, 'queues', 'drillrepo.jsonl')), false, 'self-send must not enqueue a retry-storm candidate');
+    const stateFile = path.join(orcaState, 'term_self.json');
+    if (fs.existsSync(stateFile)) {
+      const s = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      assert.deepEqual(s.tail, [], 'self-send must not type anything into the terminal');
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('AC3: delivery records (queue line + a2a-results.jsonl for type=result) carry transport', async () => {
   const { root, intel, orcaState } = sandbox();
   try {

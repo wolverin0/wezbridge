@@ -219,47 +219,51 @@ class WatcherTest(TmpDirs):
 
 
 class FakeRun:
-    """Sustituto de subprocess.run: orca list/send y node ntfy segun flags."""
-    def __init__(self, orca_ok=False, ntfy_ok=True):
-        self.orca_ok, self.ntfy_ok, self.calls = orca_ok, ntfy_ok, []
+    """Sustituto de subprocess.run: T-0596 paso 2 — deliver() ahora llama
+    bin/a2a-send-cli.cjs (via `node`) en vez de `orca terminal send` a mano;
+    send_ntfy() sigue llamando `node src/ntfy-notifier.cjs`. Ambos tienen
+    cmd[0] == "node", asi que se distinguen por cmd[1] (la ruta del script)."""
+    def __init__(self, deliver_ok=False, ntfy_ok=True):
+        self.deliver_ok, self.ntfy_ok, self.calls = deliver_ok, ntfy_ok, []
 
     def __call__(self, cmd, **kw):
         self.calls.append(cmd)
-        if cmd[0] == "node":
+        if len(cmd) > 1 and cmd[1] == notify_orchestrator.NTFY_NOTIFIER:
             return subprocess.CompletedProcess(cmd, 0 if self.ntfy_ok else 1, "ok\n", "")
-        if not self.orca_ok:
-            raise FileNotFoundError("orca no esta en PATH")
-        if cmd[1:3] == ["terminal", "list"]:
-            out = {"result": {"terminals": [{"handle": "term_orch", "title": "FLEET ORCHESTRATOR",
-                                             "connected": True, "writable": True}]}}
-            return subprocess.CompletedProcess(cmd, 0, json.dumps(out), "")
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        if len(cmd) > 1 and cmd[1] == notify_orchestrator.A2A_SEND_CLI:
+            if not self.deliver_ok:
+                return subprocess.CompletedProcess(cmd, 1, "", "a2a-send-cli: mock failure")
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({"ok": True, "queued": True}), "")
+        raise FileNotFoundError(f"FakeRun: unexpected cmd {cmd}")
 
     def ntfy_calls(self):
-        return [c for c in self.calls if c[0] == "node"]
+        return [c for c in self.calls if len(c) > 1 and c[1] == notify_orchestrator.NTFY_NOTIFIER]
+
+    def deliver_calls(self):
+        return [c for c in self.calls if len(c) > 1 and c[1] == notify_orchestrator.A2A_SEND_CLI]
 
 
 class OutboxTest(TmpDirs):
     def test_failed_notify_is_queued_and_returns_false(self):
-        with mock.patch.object(notify_orchestrator.subprocess, "run", FakeRun(orca_ok=False)):
+        with mock.patch.object(notify_orchestrator.subprocess, "run", FakeRun(deliver_ok=False)):
             ok = notify_orchestrator.notify("[WORKER_DONE] task_id=T-9001 outcome=succeeded")
         self.assertFalse(ok)
         box = notify_orchestrator.read_outbox()
         self.assertEqual(len(box), 1)
         self.assertEqual(box[0]["message"], "[WORKER_DONE] task_id=T-9001 outcome=succeeded")
         self.assertEqual(box[0]["attempts"], 1)
-        self.assertIn("FileNotFoundError", box[0]["last_error"])
+        self.assertIn("rc=1", box[0]["last_error"])
         self.assertIn("ts", box[0])
 
-    def test_orca_nonzero_is_queued(self):
+    def test_cli_spawn_failure_is_queued(self):
         def run(cmd, **kw):
-            return subprocess.CompletedProcess(cmd, 3, "", "orca daemon down")
+            raise FileNotFoundError("node no esta en PATH")
         with mock.patch.object(notify_orchestrator.subprocess, "run", run):
             self.assertFalse(notify_orchestrator.notify("hola"))
-        self.assertIn("rc=3", notify_orchestrator.read_outbox()[0]["last_error"])
+        self.assertIn("FileNotFoundError", notify_orchestrator.read_outbox()[0]["last_error"])
 
     def test_retry_ntfy_after_three_attempts_then_drain_on_success(self):
-        fail = FakeRun(orca_ok=False, ntfy_ok=True)
+        fail = FakeRun(deliver_ok=False, ntfy_ok=True)
         with mock.patch.object(notify_orchestrator.subprocess, "run", fail):
             notify_orchestrator.notify("msg-1")                       # intento 1 -> encolado
             self.assertEqual(notify_orchestrator.drain_outbox(), (0, 1))  # intento 2
@@ -272,17 +276,19 @@ class OutboxTest(TmpDirs):
         self.assertEqual(entry["attempts"], 4)
         self.assertTrue(entry["ntfy_sent"])
 
-        ok = FakeRun(orca_ok=True)
+        ok = FakeRun(deliver_ok=True)
         with mock.patch.object(notify_orchestrator.subprocess, "run", ok):
             self.assertEqual(notify_orchestrator.drain_outbox(), (1, 0))
         self.assertEqual(notify_orchestrator.read_outbox(), [])
-        self.assertIn(["orca", "terminal", "send", "--terminal", "term_orch", "--text", "msg-1", "--enter"],
-                      ok.calls)
+        self.assertIn(
+            [notify_orchestrator.NODE_BIN, notify_orchestrator.A2A_SEND_CLI, "--to-project",
+             notify_orchestrator.ORCHESTRATOR_PROJECT, "--type", "progress", "--body", "msg-1"],
+            ok.deliver_calls())
         with open(os.path.join(self.state_dir, "outbox.delivered.jsonl"), encoding="utf-8") as f:
             self.assertEqual(json.loads(f.readline())["message"], "msg-1")
 
     def test_ntfy_failure_keeps_message(self):
-        fail = FakeRun(orca_ok=False, ntfy_ok=False)
+        fail = FakeRun(deliver_ok=False, ntfy_ok=False)
         with mock.patch.object(notify_orchestrator.subprocess, "run", fail):
             notify_orchestrator.notify("msg-2")
             for _ in range(4):
@@ -293,9 +299,20 @@ class OutboxTest(TmpDirs):
         self.assertEqual(len(fail.ntfy_calls()), 3, "ntfy se reintenta mientras no salga")
 
     def test_success_is_not_queued(self):
-        with mock.patch.object(notify_orchestrator.subprocess, "run", FakeRun(orca_ok=True)):
+        with mock.patch.object(notify_orchestrator.subprocess, "run", FakeRun(deliver_ok=True)):
             self.assertTrue(notify_orchestrator.notify("ok"))
         self.assertEqual(notify_orchestrator.read_outbox(), [])
+
+    def test_no_hardcoded_terminal_handle_in_the_dispatch_command(self):
+        """T-0596 paso 2 AC: deliver() addresses the orchestrator by PROJECT, never a
+        fixed terminal handle — the resolver (WezTerm or Orca) runs inside a2a-send-cli."""
+        ok = FakeRun(deliver_ok=True)
+        with mock.patch.object(notify_orchestrator.subprocess, "run", ok):
+            notify_orchestrator.notify("ping")
+        cmd = ok.deliver_calls()[0]
+        self.assertNotIn("--terminal", cmd)
+        self.assertIn("--to-project", cmd)
+        self.assertNotIn("term_orch", cmd)
 
 
 class E2EKillTest(TmpDirs):
@@ -312,8 +329,13 @@ class E2EKillTest(TmpDirs):
 
     def test_kill_foreman_midway_watcher_resumes_and_warns(self):
         self.write_card("T-9001", "running")
+        # T-0596 paso 2: deliver() now shells out to A2A_SEND_CLI (node bin/a2a-send-cli.cjs),
+        # not `orca` directly — point it at a path that does not exist so this E2E test can
+        # NEVER reach a real MCP server / real pane census (the fleet forbids live smoke
+        # against a real pane; ORCA_BIN is kept too in case anything still reads it).
         env = dict(os.environ, FOREMAN_STATE_DIR=self.state_dir, FOREMAN_TASKS_DIR=self.tasks_dir,
-                   ORCA_BIN=os.path.join(self.tmp, "no-orca.exe"))
+                   ORCA_BIN=os.path.join(self.tmp, "no-orca.exe"),
+                   A2A_SEND_CLI=os.path.join(self.tmp, "no-a2a-send-cli.cjs"))
         first = subprocess.Popen([sys.executable, os.path.join(HERE, "foreman.py"), "--task-id", "T-9001",
                                   "--terminal", "term_fake_t0524", "--timeout", "900"],
                                  env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
