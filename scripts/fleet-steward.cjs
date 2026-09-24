@@ -560,6 +560,36 @@ function auditDecisions(dir = intelDir(), now = Date.now()) {
 }
 
 /**
+ * T-0486 — the ONE predicate both classify() and auditUnrecordedDecisions()
+ * call to read the raw operator-gate signal off a task: an explicit
+ * execution gate (contract.gate or the legacy top-level gate, T-0072), OR
+ * blocked_by === 'operator'. Before this, each caller had its own copy and
+ * they had drifted — classify() read ONLY the gate fields, so a blocked
+ * card of an ungated KIND with blocked_by='operator' was misfiled
+ * blocked-not-gated (48h deadline, expires and nags) instead of
+ * awaiting-operator (no deadline, waiting on the operator BY DESIGN).
+ *
+ * Deliberately NOT carrying a `blocker`-non-empty requirement here, even
+ * though classify()'s awaiting-operator category needs one (see below):
+ * measured against the live board 2026-09-24, three real done cards
+ * (T-0459, T-0519, T-0557) carry blocked_by='operator' with blocker null —
+ * genuinely operator-closed, but with no formal ruling on file — and adding
+ * the requirement here silently DROPPED their decision-unrecorded finding.
+ * That is the wrong direction for that audit: it exists to catch exactly
+ * "decided in a pane, ruling never written", and a missing blocker is
+ * thinner evidence the transition was legitimate, not stronger. So this
+ * shared predicate stays the plain either/or signal, unchanged from both
+ * callers' original semantics — auditUnrecordedDecisions() uses it as-is;
+ * classify() layers its OWN blocker check on top, scoped to the one category
+ * where silencing a nag PERMANENTLY (not just for 24h) is the risk. Keep it
+ * this way for T-0479, which touches auditUnrecordedDecisions next.
+ */
+function isOperatorGated(task) {
+  const gate = (task && task.contract && task.contract.gate) || (task && task.gate) || null;
+  return gate === 'operator' || Boolean(task) && task.blocked_by === 'operator';
+}
+
+/**
  * T-0326 — `decision-unrecorded`: el operador decidio DENTRO de un pane y el
  * pane actuo sin escribir el ruling. Medido el 2026-09-02 cuatro veces en un dia
  * (T-0253 "olvidate de eso", T-0297 "elegi renombrar", el restart de wabot,
@@ -568,22 +598,23 @@ function auditDecisions(dir = intelDir(), now = Date.now()) {
  * accion"; este hallazgo es lo que la vuelve exigible.
  *
  * Dispara sobre una tarjeta que ESTA o ESTUVO gateada por el operador (gate
- * 'operator' en la tarjeta, o blocked_by operator) y que YA NO esta blocked
- * (ready/running/review/done/cancelled) — o sea, alguien la movio despues de la
- * pregunta — sin que exista un ruling del operador para ella (by=operator, o
- * source board-app/telegram: canales que solo el operador opera). El buen
- * camino (decide / tablero) deja el ruling y des-gatea, asi que no dispara.
- * Epoca 2026-09-01 por state_changed_at: el backlog viejo no se retro-flaggea.
- * Se autolimpia: un `decidir` tardio para esa tarjeta lo apaga.
+ * 'operator' en la tarjeta, o blocked_by operator — ver isOperatorGated,
+ * SIN requerir blocker: ver su doc-comment sobre por que) y que YA NO esta
+ * blocked (ready/running/review/done/cancelled) — o sea, alguien la movio
+ * despues de la pregunta — sin que exista un ruling del operador para ella
+ * (by=operator, o source board-app/telegram: canales que solo el operador
+ * opera). El buen camino (decide / tablero) deja el ruling y des-gatea, asi
+ * que no dispara. Epoca 2026-09-01 por state_changed_at: el backlog viejo no
+ * se retro-flaggea. Se autolimpia: un `decidir` tardio para esa tarjeta lo
+ * apaga.
  */
 function auditUnrecordedDecisions(tasks, dir = intelDir(), now = Date.now()) {
   const LEFT_GATE = new Set(['ready', 'running', 'review', 'done', 'cancelled']);
-  const gateOf = (t) => (t && t.contract && t.contract.gate) || (t && t.gate) || null;
   const recorded = new Set(loadRulings(dir).filter(isOperatorRuling).map((r) => r.task));
   const findings = [];
   for (const t of tasks) {
     if (!t || !LEFT_GATE.has(t.state)) continue;
-    if (gateOf(t) !== 'operator' && t.blocked_by !== 'operator') continue;
+    if (!isOperatorGated(t)) continue;
     const moved = ms(t.state_changed_at);
     if (!moved || moved < DECISION_EPOCH || moved > now) continue;
     if (recorded.has(t.id)) continue;
@@ -607,14 +638,26 @@ function auditUnrecordedDecisions(tasks, dir = intelDir(), now = Date.now()) {
  */
 function classify(task, now, dir = intelDir(), ctx = null) {
   const age = ageMs(task, now);
-  // The gate lives in EITHER place, and reading one is a real bug found
+  // The gate lives in EITHER place, and reading only one is a real bug found
   // 2026-08-14 by rendering the board: T-0072 (pather) carries a top-level
   // `gate: "operator"` with `contract: null`, so it was classified
   // `blocked-not-gated` — a category with a 48h deadline — when it is in fact
   // waiting on the operator BY DESIGN and should never expire. The effect was
   // doubly wrong: it nagged about a correct state, and it stayed out of the
   // "waiting on you" list where the operator would have seen the question.
-  const gated = (task.contract && task.contract.gate) === 'operator' || task.gate === 'operator';
+  //
+  // T-0486: reading only the gate field was itself the same bug one layer
+  // down — a blocked card of an UNGATED kind with blocked_by='operator' and a
+  // real stated blocker is exactly as much "waiting on the operator by
+  // design" as an explicit gate, and auditUnrecordedDecisions() already knew
+  // that. isOperatorGated() is the ONE shared raw signal now (see its
+  // doc-comment). This category adds one more condition on top of it, scoped
+  // to classify() alone: when the ONLY signal is blocked_by (no explicit
+  // gate field), the awaiting-operator category never expires, so an empty
+  // or missing `blocker` must NOT buy that exemption — that would silence
+  // the nag forever over residue rather than an actual stated question.
+  const explicitGate = ((task.contract && task.contract.gate) || task.gate) === 'operator';
+  const gated = explicitGate || (isOperatorGated(task) && Boolean(task.blocker && String(task.blocker).trim()));
   // `owner` is the lease holder, and it is the correct routing key for any
   // follow-up — NOT the repo. A staleness reconcile for T-0008 was sent to the
   // whatsappbot pane because the task names that repo, while the lease was held
@@ -764,7 +807,7 @@ function render(report) {
 module.exports = {
   classify, audit, render, RULES, loadTasks, loadRulings, auditTaskFiles, TASK_FILE,
   lastTransition, lastProgress, ownProgress, buildContext, auditProposals, auditResultLinks, auditDecisions,
-  auditUnrecordedDecisions,
+  auditUnrecordedDecisions, isOperatorGated,
 };
 
 if (require.main === module) {
