@@ -5,9 +5,13 @@
  * daemon-heartbeat-sentinel.cjs — EXTERNAL watchdog for the :4200 daemon (T-0186).
  *
  * Covers: standalone daemon-death detection via heartbeat file + /api/health,
- * poke delivery to the orchestrator pane, episode cooldown, own heartbeat.
- * Key terms: sentinel, DAEMON DOWN, DAEMON WEDGED, _intel/evidence/wezbridge.
- * Read when: the daemon died and nobody was told, or the sentinel misfires.
+ * poke delivery to the orchestrator pane, episode cooldown, own heartbeat,
+ * and (T-0598 Fase B-2) one automation-router finding per outage past
+ * DOWN_FINDING_THRESHOLD consecutive ticks — see evaluateFinding/emitDaemonFinding.
+ * Key terms: sentinel, DAEMON DOWN, DAEMON WEDGED, _intel/evidence/wezbridge,
+ * evaluateFinding, emitDaemonFinding, automation-findings.
+ * Read when: the daemon died and nobody was told, or the sentinel misfires,
+ * or a daemon outage should have produced a ledger card and didn't.
  *
  * Why: on 2026-08-19 the daemon died at 07:19Z and the fleet learned of it 4.7h
  * later, by accident. Every in-daemon watcher dies with the daemon — this runs
@@ -38,6 +42,14 @@ const DEADMAN_TOUCH_FILE = path.join(EVIDENCE_DIR, 'deadman-touch.json');
 const DEADMAN_SSH_KEY = process.env.WEZBRIDGE_DEADMAN_SSH_KEY || 'C:/Users/pauol/.ssh/ubuntuvm_key';
 const DEADMAN_HOST = process.env.WEZBRIDGE_DEADMAN_HOST || 'ggorbalan@192.168.100.186';
 const DEADMAN_TOUCH_TIMEOUT_MS = 8_000;
+
+// T-0598 Fase B-2: DaemonSentinel → automation-router findings contract.
+// Separate state file from STATE_FILE (the poke/episode state above) — the
+// finding-emission decision must never perturb poke/deadman behavior, so it
+// gets its own read/write pair and its own pure decision function
+// (evaluateFinding), same separation of concerns as evaluate()/deliverPoke.
+const FINDING_STATE_FILE = path.join(EVIDENCE_DIR, 'daemon-sentinel-finding-state.json');
+const FINDINGS_DIR = process.env.WEZBRIDGE_FINDINGS_DIR || path.join(INTEL, 'automation-findings');
 
 // Re-poke cadence while an episode stays open. One poke per episode start,
 // then a reminder every 30 min — an alert repeated every 5 min trains the
@@ -109,6 +121,78 @@ function evaluate({ liveness, state, now = Date.now(), repokeMs = REPOKE_MS, htt
       lastAlertAt: shouldPoke ? new Date(now).toISOString() : (state && state.lastAlertAt) || null,
     },
   };
+}
+
+// T-0598 Fase B-2: how many consecutive outage-verdict sentinel runs (5 min
+// apart) must persist before a finding is emitted for the automation router.
+// Mirrors HTTP_FAIL_STREAK_ALERT (3, ~15 min) — the same false-DOWN class
+// T-0220 exists to guard against (one transient blip) must not become a
+// ledger card, while a real outage still surfaces well inside REPOKE_MS
+// (30 min). Documented here because N is a design choice, not a derivation:
+// N=3.
+const DOWN_FINDING_THRESHOLD = 3;
+
+/**
+ * Pure decision: should this run emit an automation-router finding? No I/O —
+ * mirrors evaluate()'s separation. `decision` is evaluate()'s own return
+ * value for this tick; `findingState` is FINDING_STATE_FILE's last contents.
+ * An outage is identified by decision.newState.episodeStartedAt (the SAME
+ * episode id evaluate() already tracks for poke/dedupe) — reusing it here is
+ * the "reuse the existing consecutive/dedupe state" the brief asks for,
+ * without coupling evaluate()'s poke cadence to the finding cadence.
+ */
+function evaluateFinding({ decision, findingState, threshold = DOWN_FINDING_THRESHOLD }) {
+  const isOutageVerdict = decision.verdict === 'down' || decision.verdict === 'wedged' || decision.verdict === 'http-unresponsive';
+  if (!isOutageVerdict) {
+    if (decision.recovered && findingState && findingState.emitted) {
+      return { emit: 'recovered', episodeStartedAt: findingState.episodeStartedAt, newFindingState: {} };
+    }
+    return { emit: null, episodeStartedAt: null, newFindingState: {} };
+  }
+  const episodeStartedAt = decision.newState.episodeStartedAt;
+  const sameEpisode = Boolean(findingState) && findingState.episodeStartedAt === episodeStartedAt;
+  const ticks = (sameEpisode ? findingState.ticks : 0) + 1;
+  const alreadyEmitted = sameEpisode && Boolean(findingState.emitted);
+  const shouldEmit = !alreadyEmitted && ticks >= threshold;
+  return {
+    emit: shouldEmit ? 'down' : null,
+    episodeStartedAt,
+    newFindingState: { episodeStartedAt, ticks, emitted: alreadyEmitted || shouldEmit },
+  };
+}
+
+/**
+ * Emits ONE finding via bin/emit-finding.cjs's own buildFinding/validate/write
+ * path (in-process require, per the brief) — no shelling out to a second node
+ * process per run. `kind` is 'down' (actionable) or 'recovered' (informational,
+ * non-actionable). Never throws: an emission failure is logged, not fatal to
+ * the sentinel's own poke/deadman duties.
+ */
+function emitDaemonFinding(kind, decision, episodeStartedAt, { emitFindingMainFn } = {}) {
+  const mainFn = emitFindingMainFn || require('../bin/emit-finding.cjs').main;
+  const actionable = kind !== 'recovered';
+  const summary = kind === 'recovered'
+    ? `DaemonSentinel: :4200 daemon recovered (outage started ${episodeStartedAt})`
+    : `DaemonSentinel: :4200 daemon ${String(decision.verdict).toUpperCase()} past threshold (outage started ${episodeStartedAt})`;
+  const evidence = kind === 'recovered'
+    ? `Outage that started ${episodeStartedAt} recovered. See _intel/evidence/wezbridge/daemon-sentinel.jsonl`
+    : `${decision.message || decision.verdict}. See _intel/evidence/wezbridge/daemon-sentinel.jsonl`;
+  const argv = [
+    '--task', 'daemon-heartbeat-sentinel',
+    '--repo', 'wezbridge',
+    '--actionable', String(actionable),
+    '--summary', summary,
+    '--evidence', evidence,
+    '--severity', actionable ? 'high' : 'low',
+    '--fingerprint', `daemon-outage-${episodeStartedAt}`,
+    '--out-dir', FINDINGS_DIR,
+  ];
+  try {
+    return mainFn(argv, { outDirDefault: FINDINGS_DIR });
+  } catch (err) {
+    logLine({ ts: new Date().toISOString(), verdict: 'finding-emit-error', error: String(err && err.message).slice(0, 200) });
+    return null;
+  }
 }
 
 function readJson(p) {
@@ -334,6 +418,19 @@ async function main() {
   logLine({ ts: new Date().toISOString(), verdict: decision.verdict, daemon_up: daemon.up, deadman_touch: deadmanTouch });
 
   writeJson(STATE_FILE, decision.newState);
+
+  // T-0598 Fase B-2: outage-past-threshold → automation-router finding.
+  // Independent of poke/deadman above (own state file, own try/catch) — a
+  // finding-emission failure must never take down the sentinel's primary job.
+  try {
+    const findingState = readJson(FINDING_STATE_FILE) || {};
+    const findingResult = evaluateFinding({ decision, findingState });
+    if (findingResult.emit) emitDaemonFinding(findingResult.emit, decision, findingResult.episodeStartedAt);
+    writeJson(FINDING_STATE_FILE, findingResult.newFindingState);
+  } catch (err) {
+    logLine({ ts: new Date().toISOString(), verdict: 'finding-state-error', error: String(err && err.message).slice(0, 200) });
+  }
+
   // Own heartbeat EVERY run, healthy or not: silence from the sentinel must be
   // distinguishable from "all quiet" (F1 hardening rule 1).
   writeJson(OWN_BEAT_FILE, {
@@ -369,4 +466,5 @@ if (require.main === module) {
 module.exports = {
   evaluate, deliverAlert, deliverPoke, deliverPokeOrca, deliverPokeWezTerm, findOrchestratorPane,
   touchVmHeartbeat, REPOKE_MS, HTTP_FAIL_STREAK_ALERT, SENTINEL_PROBE_TIMEOUT_MS,
+  evaluateFinding, emitDaemonFinding, DOWN_FINDING_THRESHOLD, FINDINGS_DIR, FINDING_STATE_FILE,
 };
