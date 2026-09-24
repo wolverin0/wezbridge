@@ -118,6 +118,64 @@ test('defaultRunOrca: a CLI that exits non-zero but still writes a JSON body to 
   assert.equal(j.error.code, 'terminal_handle_stale');
 });
 
+// ── T-0600: pre-send overlay/foreign-text guard ─────────────────────────────
+
+test('screenShowsOverlay: true on a Claude Code Agent-picker style overlay (numbered menu + "Enter to select ... Esc to cancel" footer)', () => {
+  const tail = [
+    'some prior scrollback',
+    '❯ 1. Yes',
+    '  2. No',
+    'Enter to select · Esc to cancel',
+  ];
+  assert.equal(orcaSend.screenShowsOverlay(tail), true);
+});
+
+test('screenShowsOverlay: true when the composer already holds unsent foreign text', () => {
+  const tail = ['prior output', '❯ this text was typed by the operator and never sent'];
+  assert.equal(orcaSend.screenShowsOverlay(tail), true);
+});
+
+test('screenShowsOverlay: false on a plain idle composer', () => {
+  const tail = ['prior output', '❯ '];
+  assert.equal(orcaSend.screenShowsOverlay(tail), false);
+});
+
+test('sendToOrcaTerminal: overlay visible BEFORE send -> deferred, NOT sent, NOT counted as an attempt (no --send call, no --retry-request burned)', async () => {
+  const tail = ['❯ 1. Yes', '  2. No', 'Enter to select · Esc to cancel'];
+  const runOrca = fakeRunOrca({ tailByHandle: { term_x: tail } });
+  const res = await orcaSend.sendToOrcaTerminal('term_x', 'a fresh envelope body', { runOrca, sleep: noSleep });
+  assert.equal(res.ok, false);
+  assert.equal(res.deferred, true);
+  assert.equal(res.submitted, 'unknown');
+  assert.equal(res.delivered, 'unknown');
+  assert.equal(runOrca.calls.filter((c) => c[1] === 'send').length, 0, 'the overlay must be detected BEFORE any send attempt');
+});
+
+test('sendToOrcaTerminal: composer holds foreign text BEFORE send -> deferred, NOT sent', async () => {
+  const runOrca = fakeRunOrca({ tailByHandle: { term_x: ['❯ someone else\'s unsent draft'] } });
+  const res = await orcaSend.sendToOrcaTerminal('term_x', 'a fresh envelope body', { runOrca, sleep: noSleep });
+  assert.equal(res.ok, false);
+  assert.equal(res.deferred, true);
+  assert.equal(runOrca.calls.filter((c) => c[1] === 'send').length, 0);
+});
+
+test('sendToOrcaTerminal: screen unreadable before send -> fails open, sends normally (guard never blocks a pane it cannot see)', async () => {
+  const body = 'body visible after send';
+  let readCount = 0;
+  const runOrca = async (args) => {
+    if (args[1] === 'send') return JSON.stringify({ ok: true, result: { accepted: true } });
+    if (args[1] === 'read') {
+      readCount += 1;
+      if (readCount === 1) return JSON.stringify({ ok: false, error: 'unreadable' }); // pre-send read
+      return JSON.stringify({ ok: true, result: { terminal: { tail: [body], source: 'screen' } } }); // post-send read
+    }
+    throw new Error('unexpected');
+  };
+  const res = await orcaSend.sendToOrcaTerminal('term_x', body, { runOrca, sleep: noSleep });
+  assert.equal(res.deferred, undefined);
+  assert.equal(res.ok, true);
+});
+
 test('defaultRunOrca: a truly empty stdout (real transport failure, e.g. spawn ENOENT) still rejects', async () => {
   await assert.rejects(
     () => orcaSend.defaultRunOrca(['terminal', 'list'], { bin: 'G:/no-such-orca-binary.exe', timeoutMs: 5000 }),

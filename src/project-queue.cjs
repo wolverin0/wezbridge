@@ -640,6 +640,7 @@ function createConsumer(opts) {
         });
         let orcaOk = false;
         let orcaSubmitted = 'unknown';
+        let orcaDeferred = false;
         try {
           const orcaSend = cfg.orcaSend || require('./orca-send.cjs');
           // Retry id: NOT random — orca-send.cjs reissues internally with the
@@ -648,7 +649,17 @@ function createConsumer(opts) {
           const orcaResult = await orcaSend.sendToOrcaTerminal(targetHit.handle, orcaEnvelope);
           orcaOk = orcaResult.ok;
           orcaSubmitted = orcaResult.submitted;
+          orcaDeferred = orcaResult.deferred === true;
         } catch (err) { log(`project-queue[${project}]: orca send failed: ${err.message}`); }
+        // T-0600: orca-send.cjs's own pre-send overlay/foreign-text guard
+        // fired — nothing was typed. Same stance as the WezTerm composer-
+        // foreign-text deferral a few lines below findTarget: no attempt is
+        // spent, no cooldown starts, retried next drain tick.
+        if (orcaDeferred) {
+          log(`project-queue[${project}]: orca terminal ${targetHit.handle} shows an overlay or unsent foreign text — deferring ${Object.keys(state.pending).length} entrada(s), reintento en el proximo drain`);
+          return { delivered, flagged, dropped, skipped: Object.keys(state.pending).length,
+            deferredComposer: Object.keys(state.pending).length };
+        }
         state.lastAttemptAt = now();
         if (orcaOk) {
           delete state.pending[id];

@@ -1881,7 +1881,20 @@ function handleToolCall(name, args) {
         // a2a-results.jsonl — events.jsonl stays metadata-only. Fail-soft.
         recordAndLinkResult(toPane);
         const unackedInbound = a2aIntel.updateThreads({ fromPane, toPane, corr, type: msgType, body });
-        const verified = submitted !== 'stuck' && !truncated;
+        // T-0600: Orca's own vocabulary is submitted 'submitted'|'unknown' (it
+        // has no 'stuck') and delivered 'ok'|'unknown' (it has no 'truncated').
+        // Reusing the WezTerm-shaped verdict `submitted !== 'stuck' && !truncated`
+        // for the Orca branch counted submitted:'unknown' (the screen never
+        // showed the envelope — orca-send.cjs's own read-back said so) as
+        // verified:true, because 'unknown' is merely "not 'stuck'". That got
+        // written to delivered.json with ok:true and NEVER retried — the live
+        // incident measured 2026-09-24 17:51Z (corr T-0598): submitted=unknown,
+        // delivered=unknown, recorded as delivered anyway. Orca's verdict is
+        // strict: only an explicit submitted==='submitted' && delivered==='ok'
+        // counts as delivered; anything else stays pending for the drain.
+        const verified = transport === 'orca'
+          ? (submitted === 'submitted' && delivered === 'ok')
+          : (submitted !== 'stuck' && !truncated);
         // Durable queue record for to_project sends — ALWAYS, whatever the
         // delivery outcome: ok:false lines are the drain script's retry list.
         const queued = toProject
