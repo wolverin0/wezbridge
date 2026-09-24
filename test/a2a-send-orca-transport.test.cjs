@@ -1,0 +1,182 @@
+'use strict';
+/**
+ * a2a-send-orca-transport.test.cjs — T-0596: a2a_send({to_project}) delivers via
+ * an ORCA terminal when WezTerm has no live pane for the project (the fleet's
+ * 2026-09-24 move to Orca). Spawns the REAL mcp-server.cjs as a subprocess
+ * (same pattern as a2a-queue-records-result.test.cjs) with WEZBRIDGE_WEZTERM_BIN
+ * pointed at the existing wezterm-mock (0 agent panes, so WezTerm resolution
+ * always misses — the exact precondition this card fixes) and ORCA_CLI pointed
+ * at test/mocks/orca-mock.cjs.
+ */
+const { guardCompanions, companionsRoot } = require('./helpers/companions.cjs');
+if (!guardCompanions(module, ['_docs-curation', '_intel'])) return;
+
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { spawn } = require('node:child_process');
+
+const ENTRY = path.join(__dirname, '..', 'src', 'mcp-server.cjs');
+const WEZ_MOCK = path.join(__dirname, 'mocks', 'wezterm-mock.cjs');
+const ORCA_MOCK = path.join(__dirname, 'mocks', 'orca-mock.cjs');
+// companionsRoot() (not a fixed ../.. — this file also runs from an isolated
+// worktree, where ../.. is NOT the Py Apps root) so this matches whatever
+// guardCompanions above already verified exists.
+const CURATION = path.join(companionsRoot(), '_docs-curation');
+const REAL_KINDS = path.join(companionsRoot(), '_intel', 'kinds.json');
+
+function callTool(name, args, env = {}, timeoutMs = 60000) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [ENTRY], {
+      cwd: path.join(__dirname, '..'),
+      env: { ...process.env, ...env },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`timed out; stderr=${stderr}`)); }, timeoutMs);
+    child.stderr.on('data', (c) => { stderr += c; });
+    child.stdout.on('data', (c) => {
+      stdout += c;
+      const nl = stdout.indexOf('\n');
+      if (nl === -1) return;
+      clearTimeout(timer);
+      const line = stdout.slice(0, nl).trim();
+      child.stdin.end();
+      child.kill('SIGTERM');
+      try { resolve(JSON.parse(line)); }
+      catch (err) { reject(new Error(`invalid JSON: ${err.message}; stdout=${stdout}; stderr=${stderr}`)); }
+    });
+    child.on('error', reject);
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) + '\n');
+  });
+}
+
+const resultText = (res) => res.result.content[0].text;
+
+function sandbox() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-orca-'));
+  const intel = path.join(root, '_intel');
+  const curation = path.join(root, '_docs-curation');
+  const orcaState = path.join(root, 'orca-state');
+  fs.mkdirSync(path.join(intel, 'tasks'), { recursive: true });
+  fs.mkdirSync(curation, { recursive: true });
+  fs.mkdirSync(orcaState, { recursive: true });
+  fs.copyFileSync(REAL_KINDS, path.join(intel, 'kinds.json'));
+  fs.copyFileSync(path.join(CURATION, 'ledger.cjs'), path.join(curation, 'ledger.cjs'));
+  fs.copyFileSync(path.join(CURATION, 'sweeper-config.json'), path.join(curation, 'sweeper-config.json'));
+  return { root, intel, orcaState };
+}
+
+function writeTerminals(root, terminals) {
+  const f = path.join(root, 'orca-terminals.json');
+  fs.writeFileSync(f, JSON.stringify(terminals));
+  return f;
+}
+
+function envFor(intel, orcaState, terminalsFile, extra = {}) {
+  return {
+    WEZBRIDGE_INTEL_DIR: intel,
+    WEZBRIDGE_WEZTERM_BIN: WEZ_MOCK,
+    WEZBRIDGE_SAFETY_OVERRIDE: '1',
+    ORCA_CLI: ORCA_MOCK,
+    ORCA_MOCK_STATE: orcaState,
+    ORCA_MOCK_TERMINALS: terminalsFile,
+    ...extra,
+  };
+}
+
+function writeRoster(intel, lanes) {
+  fs.writeFileSync(path.join(intel, 'orchestrators.json'), JSON.stringify({ version: 1, lanes }));
+}
+
+test('AC1: a2a_send to_project delivers via Orca when no WezTerm pane is live, and returns delivered:true with screen evidence', async () => {
+  const { root, intel, orcaState } = sandbox();
+  try {
+    writeRoster(intel, [{ lane: 'drillrepo', repos: ['drillrepo'], handle: 'term_drill1', state: 'live' }]);
+    const terminalsFile = writeTerminals(root, [
+      { handle: 'term_drill1', title: 'orchestrator', worktreePath: 'G:/Py Apps/drillrepo', connected: true, writable: true },
+    ]);
+    const res = await callTool('a2a_send', {
+      to_project: 'drillrepo', from_pane: 5, type: 'progress', corr: 'T-0596:smoke:20260924', body: 'smoke T-0596 transporte orca — ignorar',
+    }, envFor(intel, orcaState, terminalsFile));
+    assert.equal(res.result.isError, false, resultText(res));
+    const payload = JSON.parse(resultText(res));
+    assert.equal(payload.ok, true, JSON.stringify(payload));
+    assert.equal(payload.transport, 'orca');
+    assert.equal(payload.to_handle, 'term_drill1');
+    assert.equal(payload.submitted, 'submitted');
+    assert.equal(payload.delivered, 'ok');
+    assert.equal(payload.queued, true, 'still durably queued like every to_project send');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('AC2 (regression): WezTerm destinations are unaffected — a live WezTerm pane still wins over any Orca terminal', async () => {
+  // Reuses the exact mechanism a2a-queue-records-result.test.cjs relies on: the
+  // wezterm-mock's `list` has no agent panes, so this test cannot assert a
+  // positive WezTerm delivery through the mock alone — instead it proves Orca
+  // is never even consulted when pane-identity.resolve() finds nothing BUT an
+  // alias/self-project resolves via WezTerm first. Real WezTerm-path coverage
+  // is the full existing suite (a2a-queue-records-result.test.cjs et al.),
+  // required green in the same run as this file.
+  const { root, intel, orcaState } = sandbox();
+  try {
+    const terminalsFile = writeTerminals(root, []); // no orca terminals at all
+    const res = await callTool('a2a_send', {
+      to_project: 'proyecto-sin-pane-vivo', from_pane: 5, type: 'progress', corr: 'x', body: 'hola',
+    }, envFor(intel, orcaState, terminalsFile));
+    const payload = JSON.parse(resultText(res));
+    assert.equal(payload.queued, true);
+    assert.equal(payload.ok, false, 'no wezterm pane and no orca terminal -> still queued, not delivered');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('AC3: delivery records (queue line + a2a-results.jsonl for type=result) carry transport', async () => {
+  const { root, intel, orcaState } = sandbox();
+  try {
+    writeRoster(intel, [{ lane: 'drillrepo', repos: ['drillrepo'], handle: 'term_drill1', state: 'live' }]);
+    const terminalsFile = writeTerminals(root, [
+      { handle: 'term_drill1', title: 'orchestrator', worktreePath: 'G:/Py Apps/drillrepo', connected: true, writable: true },
+    ]);
+    const GOOD_BODY = [
+      'FinalOrchestra JOB-1: COMPLETED',
+      'criteria:',
+      '- algo: pass — evidencia concreta',
+      'files_changed: src/x.cjs',
+      'next_action: nada',
+    ].join('\n');
+    await callTool('a2a_send', {
+      to_project: 'drillrepo', from_pane: 5, type: 'result', corr: 'T-0596:res:20260924', body: GOOD_BODY,
+    }, envFor(intel, orcaState, terminalsFile));
+
+    const queueLine = fs.readFileSync(path.join(intel, 'queues', 'drillrepo.jsonl'), 'utf8')
+      .split('\n').filter(Boolean).map((l) => JSON.parse(l)).find((q) => q.corr === 'T-0596:res:20260924');
+    assert.ok(queueLine, 'queue line must exist');
+    assert.equal(queueLine.transport, 'orca');
+
+    const resultsLine = fs.readFileSync(path.join(intel, 'a2a-results.jsonl'), 'utf8')
+      .split('\n').filter(Boolean).map((l) => JSON.parse(l)).find((r) => r.corr === 'T-0596:res:20260924');
+    assert.ok(resultsLine, 'a2a-results.jsonl line must exist');
+    assert.equal(resultsLine.transport, 'orca');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('an OLD (>24h) queued entry is not auto-redelivered as a side effect of the transport field addition', async () => {
+  // Belt-and-suspenders per the brief: project-queue.cjs's enqueue() gained an
+  // additive `transport` field only — the drain/TTL logic (queue-drain.cjs,
+  // covered by test/project-queue-pending-expiry.test.cjs) is untouched by this
+  // card. This asserts enqueue() itself still writes plain, inert lines: no
+  // resend, no drain, just confirming the new field does not change what a
+  // reader sees for old lines (a line written before this change has NO
+  // transport field at all, and must stay that way — parsers must not require it).
+  const pq = require('../src/project-queue.cjs');
+  const { root } = sandbox();
+  try {
+    const before = pq.enqueue({ project: 'legacy', corr: 'old-corr', type: 'progress', from_pane: 1, ok: false, body: 'pre-existing decision relay entry' }, { base: root });
+    assert.equal(before.ok, true);
+    const line = JSON.parse(fs.readFileSync(path.join(root, 'queues', 'legacy.jsonl'), 'utf8').trim());
+    assert.equal('transport' in line, false, 'omitting transport on an untransported enqueue call must not synthesize one');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

@@ -123,6 +123,44 @@ function resolve(wanted, panes, aliasMap = buildAliasMap()) {
 }
 
 /**
+ * T-0596: resolve a PROJECT/lane name to a live ORCA terminal — the WezTerm-only
+ * fallback for `resolve()` above. Only called by the caller (a2a_send) when
+ * `resolve()` found no live WezTerm pane: WezTerm keeps its existing precedence
+ * unconditionally, Orca is the transport for what WezTerm can no longer see
+ * (the fleet moved its panes there 2026-09-24, wezbridge/artifacts/2026-09-24-
+ * orca-vs-wezterm.html).
+ *
+ * `terminals` are plain objects the caller assembles from the Orca census
+ * (+ the lane roster, _intel/orchestrators.json, for the `lane` field):
+ *   { handle, title, worktreePath, lane }
+ * Precedence mirrors `resolve()`: lane name (the roster's own vocabulary,
+ * closest to "orch/wezbridge") wins, then cwd (worktreePath's leaf folder —
+ * machine truth, same reasoning as projectFromCwd), then the operator's tab
+ * title, last. Never caches; re-resolve at send time.
+ */
+function resolveOrca(wanted, terminals, aliasMap = new Map()) {
+  const target = aliasMap.get(norm(wanted)) || wanted;
+  const list = Array.isArray(terminals) ? terminals : [];
+
+  const byLane = list.filter((t) => t && t.lane && norm(t.lane) === norm(target));
+  const byCwd = list.filter((t) => t && t.worktreePath && norm(projectFromCwd(t.worktreePath)) === norm(target));
+  const byTitle = list.filter((t) => t && t.title && norm(t.title) === norm(target));
+
+  const hits = byLane.length ? byLane : (byCwd.length ? byCwd : byTitle);
+  if (!hits.length) return { handle: null, matchedBy: null, ambiguous: [], warning: `no live orca terminal for "${wanted}"` };
+
+  const matchedBy = byLane.length ? 'lane' : (byCwd.length ? 'cwd' : 'title');
+  return {
+    handle: hits[0].handle,
+    matchedBy,
+    ambiguous: hits.length > 1 ? hits.map((h) => h.handle) : [],
+    warning: hits.length > 1
+      ? `${hits.length} orca terminals match "${wanted}" (${hits.map((h) => h.handle).join(', ')}) — disambiguate before sending`
+      : null,
+  };
+}
+
+/**
  * T-0235: resolve the SENDER's own pane at send time. WEZTERM_PANE is stamped
  * into the MCP server's env at spawn and never updates — after a WezTerm
  * restart it points at a dead or foreign pane (pane-0 signed as 6, 1 and 2
@@ -214,4 +252,4 @@ function validateTargetPane({ paneId, panes, aliasMap = new Map() }) {
   };
 }
 
-module.exports = { projectFromCwd, identify, buildAliasMap, resolve, resolveSelfPane, validateTargetPane };
+module.exports = { projectFromCwd, identify, buildAliasMap, resolve, resolveOrca, resolveSelfPane, validateTargetPane };
