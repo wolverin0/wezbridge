@@ -7,14 +7,17 @@ Source edits do not update already-loaded MCP processes.
 # Operations — env vars, restart, crash recovery, mux-wedge + GUI-hang triage (wezbridge)
 > Qué cubre: variables de entorno útiles, el gotcha de rebind del daemon :4200, latitud WSL,
 > recuperación de crash de wezterm, el triage mux-lento-vs-mux-wedgeado (firmas idénticas,
-> remedios opuestos) y el tercer caso, GUI colgado con mux sano (2026-09-01): por qué
-> `wezterm cli` sin `--no-auto-start` roba el socket del mux y cómo se recupera un GUI.
+> remedios opuestos), el tercer caso GUI colgado con mux sano (2026-09-01), y el broadcast de
+> `/mcp reconnect <server>` a todos los panes Orca Claude idle (T-0569) para cuando un MCP
+> (p.ej. MemoryMaster) queda "disconnected" en varios panes a la vez.
 > Leer cuando: el daemon no rebindea, wezterm crasheó, todo ETIMEDOUTea, un GUI dice "not
-> responding", hay >1 wezterm-mux-server, o vas a setear env de guards/grader/inbox.
+> responding", hay >1 wezterm-mux-server, un MCP aparece desconectado en varios panes, o vas
+> a setear env de guards/grader/inbox.
 > Términos clave: WEZBRIDGE_*, restore-session, probeMux, degraded, inconclusive,
 > session-snapshot, --no-auto-start, gui-watchdog, Recover-WezTermGui, mux_split,
 > espacio único de pane_id (--prefer-mux + sock, T-0260), WEZBRIDGE_PREFER_MUX=0, gui_only,
-> dead-man switch (VM omni-deadman.sh + DaemonSentinel touch, T-0529), deadman-touch.json.
+> dead-man switch (VM omni-deadman.sh + DaemonSentinel touch, T-0529), deadman-touch.json,
+> mcp-reconnect-broadcast.cjs, skip:self-busy, ORCA_TERMINAL_HANDLE.
 
 ## Espacio único de pane_id: el mux (T-0260, 2026-09-02)
 
@@ -105,6 +108,48 @@ sin preguntar. `spawn_session` + `wsl` como primer comando, o `agent: "shell"`.
 No diagnostiques a mano — corré `npm run restore-session` (o decile al operador: `LEADER+R` /
 CTRL+B,R picker). Los snapshots capturan cada 60s con retención de 24h mientras el daemon corre.
 Pedido explícito del operador: todo restore pasa por la skill `wezterm-crash-recover`.
+
+## MCP desconectado (varios panes a la vez) — T-0569
+Reconectar un MCP (p.ej. MemoryMaster) a mano funciona: `/mcp reconnect <server>` tipeado en
+el composer de cada pane contesta `Successfully reconnected to <server>`. El problema es
+escalar eso a toda la flota sin tipear en un pane ocupado ni mandar el `/mcp` por un shell
+que lo destroza antes de que llegue al CLI.
+
+**Nunca uses Git Bash para el envío.** MSYS reescribe un `/mcp` inicial como un path de
+filesystem antes de que el comando llegue al proceso — el `/` inicial nunca sobrevive.
+`scripts/mcp-reconnect-broadcast.cjs` evita el problema de raíz: llama `execFile(orcaBin,
+argv)` directo (mismo `runOrca` inyectable que `src/orca-census.cjs`), sin shell en el medio.
+Si igual envolvés el CLI de orca en un one-liner de Bash, exportá `MSYS_NO_PATHCONV=1` primero.
+
+```
+node scripts/mcp-reconnect-broadcast.cjs <server> [--dry-run] [--include-busy-self]
+```
+
+- `--dry-run` — lista targets y skips, no manda nada.
+- `--include-busy-self` — deja que el pane del propio caller entre al gate normal de
+  idle+composer-vacío en vez del skip automático (ver regla de seguridad abajo).
+- Exit 0 si todos los panes targeteados clasificaron `ok`; exit 1 si alguno dio `fail` o
+  `unknown`, o si el censo de Orca falló.
+
+**Regla de seguridad — nunca se tipea en un pane que no está listo para recibirlo:**
+1. Solo panes Orca con `provider=claude` (censo `src/orca-census.cjs`, `orca terminal list`).
+2. Solo panes **idle** — mismos patrones `STATUS_PATTERNS` de `src/pane-discovery.cjs`
+   (`working`/`permission`/`continuation` primero, `idle` como fallback). Un pane mid-turn
+   (`esc to interrupt`, spinner, verbo+`…`) nunca recibe el envío.
+3. Solo panes con el **composer vacío** — reusa `composerContent` de
+   `scripts/composer-state.cjs`. Un pane `idle` con texto sin enviar en el composer igual se
+   skipea (`composer-not-empty`): un Enter ahí mandaría el texto ajeno pegado al comando.
+4. **El pane del propio caller** (`process.env.ORCA_TERMINAL_HANDLE`, seteado por Orca en
+   todo terminal que spawnea) se skipea por default como `skip:self-busy` — está corriendo el
+   script, tipearle es peor que no reconectarlo. El comando exacto para reconectarlo a mano
+   (PowerShell u orca CLI directo) se imprime en la columna `excerpt` de esa fila.
+
+Cada pane no-targeteado sale como `skip:<razón>` en la tabla — nunca se tipea "por las
+dudas". El resultado de cada envío real se clasifica leyendo la pantalla completa (no solo
+las últimas líneas: un pane ocupado con un agente en background sigue imprimiendo después
+del resultado del reconnect y lo empuja fuera de una ventana angosta — medido en vivo,
+T-0569) hasta 10 s: `ok` si aparece "Successfully reconnected", `fail` si aparece texto de
+error, `unknown` si se agota el tiempo sin ninguno de los dos.
 
 ## Mux-wedge — LEER ENTERO ANTES DE ACTUAR
 Observado UNA vez, 2026-07-02, en wezterm 20240203. El build instalado es muy posterior
