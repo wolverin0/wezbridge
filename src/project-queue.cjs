@@ -417,14 +417,23 @@ function createConsumer(opts) {
   async function findTarget(panes, destination) {
     const { resolve, projectFromCwd } = require('./pane-identity.cjs');
     const canonical = projectFromCwd(destination);
-    const mapped = (panes || [])
-      .filter((p) => p.agent) // agent panes only — the daemon's shell shares cwds
-      .map((p) => ({
-        pane_id: p.paneId ?? p.pane_id,
-        cwd: p.project || p.cwd || null,
-        tab_title: p.tabTitle || p.title || null,
-      }));
-    const hit = resolve(canonical, mapped);
+    // T-0596 item 4: same legacy gate as a2a_send's resolution block —
+    // WezTerm pane matching is a DEPRECATED path, skipped by default (fleet
+    // lives in Orca). Orca resolution (below) now runs FIRST and is the only
+    // default transport. Set WEZBRIDGE_WEZTERM_TRANSPORT=1 to restore the
+    // legacy WezTerm-pane-first behavior.
+    const wezTransportEnabled = process.env.WEZBRIDGE_WEZTERM_TRANSPORT === '1';
+    let hit = { paneId: null, matchedBy: null, ambiguous: [], warning: null };
+    if (wezTransportEnabled) {
+      const mapped = (panes || [])
+        .filter((p) => p.agent) // agent panes only — the daemon's shell shares cwds
+        .map((p) => ({
+          pane_id: p.paneId ?? p.pane_id,
+          cwd: p.project || p.cwd || null,
+          tab_title: p.tabTitle || p.title || null,
+        }));
+      hit = resolve(canonical, mapped);
+    }
     // A restored tab can retain another project's title. Only a matching cwd
     // proves that this live pane owns the queued destination.
     if (hit.matchedBy !== 'cwd') {
