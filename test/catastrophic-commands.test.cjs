@@ -321,6 +321,61 @@ function allow2(cmd, context, msg) {
   assert.equal(r.rule, null);
 }
 
+// === T-0602 fixup: glob-after-join, find -delete/-exec, unquoted cmd/powershell wrappers =======
+// Verifier found 3 bypass classes around the temp-root guard. See
+// _intel/briefs/2026-09-24-T0602-lane-guard.patch and this task's brief (T-0602 FIX-UP).
+
+test('bypass (a): glob target resolved AFTER cd/join into a protected root still denies', () => {
+  deny('cd /t/claudecodetemp && rm -rf *');
+  deny('cd /t && rm -rf claudecodetemp/*');
+  deny('pushd /t/claudecodetemp && rm -rf *');
+  deny('cd T:\\claudecodetemp; Remove-Item -Recurse *');
+});
+
+test('bypass (b): find -delete / -exec rm on a protected root denies; own cwd allows', () => {
+  deny('find /t/claudecodetemp -delete');
+  deny('find /t/claudecodetemp -mindepth 1 -exec rm -rf {} +');
+  deny('find /t/claudecodetemp -mindepth 1 -exec rm -r {} \\;');
+  allow('find . -name "*.tmp" -delete');
+});
+
+test('bypass (c): unquoted cmd /c and powershell -c wrappers are still unwrapped', () => {
+  deny('cmd /c rd /s /q T:\\claudecodetemp');
+  deny('cmd.exe /c rd /s /q T:\\claudecodetemp');
+  deny('powershell -c Remove-Item -Recurse -Force T:\\claudecodetemp');
+  deny('pwsh -Command Remove-Item -Recurse -Force T:\\claudecodetemp');
+});
+
+test('T-0602 fixup: full verifier table — required DENY set', () => {
+  deny('rm -rf /t/claudecodetemp/');
+  deny('rm -r -f T:/claudecodetemp');
+  deny('rm --recursive --force /t/claudecodetemp');
+  deny('rm -rf "/t/claudecodetemp"');
+  deny('rm -rf /t/claudecodetemp/*');
+  deny('rm -rf /t/claudecodetemp/claude/*');
+  deny('cd /t/claudecodetemp && rm -rf *');
+  deny('cd T:/ && rm -rf claudecodetemp');
+  deny('find /t/claudecodetemp -delete');
+  deny('find /t/claudecodetemp -mindepth 1 -exec rm -rf {} +');
+  deny('bash -c "rm -rf /t/claudecodetemp"');
+  deny('powershell -c "Remove-Item -Recurse -Force T:\\claudecodetemp"');
+  deny('Remove-Item T:\\claudecodetemp -Recurse');
+  deny('ri -r T:\\claudecodetemp');
+  deny('cmd /c rd /s /q T:\\claudecodetemp');
+  deny('git stash');
+  deny('git -c x=y stash');
+  deny('git stash save wip');
+});
+
+test('T-0602 fixup: full verifier table — required ALLOW set', () => {
+  allow('git stash list');
+  allow('git stash show -p');
+  allow('rm -rf node_modules');
+  allow('git worktree remove --force .claude/worktrees/agent-x');
+  allow('find . -name \'*.tmp\' -delete');
+  allow('rm -rf ./build');
+});
+
 // --- mutation guard: disabling the /IM rule must break the card's primary case -----------------
 
 test('mutation guard: without the /IM check, the card primary deny case would wrongly allow', () => {
