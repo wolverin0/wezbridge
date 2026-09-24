@@ -233,6 +233,13 @@ const server = http.createServer(async (req, res) => {
   }
 
   // API routes
+  // T-0582: bare /health (no /api prefix) used to fall through to serveStatic
+  // and 503 in any checkout without a built dashboard/dist. Redirect it to the
+  // real handler instead of duplicating the health logic.
+  if (pathname === '/health' && method === 'GET') {
+    res.writeHead(301, { Location: '/api/health', ...corsHeaders(res) });
+    return res.end();
+  }
   // /api/health reports what THIS daemon actually armed. bridge_health used to
   // infer arming from the MCP server's own env — a different process — so it
   // could report a watcher as armed while nothing ran (fixed 2026-08-06).
