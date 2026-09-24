@@ -285,7 +285,7 @@ const TOOLS = [
   },
   {
     name: 'send_prompt',
-    description: 'Send a text prompt to a Claude/Codex session running in a WezTerm pane. The text is typed, Enter is pressed, and submission is VERIFIED by reading the pane back (retrying Enter if the text is still sitting in the input box). Returns {submitted: submitted|stuck|unknown} — no follow-up send_key("enter") needed unless it reports stuck. IMPORTANT: Only send to sessions that are in "idle" status, not "working".',
+    description: 'DEPRECATED for fleet/peer messaging (T-0596): the fleet lives in Orca terminals now, WezTerm has 0 panes, and send_prompt applies NO dispatch gate, NO result-shape check, NO lease, NO durable queue and writes NO audit record. Use a2a_send instead. Kept for direct WezTerm-pane control (still one of the WezTerm-only tools: discover_sessions, send_prompt, read_output, send_key, get_status, list_projects, kill_session, set_tab_title). Send a text prompt to a Claude/Codex session running in a WezTerm pane. The text is typed, Enter is pressed, and submission is VERIFIED by reading the pane back (retrying Enter if the text is still sitting in the input box). Returns {submitted: submitted|stuck|unknown} — no follow-up send_key("enter") needed unless it reports stuck. IMPORTANT: Only send to sessions that are in "idle" status, not "working".',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1664,21 +1664,34 @@ function handleToolCall(name, args) {
       let resolutionWarning = null;
       if (toProject) {
         const paneIdentity = require('./pane-identity.cjs');
-        let mapped = [];
-        try {
-          mapped = discovery.discoverRoutingPanes()
-            .filter((p) => p.agent) // agent panes only — the daemon shell shares cwds
-            .map((p) => ({ pane_id: p.paneId, cwd: p.project, tab_title: p.tabTitle || p.title || null }));
-        } catch { /* discovery down -> unresolved, queue-only below */ }
-        const hit = paneIdentity.resolve(toProject, mapped);
+        // T-0596 item 4 (operator decision 24/09): the fleet lives in Orca —
+        // WezTerm has 0 panes. Orca resolution now runs FIRST and is the only
+        // default transport for to_project sends; the WezTerm pane resolution
+        // below is a DEPRECATED legacy path, skipped unless
+        // WEZBRIDGE_WEZTERM_TRANSPORT=1 is explicitly set (kept for the day a
+        // WezTerm pane genuinely comes back, and so the existing WezTerm test
+        // coverage stays exercisable instead of deleted outright — smaller
+        // diff than ripping the branch out, same effective behavior since the
+        // default is off).
+        const wezTransportEnabled = process.env.WEZBRIDGE_WEZTERM_TRANSPORT === '1';
+        let hit = { paneId: null, ambiguous: [], warning: null };
+        if (wezTransportEnabled) {
+          let mapped = [];
+          try {
+            mapped = discovery.discoverRoutingPanes()
+              .filter((p) => p.agent) // agent panes only — the daemon shell shares cwds
+              .map((p) => ({ pane_id: p.paneId, cwd: p.project, tab_title: p.tabTitle || p.title || null }));
+          } catch { /* discovery down -> unresolved, queue-only below */ }
+          hit = paneIdentity.resolve(toProject, mapped);
+        }
         resolutionWarning = hit.warning;
         if (hit.paneId === null || hit.ambiguous.length) {
           // T-0596: WezTerm has no live pane (or an ambiguous one) for this
-          // project. Before queue-only, try an ORCA terminal — the fleet moved
-          // there 2026-09-24 and WezTerm alone is now blind to most of it.
-          // WezTerm keeps unconditional precedence above; this only runs when
-          // it found nothing usable. Never widens beyond this ONE call site
-          // (project-queue.cjs's own queue-drain resolver is untouched).
+          // project (or WEZBRIDGE_WEZTERM_TRANSPORT is off, so it was never
+          // even tried). Before queue-only, try an ORCA terminal — the fleet
+          // moved there 2026-09-24 and WezTerm alone is now blind to most of
+          // it. Never widens beyond this ONE call site (project-queue.cjs's
+          // own queue-drain resolver is untouched).
           // T-0596 paso 2: shared resolver (src/orca-target.cjs) — the SAME
           // census+roster+resolveOrca logic queue-drain now also uses, so the
           // two call sites cannot drift.

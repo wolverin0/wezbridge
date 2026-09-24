@@ -20,6 +20,8 @@ const path = require('node:path');
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'queue-composer-guard-'));
 process.env.WEZBRIDGE_INTEL_DIR = TMP;
+// T-0596 item 4: legacy WezTerm-pane queue delivery, gated off by default — opt in for this file.
+process.env.WEZBRIDGE_WEZTERM_TRANSPORT = '1';
 const pq = require('../src/project-queue.cjs');
 
 let n = 0;

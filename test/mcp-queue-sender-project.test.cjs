@@ -15,7 +15,11 @@ function invoke(t, mode) {
   t.after(() => { assert.equal(path.dirname(temporary), os.tmpdir()); fs.rmSync(temporary, { recursive: true, force: true }); });
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ['--require', path.join(__dirname, 'helpers/queue-sender-preload.cjs'), path.join(ROOT, 'src/mcp-server.cjs')], {
-      cwd, env: { ...process.env, WEZBRIDGE_INTEL_DIR: intel, QUEUE_SENDER_TEST_MODE: mode },
+      // T-0596 item 4: this test's preload stubs discoverRoutingPanes with a
+      // live WezTerm agent pane for `consumer` — legacy WezTerm-pane delivery,
+      // now gated off by default. Opt in so the existing coverage keeps
+      // proving the flagged-on legacy path still works.
+      cwd, env: { ...process.env, WEZBRIDGE_INTEL_DIR: intel, QUEUE_SENDER_TEST_MODE: mode, WEZBRIDGE_WEZTERM_TRANSPORT: '1' },
       stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
     });
     let output = '';

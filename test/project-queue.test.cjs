@@ -14,6 +14,12 @@ const path = require('node:path');
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'project-queue-'));
 process.env.WEZBRIDGE_INTEL_DIR = TMP;
+// T-0596 item 4: this file exercises the legacy WezTerm-pane delivery path
+// (IDLE_PANE, sendPromptDeferredEnter doubles) end to end, which is now
+// gated off by default (see src/project-queue.cjs's findTarget). Opt back
+// in for this whole file so the existing WezTerm coverage keeps proving the
+// legacy path still works when an operator flips the flag on.
+process.env.WEZBRIDGE_WEZTERM_TRANSPORT = '1';
 const pq = require('../src/project-queue.cjs');
 const intel = require('../src/a2a-intel.cjs');
 

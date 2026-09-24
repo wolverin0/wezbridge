@@ -4,6 +4,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+// T-0596 item 4: this file exercises legacy WezTerm-pane queue delivery
+// (createConsumer with discoverPanes agent panes), gated off by default —
+// opt back in for this whole file so the existing coverage still exercises it.
+process.env.WEZBRIDGE_WEZTERM_TRANSPORT = '1';
 const { createRelay } = require('../src/decision-relay.cjs');
 const { createConsumer, enqueue } = require('../src/project-queue.cjs');
 const AT = '2026-09-07T10:00:00.000Z';
