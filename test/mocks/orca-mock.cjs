@@ -10,6 +10,12 @@
 //   ORCA_MOCK_TERMINALS  — path to a JSON file: array of {handle, title, worktreePath, connected}
 //   ORCA_MOCK_STATE      — dir to persist per-handle "screen" state across calls
 //   ORCA_MOCK_FAIL_HANDLE — optional: `terminal send` to this handle returns ok:false
+//   ORCA_MOCK_SWALLOW_HANDLE — T-0600: `terminal send` to this handle reports
+//     ok:true but does NOT append the text to the mock's persisted "screen" —
+//     simulates the real orca.exe accepting a send that never actually landed
+//     (crash mid-render, the destination pane died, etc), so the read-back
+//     never shows it. Used to reproduce the T-0598 live incident (submitted
+//     ok, delivered unknown) without the real binary.
 
 const fs = require('fs');
 const path = require('path');
@@ -49,7 +55,8 @@ if (cmd === 'terminal' && sub === 'list') {
     write(JSON.stringify({ ok: false, error: { message: 'mock: terminal not writable' } }));
   } else {
     const s = loadState(handle);
-    if (!retryId || !s.retryIds.includes(retryId)) {
+    const swallow = process.env.ORCA_MOCK_SWALLOW_HANDLE && handle === process.env.ORCA_MOCK_SWALLOW_HANDLE;
+    if (!swallow && (!retryId || !s.retryIds.includes(retryId))) {
       s.tail.push(text);
       if (retryId) s.retryIds.push(retryId);
     }

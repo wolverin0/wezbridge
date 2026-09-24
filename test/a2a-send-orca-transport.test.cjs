@@ -113,6 +113,39 @@ test('AC1: a2a_send to_project delivers via Orca when no WezTerm pane is live, a
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test('T-0600 U2: immediate (non-queued) Orca path — send accepted but screen never shows the envelope -> ok:false, delivered:false, still durably queued for retry', async () => {
+  const { root, intel, orcaState } = sandbox();
+  try {
+    writeRoster(intel, [{ lane: 'drillrepo', repos: ['drillrepo'], handle: 'term_drill1', state: 'live' }]);
+    const terminalsFile = writeTerminals(root, [
+      { handle: 'term_drill1', title: 'orchestrator', worktreePath: 'G:/Py Apps/drillrepo', connected: true, writable: true },
+    ]);
+    const res = await callTool('a2a_send', {
+      to_project: 'drillrepo', from_pane: 5, type: 'progress', corr: 'T-0600:u2:20260924', body: 'never lands on screen (T-0600 U2)',
+    }, envFor(intel, orcaState, terminalsFile, { ORCA_MOCK_SWALLOW_HANDLE: 'term_drill1' }));
+    assert.equal(res.result.isError, false, resultText(res));
+    const payload = JSON.parse(resultText(res));
+    // Before the T-0600 fix this asserted true — a submitted:'unknown' Orca
+    // read-back was treated as verified because it merely wasn't 'stuck'.
+    assert.equal(payload.ok, false, JSON.stringify(payload));
+    assert.equal(payload.transport, 'orca');
+    assert.equal(payload.submitted, 'unknown');
+    assert.equal(payload.delivered, 'unknown');
+    assert.equal(payload.queued, true, 'must still be durably queued for scripts/queue-drain.cjs to retry');
+
+    const queueLine = fs.readFileSync(path.join(intel, 'queues', 'drillrepo.jsonl'), 'utf8')
+      .split('\n').filter(Boolean).map((l) => JSON.parse(l)).find((q) => q.corr === 'T-0600:u2:20260924');
+    assert.ok(queueLine, 'queue line must exist');
+    assert.equal(queueLine.ok, false, 'an unverified orca delivery must NOT be recorded as ok:true in the durable queue');
+
+    const consumerDeliveredFile = path.join(intel, 'queues', 'state', 'drillrepo', 'delivered.json');
+    if (fs.existsSync(consumerDeliveredFile)) {
+      const delivered = JSON.parse(fs.readFileSync(consumerDeliveredFile, 'utf8'));
+      assert.equal(delivered.includes(queueLine.id), false, 'must not be tombstoned as already-delivered — the drain still needs to retry it');
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('AC2 (regression): WezTerm destinations are unaffected — a live WezTerm pane still wins over any Orca terminal', async () => {
   // Reuses the exact mechanism a2a-queue-records-result.test.cjs relies on: the
   // wezterm-mock's `list` has no agent panes, so this test cannot assert a
