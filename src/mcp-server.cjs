@@ -1679,33 +1679,35 @@ function handleToolCall(name, args) {
           // WezTerm keeps unconditional precedence above; this only runs when
           // it found nothing usable. Never widens beyond this ONE call site
           // (project-queue.cjs's own queue-drain resolver is untouched).
+          // T-0596 paso 2: shared resolver (src/orca-target.cjs) — the SAME
+          // census+roster+resolveOrca logic queue-drain now also uses, so the
+          // two call sites cannot drift.
           let orcaHit = { handle: null, ambiguous: [], warning: null };
           if (!hit.ambiguous.length) {
-            try {
-              const orcaCensus = require('./orca-census.cjs');
-              const laneRoster = require('./lane-roster.cjs');
-              const census = await orcaCensus.runCensus();
-              if (census.ok) {
-                const roster = laneRoster.loadRoster();
-                // Cross-match the roster's (possibly stale/renumbered) handle
-                // against the LIVE census the same way lane-roster.cjs already
-                // does for bridge_health, so a lane name resolves even when
-                // orchestrators.json's handle is a prefix of the current one.
-                const merged = laneRoster.mergeLanes(roster, {
-                  list: census.terminals.map((t) => ({ handle: t.handle, title: t.title })),
-                });
-                const laneByHandle = new Map();
-                for (const m of merged) {
-                  if (!m.live || !m.handle) continue;
-                  const full = census.terminals.find((t) => t.handle === m.handle || t.handle.startsWith(m.handle));
-                  if (full) laneByHandle.set(full.handle, m.lane);
-                }
-                const orcaTerminals = census.terminals
-                  .filter((t) => t.connected)
-                  .map((t) => ({ handle: t.handle, title: t.title, worktreePath: t.worktreePath, lane: laneByHandle.get(t.handle) || null }));
-                orcaHit = paneIdentity.resolveOrca(toProject, orcaTerminals);
-              }
-            } catch { /* orca census down -> queue-only below, same fail-soft stance as wezterm discovery */ }
+            orcaHit = await require('./orca-target.cjs').resolveOrcaTarget(toProject);
+          }
+          // T-0596 paso 2 (self-send guard): a2a_send must never resolve its
+          // OWN Orca terminal as the destination — Orca stamps
+          // ORCA_TERMINAL_HANDLE into every terminal's env at spawn (see
+          // docs/operations.md's mcp-reconnect-broadcast self-skip rule),
+          // which is the only durable self-identity Orca offers (there is no
+          // Orca equivalent of WEZTERM_PANE's census-corrected fallback — a
+          // terminal cannot read its OWN handle from `orca terminal list`,
+          // only compare against the env id it was spawned with). A real
+          // deadlock happened on PR #54's verifier pass: a self-targeted
+          // to_project resolved to the caller's own terminal and the retry
+          // loop hammered it. Refuse before transport, no queue retry storm —
+          // queueing a message that can only ever self-deliver would just
+          // move the deadlock into the drain script.
+          if (orcaHit.handle && !orcaHit.ambiguous.length
+            && process.env.ORCA_TERMINAL_HANDLE && orcaHit.handle === process.env.ORCA_TERMINAL_HANDLE) {
+            return {
+              content: [{
+                type: 'text',
+                text: `self-send: BLOCKED a2a_send — to_project="${toProject}" resolved to this same terminal (${orcaHit.handle}, via ORCA_TERMINAL_HANDLE). Sending to yourself cannot be delivered and is refused before transport, not queued for retry.`,
+              }],
+              isError: true,
+            };
           }
           if (orcaHit.handle && !orcaHit.ambiguous.length) {
             transport = 'orca';
