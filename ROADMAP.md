@@ -159,7 +159,7 @@ The **Scholar Engine** transforms 3.15M papers into an ultra-fast, queryable sem
 - [x] Implement `typesafe-mcp` and local Jev client adapter in Python (`scholar/jev/client.py`).
 - [x] Integrate Ruben Hassid's 154ms System One harness for fast intent routing (`scripts/userprompt-routing-jev.cjs`).
 - [x] Wire Jev into incoming user requests to classify task complexity, required model tier (Fast vs Deep), and domain.
-- [x] Implement weekly quota monitor script checking Claude & Codex usage to auto-balance dispatching (`scripts/quota-dispatcher.cjs`, retired T-0582 — no live trigger found).
+- [x] Implement weekly quota monitor script checking Claude & Codex usage to auto-balance dispatching (`scripts/quota-dispatcher.cjs`).
 
 ### Phase 3: Scholar Engine MVP (Scientific RAG & Predicates)
 - [x] Scaffold `scholar-engine` repo / module (`scholar/core`, `scholar/sources`, `scholar/jev`).
