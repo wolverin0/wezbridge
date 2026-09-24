@@ -111,6 +111,7 @@ const INPUT_BYTE_LIMITS = {
   focus: 256,
   name: 256,
   args: 4096,
+  query: 2 * 1024,
 };
 const MIN_SWITCH_WORKSPACE_WEZTERM_VERSION = 20230408;
 
@@ -553,6 +554,22 @@ const TOOLS = [
         allow_long: { type: 'boolean', description: `Send a body over ${A2A_BODY_SOFT_LIMIT} chars anyway. Long envelopes are TRUNCATED in transit by the recipient's composer; the fix is almost always to write the content to a repo file and send a short pointer. Only set this when you have a specific reason the payload must go inline.` },
       },
       required: ['body'],
+    },
+  },
+  {
+    name: 'orca_search',
+    description: 'Search the full text of indexed Orca agent sessions cross-project (user/assistant turns, commands, and tool output). Requires Orca v1.4.209+. Returns a clear, actionable error if Session Search indexing is disabled in Orca Desktop Settings.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search text (required).' },
+        scope: { type: 'string', enum: ['conversation', 'all'], description: '"conversation" searches user/assistant turns only; "all" (default) also searches commands and tool output.' },
+        agent: { type: 'string', description: 'Restrict to one agent identity, e.g. "claude", "codex", "antigravity".' },
+        sort: { type: 'string', enum: ['relevance', 'newest'], description: 'Result order. Default: relevance.' },
+        limit: { type: 'number', description: 'Max results (default 20, max 100).' },
+        fresh: { type: 'boolean', description: 'Wait up to 5s for the Orca indexer to reconcile before searching.' },
+      },
+      required: ['query'],
     },
   },
 ].filter(tool => tool.name !== 'switch_workspace' || SWITCH_WORKSPACE_SUPPORT.supported);
@@ -1926,6 +1943,32 @@ function handleToolCall(name, args) {
         }
         return { content: [{ type: 'text', text: `Error sending A2A envelope to pane ${toPane}: ${err.message}.${rescueNote}` }], isError: true };
       }
+    })();
+
+    case 'orca_search': return (async () => {
+      const query = args.query;
+      if (!query || !String(query).trim()) return mcpError('Error: query is required');
+      const queryLimitError = validateByteLength('query', query, INPUT_BYTE_LIMITS.query);
+      if (queryLimitError) return queryLimitError;
+      const scope = args.scope === undefined || args.scope === null ? undefined : String(args.scope);
+      if (scope !== undefined && !['conversation', 'all'].includes(scope)) {
+        return mcpError(`Error: invalid scope "${scope}" (conversation|all)`);
+      }
+      const sort = args.sort === undefined || args.sort === null ? undefined : String(args.sort);
+      if (sort !== undefined && !['relevance', 'newest'].includes(sort)) {
+        return mcpError(`Error: invalid sort "${sort}" (relevance|newest)`);
+      }
+      let limit = args.limit === undefined || args.limit === null ? 20 : Number(args.limit);
+      if (!Number.isFinite(limit) || limit <= 0) limit = 20;
+      limit = Math.min(Math.floor(limit), 100);
+      const agent = args.agent === undefined || args.agent === null ? undefined : String(args.agent);
+      const fresh = args.fresh === true;
+      const orcaSearch = require('./orca-search.cjs');
+      const r = await orcaSearch.searchSessions({ query, scope, agent, sort, limit, fresh });
+      if (!r.ok) {
+        return { content: [{ type: 'text', text: r.reason || 'Error: orca search failed' }], isError: true };
+      }
+      return { content: [{ type: 'text', text: JSON.stringify(r.result, null, 2) }] };
     })();
 
     default:
