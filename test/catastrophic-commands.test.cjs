@@ -191,6 +191,191 @@ test('classifyCatastrophic is pure and tolerant of odd input', () => {
   assert.deepEqual(a, b);
 });
 
+// === T-0602: recursive-delete of shared temp root + git stash ban ==============================
+// Incident 24/09: a verifier ran `rm -rf /t/claudecodetemp` (root of ALL sessions' scratchpads,
+// task outputs and ad-hoc worktrees); 5 agents used `git stash` (stack shared across worktrees/
+// sessions) despite prose bans in their briefs. See _intel/briefs/2026-09-24-T0602-guard.md.
+
+// --- git stash: deny every mutating form, allow list/show --------------------------------------
+
+test('git stash: mutating forms deny (push/save/pop/apply/drop/clear/-u), incl. git -C', () => {
+  deny('git stash');
+  deny('git stash push -u -m x');
+  deny('git stash pop');
+  deny('git stash save "wip"');
+  deny('git stash apply');
+  deny('git stash apply stash@{0}');
+  deny('git stash drop');
+  deny('git stash clear');
+  deny('git stash -u');
+  deny('git -C /some/worktree stash');
+  deny('git -C /some/worktree stash pop');
+});
+
+test('git stash: list/show are read-only and allowed', () => {
+  allow('git stash list');
+  allow('git stash show');
+  allow('git stash show -p stash@{0}');
+});
+
+test('git stash: chained forms deny', () => {
+  deny('git status && git stash');
+  deny('cd /some/dir; git stash pop');
+});
+
+test('git worktree remove is unrelated to stash and stays allowed', () => {
+  allow('git worktree remove --force /some/path');
+  allow('git worktree remove wt-name');
+});
+
+// --- recursive delete of the shared scratch root ------------------------------------------------
+
+test('recursive delete of the shared temp root (all spellings) denies', () => {
+  deny('rm -rf /t/claudecodetemp');
+  deny('rm -rf T:/claudecodetemp');
+  deny('rm -rf T:\\claudecodetemp');
+  deny('rm -rf /mnt/t/claudecodetemp');
+  deny('rm -rf /t/claudecodetemp/');
+  deny('rm -rf /t/claudecodetemp/*');
+});
+
+test('recursive delete of the shared claude/ session dir and its direct children denies', () => {
+  deny('rm -rf T:/claudecodetemp/claude');
+  deny('rm -rf T:/claudecodetemp/claude/some-project-slug');
+});
+
+test('Remove-Item -Recurse on the temp root denies (PowerShell, backslash path)', () => {
+  deny('Remove-Item -Recurse T:\\claudecodetemp');
+  deny('Remove-Item -Recurse -Force T:\\claudecodetemp\\claude');
+  deny('ri -Recurse T:\\claudecodetemp');
+  deny('del -Recurse T:\\claudecodetemp');
+});
+
+test('rmdir /s and rd /s on the temp root deny (cmd.exe)', () => {
+  deny('rmdir /s /q T:\\claudecodetemp');
+  deny('rd /s T:\\claudecodetemp');
+});
+
+test('bare home and filesystem/drive roots deny', () => {
+  deny('rm -rf ~');
+  deny('rm -rf /');
+  deny('rm -rf C:/');
+  deny('rm -rf C:\\');
+});
+
+test('chained: cd into the temp root then recursive-delete a relative path denies', () => {
+  deny('cd /t && rm -rf claudecodetemp');
+  deny('cd T:/claudecodetemp && rm -rf claude');
+});
+
+test('own scratchpad subtree (session-scoped) is allowed even under claudecodetemp/claude', () => {
+  const context = { sessionId: 'd4bc9114-9903-4308-bff6-2d1586c6ab75' };
+  allow2('rm -rf T:/claudecodetemp/claude/wezbridge-project/d4bc9114-9903-4308-bff6-2d1586c6ab75/scratchpad/x', context);
+  allow2('Remove-Item -Recurse T:\\claudecodetemp\\claude\\wezbridge-project\\d4bc9114-9903-4308-bff6-2d1586c6ab75\\scratchpad\\x', context);
+});
+
+test('another session\'s scratchpad subtree (different session id) still denies', () => {
+  const context = { sessionId: 'd4bc9114-9903-4308-bff6-2d1586c6ab75' };
+  const r = classifyCatastrophic('rm -rf T:/claudecodetemp/claude/wezbridge-project/OTHER-SESSION-ID/scratchpad/x', context);
+  assert.equal(r.deny, true, 'deleting another session\'s scratchpad must still deny');
+});
+
+test('own worktree/cwd is allowed, incl. relative targets like node_modules', () => {
+  const context = { cwd: 'G:/_OneDrive/OneDrive/Desktop/Py Apps/wezbridge/.claude/worktrees/agent-x' };
+  allow2('rm -rf node_modules', context);
+  allow2('rm -rf G:/_OneDrive/OneDrive/Desktop/Py Apps/wezbridge/.claude/worktrees/agent-x/build', context);
+  allow2('Remove-Item -Recurse node_modules', context);
+});
+
+test('when context is unknown, explicit dangerous roots still deny but generic rm -r is not blocked', () => {
+  deny('rm -rf /t/claudecodetemp');
+  allow('rm -rf ./dist');
+  allow('rm -rf node_modules');
+  allow('rm -rf build');
+});
+
+test('without a known sessionId, a deep claude/<slug>/<x>/... path is NOT auto-denied (cannot tell it apart from own scratchpad)', () => {
+  // Regression guard: only deny "someone else's session" once we KNOW our own session id and it
+  // didn't match. Without it, this must fall back to "don't block generic rm -r".
+  allow('rm -rf T:/claudecodetemp/claude/some-project/some-session-id/scratchpad/x');
+  allow2('rm -rf T:/claudecodetemp/claude/some-project/some-session-id/scratchpad/x', { cwd: '/wherever' });
+});
+
+test('AC3: common worker-flow strings are not newly blocked', () => {
+  allow('git worktree remove --force');
+  allow('rm -rf "$TMPDIR/x"');
+  allow('rm -rf ../sibling-dir');
+});
+
+// --- purity/tolerance with the new optional context arg ----------------------------------------
+
+test('classifyCatastrophic(command, context) tolerates missing/odd context', () => {
+  assert.deepEqual(classifyCatastrophic('echo hi', undefined), { deny: false, rule: null, reason: null });
+  assert.deepEqual(classifyCatastrophic('echo hi', {}), { deny: false, rule: null, reason: null });
+  assert.deepEqual(classifyCatastrophic('echo hi', null), { deny: false, rule: null, reason: null });
+});
+
+function allow2(cmd, context, msg) {
+  const r = classifyCatastrophic(cmd, context);
+  assert.equal(r.deny, false, `${msg || cmd} -> expected allow, got ${JSON.stringify(r)}`);
+  assert.equal(r.rule, null);
+}
+
+// === T-0602 fixup: glob-after-join, find -delete/-exec, unquoted cmd/powershell wrappers =======
+// Verifier found 3 bypass classes around the temp-root guard. See
+// _intel/briefs/2026-09-24-T0602-lane-guard.patch and this task's brief (T-0602 FIX-UP).
+
+test('bypass (a): glob target resolved AFTER cd/join into a protected root still denies', () => {
+  deny('cd /t/claudecodetemp && rm -rf *');
+  deny('cd /t && rm -rf claudecodetemp/*');
+  deny('pushd /t/claudecodetemp && rm -rf *');
+  deny('cd T:\\claudecodetemp; Remove-Item -Recurse *');
+});
+
+test('bypass (b): find -delete / -exec rm on a protected root denies; own cwd allows', () => {
+  deny('find /t/claudecodetemp -delete');
+  deny('find /t/claudecodetemp -mindepth 1 -exec rm -rf {} +');
+  deny('find /t/claudecodetemp -mindepth 1 -exec rm -r {} \\;');
+  allow('find . -name "*.tmp" -delete');
+});
+
+test('bypass (c): unquoted cmd /c and powershell -c wrappers are still unwrapped', () => {
+  deny('cmd /c rd /s /q T:\\claudecodetemp');
+  deny('cmd.exe /c rd /s /q T:\\claudecodetemp');
+  deny('powershell -c Remove-Item -Recurse -Force T:\\claudecodetemp');
+  deny('pwsh -Command Remove-Item -Recurse -Force T:\\claudecodetemp');
+});
+
+test('T-0602 fixup: full verifier table — required DENY set', () => {
+  deny('rm -rf /t/claudecodetemp/');
+  deny('rm -r -f T:/claudecodetemp');
+  deny('rm --recursive --force /t/claudecodetemp');
+  deny('rm -rf "/t/claudecodetemp"');
+  deny('rm -rf /t/claudecodetemp/*');
+  deny('rm -rf /t/claudecodetemp/claude/*');
+  deny('cd /t/claudecodetemp && rm -rf *');
+  deny('cd T:/ && rm -rf claudecodetemp');
+  deny('find /t/claudecodetemp -delete');
+  deny('find /t/claudecodetemp -mindepth 1 -exec rm -rf {} +');
+  deny('bash -c "rm -rf /t/claudecodetemp"');
+  deny('powershell -c "Remove-Item -Recurse -Force T:\\claudecodetemp"');
+  deny('Remove-Item T:\\claudecodetemp -Recurse');
+  deny('ri -r T:\\claudecodetemp');
+  deny('cmd /c rd /s /q T:\\claudecodetemp');
+  deny('git stash');
+  deny('git -c x=y stash');
+  deny('git stash save wip');
+});
+
+test('T-0602 fixup: full verifier table — required ALLOW set', () => {
+  allow('git stash list');
+  allow('git stash show -p');
+  allow('rm -rf node_modules');
+  allow('git worktree remove --force .claude/worktrees/agent-x');
+  allow('find . -name \'*.tmp\' -delete');
+  allow('rm -rf ./build');
+});
+
 // --- mutation guard: disabling the /IM rule must break the card's primary case -----------------
 
 test('mutation guard: without the /IM check, the card primary deny case would wrongly allow', () => {

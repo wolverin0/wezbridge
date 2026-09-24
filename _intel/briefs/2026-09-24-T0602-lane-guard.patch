@@ -1,0 +1,11 @@
+--- a/hooks/lane-guard.cjs	2026-09-24 18:03:02.379130100 -0300
++++ b/hooks/lane-guard.cjs	2026-09-24 18:03:06.033158100 -0300
+@@ -142,7 +142,7 @@
+   if (toolC === 'Bash' || toolC === 'PowerShell') {
+     const cmdC = (input.tool_input || {}).command || '';
+     const classify = loadCatastrophicClassifier();
+-    const cat = classify(cmdC);
++    const cat = classify(cmdC, { cwd: input.cwd, sessionId: input.session_id });
+     if (cat.deny) return deny(toolC, `CATASTROPHIC (${cat.rule}): ${cat.reason}`, { cmd: cmdC.slice(0, 200) });
+   }
+   if (input.agent_id) return null; // subagent: delegated work is allowed
