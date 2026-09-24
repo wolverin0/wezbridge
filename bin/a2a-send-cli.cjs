@@ -16,7 +16,7 @@
  *
  * Usage:
  *   node bin/a2a-send-cli.cjs --to-project <name> --body <text> [--type request]
- *     [--corr <id>] [--from-pane <n>] [--body-file <path>] [--allow-long]
+ *     [--corr <id>] [--from-pane <n>] [--from-project <name>] [--body-file <path>] [--allow-long]
  *   node bin/a2a-send-cli.cjs --to-pane <id> --body <text> ...
  *
  * Exit codes: 0 = delivered or durably queued (ok:true OR queued:true);
@@ -41,6 +41,7 @@ function parseArgs(argv) {
       case '--type': out.type = next(); break;
       case '--corr': out.corr = next(); break;
       case '--from-pane': out.from_pane = parseInt(next(), 10); break;
+      case '--from-project': out.from_project = next(); break;
       case '--body': out.body = next(); break;
       case '--body-file': out.body = fs.readFileSync(next(), 'utf8'); break;
       case '--expected-cwd': out.expected_cwd = next(); break;

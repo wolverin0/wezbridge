@@ -177,10 +177,24 @@ function resolveOrca(wanted, terminals, aliasMap = new Map()) {
  *   'unresolved'    — nothing provable: keeps env as last resort (with the
  *                     warning) or null when there is no env at all.
  */
-function resolveSelfPane({ explicitPane, envPane, cwd, panes, aliasMap = new Map() }) {
+function resolveSelfPane({
+  explicitPane, envPane, cwd, panes, aliasMap = new Map(), explicitProject,
+}) {
   const project = projectFromCwd(cwd);
   if (Number.isInteger(explicitPane)) {
-    return { paneId: explicitPane, source: 'explicit', project, warning: null };
+    // T-0598: a headless caller (scheduled automation, no live pane at all)
+    // that already proved identity via explicitPane can ALSO pin its own
+    // project label instead of inheriting whatever directory the process
+    // happened to be launched from (Task Scheduler's "Start in", a worktree
+    // basename, etc — none of which reliably says who is actually sending).
+    // Only honored alongside explicitPane, same trust boundary as the pane
+    // id itself: both explicit or neither.
+    const resolvedProject = (typeof explicitProject === 'string' && explicitProject.trim())
+      ? explicitProject.trim()
+      : project;
+    return {
+      paneId: explicitPane, source: 'explicit', project: resolvedProject, warning: null,
+    };
   }
   const ids = (panes || []).map((p) => identify(p, aliasMap));
   const env = Number.isInteger(envPane) ? ids.find((i) => i.paneId === envPane) : null;

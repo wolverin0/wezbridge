@@ -550,6 +550,7 @@ const TOOLS = [
         type: { type: 'string', enum: ['request', 'ack', 'progress', 'result', 'error'], description: 'A2A message type. Default: request.' },
         corr: { type: 'string', description: 'Correlation id — keep it stable across a thread. Default: generated (returned in the response; reuse it for follow-ups).' },
         from_pane: { type: 'number', description: 'Sender pane ID. Default: WEZTERM_PANE env (your own pane).' },
+        from_project: { type: 'string', description: 'Sender project label, ONLY honored when from_pane is also given explicitly (headless callers with no live pane, e.g. a scheduled automation). Overrides the cwd-derived project so the audit trail names who actually sent it instead of whatever directory the process happened to launch from.' },
         expected_cwd: { type: 'string', description: 'Optional exact project cwd for to_pane. Refuses if mux/census/visible cwd disagree before any write. No routing or queue fallback.' },
         allow_long: { type: 'boolean', description: `Send a body over ${A2A_BODY_SOFT_LIMIT} chars anyway. Long envelopes are TRUNCATED in transit by the recipient's composer; the fix is almost always to write the content to a repo file and send a short pointer. Only set this when you have a specific reason the payload must go inline.` },
       },
@@ -1560,6 +1561,7 @@ function handleToolCall(name, args) {
         envPane: parseInt(process.env.WEZTERM_PANE || '', 10),
         cwd: process.cwd(),
         panes: selfCensus,
+        explicitProject: typeof args.from_project === 'string' ? args.from_project : undefined,
       });
       const fromPane = selfRes.paneId;
       if (!Number.isInteger(fromPane)) {

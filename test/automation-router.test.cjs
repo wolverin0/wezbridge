@@ -114,6 +114,39 @@ test('actionable finding -> exactly one ready card + one delivered a2a send', ()
   } finally { fs.rmSync(s.root, { recursive: true, force: true }); }
 });
 
+test('delivered send carries a stable sender identity (from_project), not the invocation cwd', () => {
+  // T-0598 fixup: a scheduled automation has no live pane, and process.cwd()
+  // at invocation time is whatever Task Scheduler's "Start in" happens to be
+  // (or, in this very test run, the worktree's basename) — NEITHER is a
+  // reliable sender identity. The router must pin its own project label so
+  // events.jsonl's audit trail names "automation-router", not an incidental
+  // directory name.
+  const s = sandbox();
+  try {
+    writeRoster(s.intel, [{ lane: 'drillrepo', repos: ['drillrepo'], handle: 'term_drill1', state: 'live' }]);
+    const terminalsFile = writeTerminals(s.root, [
+      { handle: 'term_drill1', title: 'orchestrator', worktreePath: 'G:/Py Apps/drillrepo', connected: true, writable: true },
+    ]);
+    writeFinding(s.findingsDir, 'wisp-sweep-sender', actionableFinding());
+
+    const { counts } = runRouter({
+      findingsDir: s.findingsDir, ledgerCli: FAKE_LEDGER, a2aCli: A2A_CLI, stateFile: s.stateFile, fromPane: 9,
+      env: baseEnv({
+        intel: s.intel, orcaState: s.orcaState, terminalsFile, ledgerDb: s.ledgerDb, ledgerCallLog: s.ledgerCallLog,
+      }),
+    });
+    assert.equal(counts.delivered, 1, JSON.stringify(counts));
+
+    const eventsFile = path.join(s.intel, 'events.jsonl');
+    assert.ok(fs.existsSync(eventsFile), 'events.jsonl written by a2a_send');
+    const events = fs.readFileSync(eventsFile, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    const sent = events.find((e) => e.event === 'a2a.sent' && e.corr);
+    assert.ok(sent, `expected an a2a.sent event, got: ${JSON.stringify(events)}`);
+    assert.equal(sent.from_project, 'automation-router',
+      `expected sender identity "automation-router", got ${JSON.stringify(sent.from_project)} (events.jsonl: ${JSON.stringify(sent)})`);
+  } finally { fs.rmSync(s.root, { recursive: true, force: true }); }
+});
+
 test('same finding processed twice (2 router runs) -> still exactly 1 card', () => {
   const s = sandbox();
   try {
