@@ -2,6 +2,7 @@
 Read for environment settings, MCP reload boundaries, mux identity and GUI recovery.
 Pane-count limiting was removed by operator decision 2026-09-10; legacy env limits are ignored. Gmail routine transport: headless (T-0339).
 Source edits do not update already-loaded MCP processes.
+`scripts/quota-dispatcher.cjs` and `scripts/foreman-supervisor-jev.cjs` were retired (T-0582) — census found no live trigger (cron/schtasks/package.json/require/spawn).
 <!-- /doc-head -->
 
 # Operations — env vars, restart, crash recovery, mux-wedge + GUI-hang triage (wezbridge)
