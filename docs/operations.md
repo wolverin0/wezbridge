@@ -4,10 +4,11 @@ Pane-count limiting was removed by operator decision 2026-09-10; legacy env limi
 Source edits do not update already-loaded MCP processes. `scripts/quota-dispatcher.cjs`/`foreman-supervisor-jev.cjs` retired (T-0582).
 T-0599 (2026-09-24): decision-relay + orchestrator-waker WezTerm-sender disposition, see "Otros senders migrados a Orca". Fixup: daemon-heartbeat-sentinel.cjs's deliverPoke (missed originally) migrated too.
 curandero daemon-4200-dead probea /health sin -L: ya daba 503 antes de este cambio; su correccion (usar /api/health) es T-0593 en infra.
-Sección "Automation → ledger router (T-0598)": inventario de automatizaciones programadas, el
-contrato de findings JSON (`_intel/automation-findings/<task>-<fecha>.json`) y
-`scripts/automation-router.cjs` — la única vía por la que una tarea programada entrega algo
-accionable como tarjeta del ledger + a2a_send, en vez de log muerto o sesión interactiva viva.
+Sección "Automation → ledger router (T-0598)": inventario, contrato de findings JSON
+(`_intel/automation-findings/<task>-<fecha>.json`), `scripts/automation-router.cjs` — única vía
+por la que una tarea programada entrega algo accionable como tarjeta del ledger + a2a_send.
+Fase B (2026-09-24): schtask `Wezbridge-AutomationRouter` YA registrado (cada 15 min, ver "Fase B
+— el schtask... YA está registrado"); DaemonSentinel migrado al contrato; gap de sender T-0600.
 <!-- /doc-head -->
 
 # Operations — env vars, restart, crash recovery, mux-wedge + GUI-hang triage (wezbridge)
@@ -498,3 +499,65 @@ ledger lo resuelve contra `_intel/kinds.json` — un kind desconocido cae a `gen
 
 Registrar el router en Task Scheduler (cada 15 min) y cualquier corrida real de las tres
 automatizaciones de arriba quedan fuera de esta entrega — son Fase B, dispatch separado.
+
+### Fase B — el schtask del router YA está registrado (T-0598, 2026-09-24)
+
+El plan de arriba (Fase A) decía "fuera de esta entrega" — ya no. `Wezbridge-AutomationRouter`
+corre en vivo en este host desde antes de este fixup:
+
+- **Cadencia:** cada 15 min, indefinido (`Repeat: Every: 0 Hour(s), 15 Minute(s)`, `Stop Task If
+  Runs X Hours and X Mins: 72:00:00`). Verificado con `schtasks /query /tn
+  Wezbridge-AutomationRouter /v /fo LIST`.
+- **Launcher exacto** (`Task To Run` del schtask):
+  `wscript.exe //B //NoLogo "C:\Users\pauol\scripts\run-hidden.vbs"
+  C:\Users\pauol\scripts\hidden-tasks\Wezbridge-AutomationRouter.cmdline` — mismo patrón que el
+  resto de las tareas ocultas de este host (VBS headless, sin ventana).
+- **Qué corre el `.cmdline`:** su primera línea no-comentario (la única que `run-hidden.vbs`
+  ejecuta) es literalmente
+  `"G:\_OneDrive\OneDrive\Desktop\Py Apps\wezbridge\scripts\run-automation-router.cmd"` — sin
+  argumentos.
+- **`scripts/run-automation-router.cmd`** (ahora versionado en este repo, ver más abajo): cwd
+  efectivo es `%~dp0..` = la raíz del repo `wezbridge` (el propio `.cmd` resuelve su directorio vía
+  `%~dp0`, no depende del cwd con que Task Scheduler lo invoque). Comando exacto que corre:
+  `node "%REPO%\scripts\automation-router.cjs" > "%FINDINGS%\router-run-latest.txt" 2>&1`, donde
+  `%FINDINGS%` = `%REPO%\..\_intel\automation-findings` (mismo `_intel/` de todo este documento).
+- **Logs / artefactos que deja cada corrida:**
+  - `_intel/automation-findings/router-run.log` — append-only, una línea `[fecha hora] exit=<rc>`
+    por corrida seguida del contenido completo de esa corrida (historial acumulado).
+  - `_intel/automation-findings/router-run-latest.txt` — SOLO la corrida más reciente (se
+    sobrescribe cada 15 min); leer este archivo primero para el estado actual.
+  - `_intel/automation-findings/non-actionable.jsonl` — una línea por finding `actionable:false`
+    procesado (ver contrato arriba).
+  - `_intel/automation-findings/processed/` — findings ya entregados (`delivered:true` o
+    `actionable:false`); nunca se borran, se mueven acá.
+  - `_intel/automation-findings/quarantine/` — findings inválidos (JSON roto o campo requerido
+    ausente); el router sigue con el resto, nunca crashea por uno malo.
+- **Undo (si hay que sacarlo del scheduler):**
+  1. `schtasks /delete /tn Wezbridge-AutomationRouter /f`
+  2. Borrar `C:\Users\pauol\scripts\hidden-tasks\Wezbridge-AutomationRouter.cmdline`
+  3. Los artefactos de `_intel/automation-findings/` (log, latest, non-actionable.jsonl,
+     `.router-state.json`, `processed/`, `quarantine/`) son evidencia — no hace falta borrarlos
+     para desactivar el router, solo dejan de crecer.
+
+**Gap conocido (T-0600, no resuelto acá):** las notificaciones `actionable:true` necesitan una
+identidad de sender explícita — `automation-router.cjs --from-pane <n>` (o
+`WEZBRIDGE_AUTOMATION_FROM_PANE`) — porque una corrida programada no tiene pane WezTerm/Orca propio
+del que `a2a_send` pueda inferir identidad por censo (ver "`--from-pane`" en el contrato de arriba).
+Sin ese flag fijado, el `a2a_send` de una tarjeta nueva puede fallar con "no unambiguous
+project/cwd target" — la tarjeta del ledger igual se crea (el router es idempotente por
+`origin_key`), pero la entrega queda pendiente hasta el próximo tick. Rastreado como **T-0600**,
+fuera de alcance de este fixup.
+
+**DaemonSentinel migrado (Fase B-2, T-0598, este cambio):** `scripts/daemon-heartbeat-sentinel.cjs`
+ahora emite un finding (`actionable:true`, `severity:high`, `repo_owner:"wezbridge"`) cuando el
+daemon queda `down`/`wedged`/`http-unresponsive` por `DOWN_FINDING_THRESHOLD` (3) corridas
+consecutivas del sentinel (~15 min a su cadencia de 5 min) — no en la primera corrida, para no
+generar una tarjeta por un blip transitorio (la misma clase de falso-DOWN que T-0220 ya cubre para
+el poke). El `fingerprint` es `daemon-outage-<episodeStartedAt>` (estable por outage, reusa el
+mismo `episodeStartedAt` que ya trackea `evaluate()` para el poke/cooldown) — la misma interrupción
+nunca produce dos findings. Una recuperación después de haber emitido un finding produce
+opcionalmente uno `actionable:false` informativo. El estado de este umbral vive en su propio
+archivo (`_intel/evidence/wezbridge/daemon-sentinel-finding-state.json`), separado del estado de
+poke/episodio (`daemon-sentinel-state.json`) — la emisión de finding nunca puede alterar el
+comportamiento de poke/deadman existente. Ver `evaluateFinding`/`emitDaemonFinding` en el propio
+archivo para el detalle.
