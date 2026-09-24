@@ -26,7 +26,7 @@ function request(method, pathname, { body, origin } = {}) {
         res.on('end', () => {
           let parsed;
           try { parsed = JSON.parse(chunks); } catch { parsed = chunks; }
-          resolve({ status: res.statusCode, body: parsed, raw: chunks });
+          resolve({ status: res.statusCode, body: parsed, raw: chunks, headers: res.headers });
         });
       },
     );
@@ -80,6 +80,14 @@ after(async () => {
 // dashboard.html UI deprecated 2026-05-03 (per src/DEPRECATED.md). The HTML
 // contract test was removed in v3.2.1 cleanup — daemon now backs the
 // wezbridge MCP server only, no UI served at /.
+
+// T-0582: bare /health used to fall through to serveStatic (503, no dist
+// build in a worktree) instead of the real /api/health handler.
+test('GET /health redirects to /api/health', async () => {
+  const r = await request('GET', '/health');
+  assert.ok(r.status === 301 || r.status === 308, `expected 301/308, got ${r.status}`);
+  assert.equal(r.headers.location, '/api/health');
+});
 
 test('GET /api/panes returns {panes: array}', async () => {
   const r = await request('GET', '/api/panes');
