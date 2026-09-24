@@ -31,7 +31,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { intelDir, updateThreads, autoAckResult, recordResultBody, detectV2 } = require('./a2a-intel.cjs');
+const { intelDir, updateThreads, autoAckResult, recordResultBody, detectV2, taskIdFromCorr } = require('./a2a-intel.cjs');
 const { logAction } = require('./action-log.cjs');
 const { classifyDelivery } = require('./verified-send.cjs');
 const { decisionDisposition, queuedDecision } = require('./decision-authority.cjs');
@@ -43,6 +43,20 @@ const DEFAULTS = {
   maxAgeMs: 24 * 60 * 60 * 1000, // expires both new and previously pending entries
   deliveredKeep: 500, // delivered-id ring buffer size
 };
+
+// T-0354: a queue-level DISPATCH re-check, distinct from the sender-side gate
+// in a2a-intel.cjs (checkDispatchGate) that this mirrors narrowly. That gate
+// only runs ONCE, at enqueue time — this one runs on every delivery attempt,
+// because a card can leave the dispatchable window AFTER the envelope is
+// already sitting in pending (measured 2026-09-04 with T-0262: the operator
+// blocked the card 12 minutes after dispatch, the queue redelivered the same
+// stale envelope anyway). Deliberately just the STATE, not the fuller gate's
+// blocker/kind/ruling checks — those are sender-time policy, this is a
+// last-mile staleness guard. Per _docs-curation/ledger.cjs STATES, these three
+// are the terminal/held states an open dispatch can land in without being
+// re-issued as a fresh corr; everything else (ready/queued/running/review/
+// failed) is left alone to avoid dropping envelopes this ticket never measured.
+const STALE_DISPATCH_STATES = new Set(['blocked', 'done', 'cancelled']);
 
 /** Queue files live under <intel>/queues; consumer state under queues/state/<project>/. */
 function queuesDir(base) {
@@ -439,6 +453,32 @@ function createConsumer(opts) {
     atomicWriteJson(FILES.flags, remaining);
   }
 
+  /**
+   * T-0354: re-read the card for a type=request dispatch RIGHT BEFORE this
+   * delivery attempt. Fail-open on everything that is not a proven stale
+   * state: no task id in `corr`, no card file, or a card that fails to
+   * parse all deliver exactly as before (this is a staleness guard, not a
+   * ledger-availability gate — the ledger being unreadable is never grounds
+   * to drop the fleet's only durable copy of a dispatch). Only a card whose
+   * state is in STALE_DISPATCH_STATES is refused, and the refusal names the
+   * card + its state so `queue.entry_dropped` carries the evidence.
+   */
+  function screenCardState(entry) {
+    if (entry.type !== 'request') return { allowed: true };
+    const taskId = taskIdFromCorr(entry.corr);
+    if (!taskId) return { allowed: true }; // not a card-backed dispatch — unaffected
+    let card;
+    try {
+      card = JSON.parse(fs.readFileSync(path.join(base, 'tasks', `${taskId}.json`), 'utf8'));
+    } catch (err) {
+      log(`project-queue[${project}]: could not read card ${taskId} for the pre-delivery dispatch re-check (${err.message}) — delivering as today`);
+      return { allowed: true }; // fail-open: an unreadable ledger never blocks delivery
+    }
+    const state = String(card.state || '');
+    if (!STALE_DISPATCH_STATES.has(state)) return { allowed: true };
+    return { allowed: false, reason: `card ${taskId} is ${state} — dispatch is stale (queued for a scope the card no longer admits)` };
+  }
+
   function screenDecision(id, entry) {
     const decision = queuedDecision(entry);
     if (!decision) return { allowed: true, flagged: 0 };
@@ -497,6 +537,12 @@ function createConsumer(opts) {
       if (entry.submission_uncertain) continue;
       if (state.suppressed[id]?.event === 'queue.entry_dropped') {
         dropEntry(id, entry, state.suppressed[id].reason); dropped += 1; continue;
+      }
+      // T-0354: re-read the card for a dispatch RIGHT BEFORE sending — the
+      // ingest-time state is stale evidence by the time this pass runs.
+      const cardCheck = screenCardState(entry);
+      if (!cardCheck.allowed) {
+        dropEntry(id, entry, cardCheck.reason); dropped += 1; continue;
       }
       let panes;
       try {
