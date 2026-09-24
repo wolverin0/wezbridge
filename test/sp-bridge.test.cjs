@@ -502,3 +502,132 @@ test('T-0494 fix-up C: tarea NUEVA creada con boardToken => enlaces /act una sol
   assert.match(t().notes, /pregunta cambiada con token/);
   assert.equal(countApprovedLinks(t().notes), 1, `tras refrescar el blocker los enlaces siguen siendo UNO solo: ${t().notes}`);
 });
+
+// ---------------------------------------------------------------------------
+// T-0495 — act-links-v1 se pegaba a TODA tarjeta operator-gated sin mirar si
+// la pregunta era binaria. Medido 20/09: 16/20 tarjetas abiertas con
+// act-links-v1 Y un blocker de opciones ((a)/(b)/(c)): un tap no puede decir
+// CUAL opcion, y approved/cancelled des-gatea o completa la tarjeta sin
+// contestar la pregunta real.
+// Evidence: _intel/evidence/wezbridge/2026-09-20-botones-binarios-preguntas-de-opciones.md
+const optionCard = (over = {}) => card({
+  blocker: 'Aplicar el parche al daemon: (a) aplicar con la ventana y el rollback que digas, o (b) dejarlo pausado. Sin (a) los AC no cierran.',
+  ...over,
+});
+
+test('T-0495 AC1 fail-first: tarjeta con blocker de opciones NO recibe los enlaces /act, y SI trae la linea de decidir.cjs con el id real', async () => {
+  const e = envWithBoard();
+  const c = optionCard({ id: 'T-0700' });
+  await e.hub.syncDecisions([c]);
+  const t = () => e.plugin.model.tasks.find((x) => x.title.startsWith('T-0700'));
+  assert.doesNotMatch(t().notes, /\/act\?task=/, 'pregunta de opciones: CERO enlaces /act');
+  assert.match(t().notes, /\/decidir T-0700 en el pane/, 'tiene que traer la linea de decidir.cjs con el id real de la tarjeta');
+});
+
+test('T-0495 AC2 regresion: pregunta binaria (sin opciones) sigue recibiendo los tres enlaces firmados exactamente una vez', async () => {
+  const e = envWithBoard();
+  const c = card({ id: 'T-0701', blocker: 'autorizas el recreado del dashboard en produccion?' });
+  await e.hub.syncDecisions([c]);
+  const t = () => e.plugin.model.tasks.find((x) => x.title.startsWith('T-0701'));
+  for (const verb of ['approved', 'cancelled', 'deferred']) {
+    assert.match(t().notes, new RegExp(`/act\\?task=T-0701&verb=${verb}&exp=[0-9]+&sig=[0-9a-f]+`), `falta el enlace ${verb}`);
+  }
+  assert.equal(countApprovedLinks(t().notes), 1);
+  const before = t().notes;
+  await e.hub.syncDecisions([c]);
+  assert.equal(t().notes, before, 're-sync no duplica');
+});
+
+test('T-0495 AC1b: una tarea existente (creada antes de este fix con opciones) NO recibe los enlaces en un sync posterior', async () => {
+  const e = env(); // sin boardToken: como una tarea vieja de antes de T-0405
+  const c = optionCard({ id: 'T-0702' });
+  await e.hub.syncDecisions([c]);
+  const t = () => e.plugin.model.tasks.find((x) => x.title.startsWith('T-0702'));
+  assert.doesNotMatch(t().notes, /\/act\?/);
+  const conToken = sp.createHub(e.client, { intel: e.intel, boardUrl: 'http://192.0.2.10:4272/', boardToken: 'tok-0702' });
+  await conToken.syncDecisions([c]);
+  assert.doesNotMatch(t().notes, /\/act\?task=/, 'sigue sin enlaces: la pregunta de opciones no cambio');
+});
+
+test('T-0495 AC3 fail-first: checkActLinks detecta la tarjeta abierta con act-links-v1 Y opciones, no detecta la binaria', async () => {
+  const e = envWithBoard();
+  // Simula el residuo REAL: una tarea vieja que ya tiene act-links-v1 pegado
+  // (sync de ANTES de este fix) sobre una tarjeta cuyo blocker es de opciones.
+  const optCard = optionCard({ id: 'T-0703' });
+  const binCard = card({ id: 'T-0704', blocker: 'autorizas o no?' });
+  await e.hub.syncDecisions([binCard]);
+  // fuerza el residuo pre-fix para T-0703: crea la tarea SIN el gate (simulando
+  // un sync viejo) y marca el link manualmente en notesAppended + notas.
+  const legacyHub = sp.createHub(e.client, { intel: e.intel }); // sin boardToken
+  await legacyHub.syncDecisions([optCard]);
+  const map = sp.loadMap(e.intel);
+  const ext = 'fleet:T-0703';
+  const t703 = () => e.plugin.model.tasks.find((x) => x.title.startsWith('T-0703'));
+  await e.client.updateTask(map[ext].taskId, { notes: `${t703().notes}\nAprobar: http://x/act?task=T-0703&verb=approved&exp=1&sig=aa\nCancelar: http://x/act?task=T-0703&verb=cancelled&exp=1&sig=bb\nDiferir: http://x/act?task=T-0703&verb=deferred&exp=1&sig=cc` });
+  map[ext].notesAppended = [...(map[ext].notesAppended || []), 'act-links-v1'];
+  sp.saveMap(map, e.intel);
+
+  const violations = e.hub.checkActLinks([optCard, binCard]);
+  assert.deepEqual(violations.map((v) => v.id), ['T-0703'], `solo la tarjeta con opciones y act-links-v1 tiene que aparecer: ${JSON.stringify(violations)}`);
+});
+
+test('T-0495 AC4 dry-run: planActLinksCleanup lista la tarjeta a limpiar con conteo de URLs antes/despues, sin tocar nada', async () => {
+  const e = envWithBoard();
+  const optCard = optionCard({ id: 'T-0705' });
+  const legacyHub = sp.createHub(e.client, { intel: e.intel });
+  await legacyHub.syncDecisions([optCard]);
+  const map = sp.loadMap(e.intel);
+  const ext = 'fleet:T-0705';
+  const t705 = () => e.plugin.model.tasks.find((x) => x.title.startsWith('T-0705'));
+  const notesBefore = `${t705().notes}\nAprobar: http://x/act?task=T-0705&verb=approved&exp=1&sig=aa\nCancelar: http://x/act?task=T-0705&verb=cancelled&exp=1&sig=bb\nDiferir: http://x/act?task=T-0705&verb=deferred&exp=1&sig=cc`;
+  await e.client.updateTask(map[ext].taskId, { notes: notesBefore });
+  map[ext].notesAppended = [...(map[ext].notesAppended || []), 'act-links-v1'];
+  sp.saveMap(map, e.intel);
+
+  const plan = e.hub.planActLinksCleanup([optCard]);
+  assert.equal(plan.length, 1);
+  assert.equal(plan[0].id, 'T-0705');
+  assert.equal(plan[0].urlsBefore, 3);
+  assert.equal(plan[0].urlsAfter, 0);
+  assert.equal(t705().notes, notesBefore, 'dry-run: la nota real no se toco');
+});
+
+test('T-0495 AC4 live cleanup (fixture): cleanupOptionLinks saca las 3 lineas /act, deja el resto intacto, y marca act-links-suppressed-v1', async () => {
+  const e = envWithBoard();
+  const optCard = optionCard({ id: 'T-0706' });
+  const legacyHub = sp.createHub(e.client, { intel: e.intel });
+  await legacyHub.syncDecisions([optCard]);
+  const map = sp.loadMap(e.intel);
+  const ext = 'fleet:T-0706';
+  const t706 = () => e.plugin.model.tasks.find((x) => x.title.startsWith('T-0706'));
+  const baseNotes = t706().notes;
+  const withLinks = `${baseNotes}\nAprobar: http://x/act?task=T-0706&verb=approved&exp=1&sig=aa\nCancelar: http://x/act?task=T-0706&verb=cancelled&exp=1&sig=bb\nDiferir: http://x/act?task=T-0706&verb=deferred&exp=1&sig=cc\nEstado: blocked -> running (pane-1) · 2026-09-20 03:00Z`;
+  await e.client.updateTask(map[ext].taskId, { notes: withLinks });
+  map[ext].notesAppended = [...(map[ext].notesAppended || []), 'act-links-v1'];
+  sp.saveMap(map, e.intel);
+
+  const r = await e.hub.cleanupOptionLinks([optCard]);
+  assert.equal(r.cleaned, 1);
+  assert.deepEqual(r.ids, ['T-0706']);
+  assert.doesNotMatch(t706().notes, /\/act\?task=/, 'las 3 lineas /act desaparecieron');
+  assert.match(t706().notes, /Estado: blocked -> running \(pane-1\) · 2026-09-20 03:00Z/, 'el resto de la nota sobrevive byte-identico');
+  assert.match(t706().notes, /Aplicar el parche al daemon/, 'el blocker original sigue ahi');
+  const mapAfter = sp.loadMap(e.intel);
+  assert.ok(mapAfter[ext].notesAppended.includes('act-links-suppressed-v1'), 'marca la supresion para no re-agregar nunca');
+
+  const r2 = await e.hub.cleanupOptionLinks([optCard]);
+  assert.equal(r2.cleaned, 0, 'segunda pasada: ya esta limpia, no hace nada');
+  assert.equal(e.hub.checkActLinks([optCard]).length, 0, 'una vez limpia, deja de aparecer como violacion');
+});
+
+test('T-0495 AC5 idempotencia: dos syncs seguidos sobre una tarjeta de opciones no agregan ni pierden lineas', async () => {
+  const e = envWithBoard();
+  const c = optionCard({ id: 'T-0707' });
+  await e.hub.syncDecisions([c]);
+  const t = () => e.plugin.model.tasks.find((x) => x.title.startsWith('T-0707'));
+  const notesBefore = t().notes;
+  await e.hub.syncDecisions([c]);
+  await e.hub.syncDecisions([c]);
+  assert.equal(t().notes, notesBefore, 'dos syncs de mas no tocan la nota de una tarjeta de opciones');
+  assert.doesNotMatch(t().notes, /\/act\?/, 'sigue sin enlaces');
+});
