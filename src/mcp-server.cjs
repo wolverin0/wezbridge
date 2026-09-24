@@ -1565,6 +1565,16 @@ function handleToolCall(name, args) {
       });
       const fromPane = selfRes.paneId;
       if (!Number.isInteger(fromPane)) {
+        // T-0600 fixup: the Orca-sender fallback below is scoped to
+        // to_project (Orca-resolved) sends ONLY. ORCA_TERMINAL_HANDLE is
+        // stamped into EVERY Orca terminal's env at spawn, so a to_pane
+        // (WezTerm-targeted) send made from inside an Orca terminal would
+        // otherwise silently borrow that fallback too — from_pane stays
+        // required for to_pane exactly as before, no widened identity
+        // resolution for a transport this fallback was never meant to touch.
+        if (!toProject) {
+          return { content: [{ type: 'text', text: `Error: from_pane not given, WEZTERM_PANE env not set, and the census could not resolve this session (${selfRes.warning || 'no match'}) — pass from_pane explicitly` }], isError: true };
+        }
         // T-0600: a headless sender running INSIDE an Orca terminal (the
         // Fleet — no WezTerm pane exists at all, so nothing above could ever
         // resolve) can still prove identity: Orca stamps ORCA_TERMINAL_HANDLE

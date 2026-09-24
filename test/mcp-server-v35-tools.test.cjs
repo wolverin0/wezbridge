@@ -46,6 +46,34 @@ test('a2a_send requires from_pane when WEZTERM_PANE is unset', async () => {
   assert.match(resultText(res), /from_pane|WEZTERM_PANE/i);
 });
 
+// T-0600 fixup: ORCA_TERMINAL_HANDLE is stamped into EVERY Orca terminal's
+// env, so a to_pane (WezTerm-targeted) send made from inside an Orca
+// terminal must NOT silently borrow the Orca-resolved sender identity — the
+// from_pane requirement is unchanged for to_pane targets. The Orca-sender
+// fallback is scoped to to_project (Orca-resolved) targets only. This also
+// guards against a NEVER-undefined-downstream regression: because the
+// refusal happens before any event/queue record is written, no record can
+// ever carry a blank/undefined sender for a rejected send.
+test('a2a_send to_pane still requires from_pane even when ORCA_TERMINAL_HANDLE is set (no Orca-sender fallback for WezTerm targets)', async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 't0600-nofallback-'));
+  try {
+    const res = await callTool('a2a_send', { to_pane: 99999, body: 'hi' },
+      { WEZTERM_PANE: '', ORCA_TERMINAL_HANDLE: 'term_some_orca_terminal', WEZBRIDGE_INTEL_DIR: tmp });
+    assert.equal(res.result.isError, true, resultText(res));
+    assert.match(resultText(res), /from_pane|WEZTERM_PANE/i);
+    assert.doesNotMatch(resultText(res), /ORCA_TERMINAL_HANDLE/,
+      'to_pane targets must get the ORIGINAL error, not the Orca-sender-resolution error');
+    // No downstream record (event, queue, result) can carry an undefined or
+    // blank sender for an envelope that was refused before transport.
+    const eventsPath = path.join(tmp, 'events.jsonl');
+    assert.equal(fs.existsSync(eventsPath), false, 'a rejected send must not leak a partial event record');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 // ─── a2a_send to_project (B1: durable project addressing) ──────────────────
 
 test('a2a_send rejects to_project and to_pane together', async () => {
