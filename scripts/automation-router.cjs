@@ -109,6 +109,13 @@ function runA2ASend({
   const resolvedFromPane = fromPane ?? (env && env.WEZBRIDGE_AUTOMATION_FROM_PANE);
   if (resolvedFromPane !== undefined && resolvedFromPane !== null && resolvedFromPane !== '') {
     args.push('--from-pane', String(resolvedFromPane));
+    // T-0598 fixup: without an explicit sender project, a2a_send falls back
+    // to process.cwd()'s basename (Task Scheduler's "Start in", a worktree
+    // dir name, whatever) as the audit trail's from_project — an accident of
+    // invocation, not an identity. Only sent alongside --from-pane: mirrors
+    // mcp-server.cjs's trust rule that from_project is honored ONLY when the
+    // pane id is also explicit.
+    args.push('--from-project', 'automation-router');
   }
   let stdout = '';
   let ok = false;
