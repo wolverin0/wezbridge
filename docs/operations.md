@@ -1,6 +1,6 @@
 <!-- doc-head: Runtime operation, recovery and removal of pane-count limiting -->
 Read for environment settings, MCP reload boundaries, mux identity and GUI recovery.
-Pane-count limiting was removed by operator decision 2026-09-10; legacy env limits are ignored.
+Pane-count limiting was removed by operator decision 2026-09-10; legacy env limits are ignored. Gmail routine transport: headless (T-0339).
 Source edits do not update already-loaded MCP processes.
 <!-- /doc-head -->
 
@@ -79,6 +79,14 @@ misma pane era 11 en `sock` y 4 en la GUI). Resolver un id contra "la GUI viva d
   `personaldashboard/docs/CENTRAL-NOTIFICATION-HUB.md`. Diagnóstico: `events.jsonl` lleva
   `via: gateway|telegram` por decisión notificada; un 401 "Invalid event signature" con la receta
   del doc = secreto de Vaultwarden ≠ secreto en el env de producción del hub.
+- **Rutina gmail-recordatorios headless (T-0339, 2026-09-24)** — `node scripts/gmail-recordatorios-run.cjs run`
+  (el schtask, sin cambios) corre la rutina como `claude -p` headless (`src/gmail-routine-headless.cjs`):
+  Gmail solo lectura, `--permission-mode dontAsk`, sin shell, sin `--bare` (este fuerza auth por API key y pierde
+  los conectores claude.ai). `--via pane` o `GMAIL_ROUTINE_VIA=pane` vuelve al poke por pane (solo WezTerm).
+  `GMAIL_ROUTINE_CLAUDE_BIN` pisa el ejecutable (default: `claude.exe` real detras del shim npm `.cmd`).
+  Exit del run: 0 ok · 3 spawn · 4 claude salio sin complete/fail o con error · 8 timeout (15 min) ·
+  9 otro run sigue `dispatching` (no lanza un segundo hijo) · 10 completo sin ninguna busqueda Gmail
+  (findings void "completion sin consulta a Gmail"). El registro guarda solo metadata: conteos por herramienta y bytes.
 
 ## Restart-on-port-conflict (daemon no rebindea a :4200)
 Matar toda instancia stale:

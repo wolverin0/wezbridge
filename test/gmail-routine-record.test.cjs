@@ -82,3 +82,37 @@ test('T-0339: an execution error stays void and run identifiers cannot escape th
   await assert.rejects(runGmailRoutine({ ...f, runId: '../escape' }), /invalid run/);
   assert.throws(() => completeGmailRun({ ...f, runId: '../escape', failure: 'x' }), /invalid run/);
 });
+
+test('T-0339 P1 killer: a run completed DURING dispatch is not clobbered back to dispatched/void', async t => {
+  const f = fixture(t);
+  const counts = { seen: 3, created: 1, existing: 1, doubtful: 0 };
+  const result = await runGmailRoutine(f, { dispatch: () => {
+    completeGmailRun({ intelDir: f.intelDir, runId: f.runId, counts });
+    return { exit_status: 0, transport: 'fixture' };
+  } });
+  const record = JSON.parse(fs.readFileSync(f.record, 'utf8'));
+  const findings = JSON.parse(fs.readFileSync(path.join(path.dirname(f.record), record.findings_file), 'utf8'));
+  assert.equal(record.phase, 'completed', 'completion written during dispatch must survive the finally block');
+  assert.equal(findings.verdict, 'clean');
+  assert.deepEqual(findings.counts, counts);
+  assert.deepEqual(record.counts, counts);
+  assert.equal(record.exit_status, 0);
+  assert.equal(record.dispatch_exit_status, 0);
+  assert.equal(record.transport, 'fixture', 'dispatch transport fields are still merged');
+  assert.ok(Number.isFinite(Date.parse(record.ended_at)));
+  assert.equal(result.phase, 'completed');
+});
+
+test('T-0339 P1 control: an execution_failed written during a failing dispatch keeps its failure and the dispatch exit', async t => {
+  const f = fixture(t);
+  await runGmailRoutine(f, { dispatch: () => {
+    completeGmailRun({ intelDir: f.intelDir, runId: f.runId, failure: 'Gmail unavailable' });
+    return { exit_status: 4 };
+  } });
+  const record = JSON.parse(fs.readFileSync(f.record, 'utf8'));
+  const findings = JSON.parse(fs.readFileSync(path.join(path.dirname(f.record), record.findings_file), 'utf8'));
+  assert.equal(record.phase, 'execution_failed');
+  assert.equal(record.exit_status, 1);
+  assert.equal(record.dispatch_exit_status, 4);
+  assert.equal(findings.void_reason, 'Gmail unavailable', 'the execution reason is not replaced by a dispatch reason');
+});
