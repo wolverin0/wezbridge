@@ -15,14 +15,19 @@ function queueOutcome(options, body, hit, outcome, enqueue) {
     ...(saved.ok ? {} : { error: 'durable queue append failed' }) };
 }
 
+/** Poke text + completion instruction with the runId. Shared by the pane and headless transports. */
+function routineBody(options) {
+  const prompt = fs.readFileSync(options.promptFile, 'utf8').trim();
+  const completion = `Run ${options.runId}. Al terminar: node scripts/gmail-recordatorios-run.cjs complete --run ${options.runId} --seen N --created N --existing N --doubtful N. Si falla Gmail/SP: fail --run ${options.runId} --reason <motivo>.`;
+  return `${prompt}\n${completion}`;
+}
+
 async function dispatchGmailRoutine(options, dependencies = {}) {
   const discover = dependencies.discover || require('./pane-discovery.cjs').discoverPanes;
   const resolve = dependencies.resolve || identity.resolve;
   const send = dependencies.send || require('./verified-send.cjs');
   const enqueue = dependencies.enqueue || projectQueue.enqueue;
-  const prompt = fs.readFileSync(options.promptFile, 'utf8').trim();
-  const completion = `Run ${options.runId}. Al terminar: node scripts/gmail-recordatorios-run.cjs complete --run ${options.runId} --seen N --created N --existing N --doubtful N. Si falla Gmail/SP: fail --run ${options.runId} --reason <motivo>.`;
-  const body = `${prompt}\n${completion}`;
+  const body = routineBody(options);
   const refusal = a2aLengthRefusal(body);
   if (refusal) return { exit_status: 2, error: refusal, queued: false };
   let panes = [];
@@ -48,4 +53,4 @@ async function dispatchGmailRoutine(options, dependencies = {}) {
   return queueOutcome(options, body, hit, outcome, enqueue);
 }
 
-module.exports = { dispatchGmailRoutine };
+module.exports = { dispatchGmailRoutine, routineBody };
