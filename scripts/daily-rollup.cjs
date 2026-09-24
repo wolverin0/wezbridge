@@ -17,6 +17,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { dedupeResultLines } = require('../src/a2a-intel.cjs');
 
 const REPO = path.join(__dirname, '..');
 
@@ -108,11 +109,15 @@ function sortDecisions(items) {
 }
 
 function summarizeResults(results) {
+  // T-0564: an amplified resend (996509539944f94d: 186 identical lines for one
+  // envelope) must count as ONE result, not N — dedupe BEFORE any tally, or
+  // total/v2/abandons all inflate by the resend multiple.
+  const deduped = dedupeResultLines(results || []);
   const v2 = { ok: 0, partial: 0, missing: 0 };
   let abandons = 0;
   let withEvidence = 0;
   const decisions = [];
-  for (const r of results || []) {
+  for (const r of deduped) {
     if (r.v2 in v2) v2[r.v2] += 1;
     abandons += r.abandons || 0;
     if (r.evidence && r.evidence.count > 0) withEvidence += 1;
@@ -121,7 +126,7 @@ function summarizeResults(results) {
     }
   }
   return {
-    total: (results || []).length,
+    total: deduped.length,
     v2,
     abandons,
     withEvidence,

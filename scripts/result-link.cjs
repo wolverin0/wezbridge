@@ -60,11 +60,13 @@ function runOnce(dir = intelDir()) {
     return { seeded: true, seen: 0, linked: 0, unlinked: 0, reasons: {} };
   }
   const { lines, bytes } = readNew(file, Number(saved.bytes) || 0);
+  // T-0564: dedupe the batch BEFORE linking — a catch-up run can see the same
+  // resent envelope many times (996509539944f94d shape); `seen` still reports
+  // the raw line count read off disk, but each distinct envelope is only
+  // handed to link() once, so linked/unlinked/reasons stay accurate.
+  const parsedLines = linker.parseResultLines(lines);
   const out = { seeded: false, seen: lines.length, linked: 0, unlinked: 0, reasons: {} };
-  for (const raw of lines) {
-    let line;
-    try { line = JSON.parse(raw); } catch { continue; }   // una linea rota no tumba la pasada
-    if (!line || line.event !== 'a2a.result') continue;
+  for (const line of parsedLines) {
     const r = linker.link(line, {
       runLedger: (args) => linker.defaultRunLedger(args, dir),
       readTasks: () => linker.defaultReadTasks(dir),

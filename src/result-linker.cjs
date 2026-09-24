@@ -22,7 +22,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { taskIdFromCorr, intelDir } = require('./a2a-intel.cjs');
+const { taskIdFromCorr, intelDir, dedupeResultLines } = require('./a2a-intel.cjs');
 
 /** Estados destino permitidos. `done` NO esta y no puede estar. */
 const TARGETS = new Set(['review', 'failed', 'blocked']);
@@ -57,6 +57,28 @@ function resolveCardForCorr(corr, readTasks) {
 /** Puntero de evidencia a la linea EXACTA que justifico el movimiento. */
 function evidencePointer(line) {
   return `a2a-results.jsonl#time=${line.time} corr=${line.corr} from=pane-${line.from_pane} v2=${line.v2}`;
+}
+
+/**
+ * T-0564: parsea y dedupea un BATCH de lineas crudas de a2a-results.jsonl
+ * antes de ligar. scripts/result-link.cjs lee las lineas NUEVAS desde su
+ * cursor en cada corrida; un catch-up (cursor atrasado, o una corrida que
+ * abarca varios reenvios del emisor) puede traer el MISMO envelope repetido
+ * (996509539944f94d: 186 copias identicas del mismo corr/id) — sin esto cada
+ * copia llama a link() de nuevo, lo cual es inofensivo para el estado de la
+ * tarjeta (el guard `card.state !== 'running'` de abajo ya lo protege) pero
+ * infla seen/unlinked y emite `result.unlinked` redundante por cada copia.
+ * Nunca tira: una linea rota o que no es `a2a.result` simplemente se salta.
+ */
+function parseResultLines(rawLines) {
+  const parsed = [];
+  for (const raw of rawLines || []) {
+    let line;
+    try { line = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { continue; }
+    if (!line || line.event !== 'a2a.result') continue;
+    parsed.push(line);
+  }
+  return dedupeResultLines(parsed);
 }
 
 /** Veredicto declarado + (para BLOCKED) la primera linea util despues de el. */
@@ -184,5 +206,5 @@ function defaultRunLedger(args, dir = intelDir()) {
 
 module.exports = {
   link, resolveCardForCorr, evidencePointer, readVerdict, TARGETS,
-  defaultReadTasks, defaultRunLedger,
+  defaultReadTasks, defaultRunLedger, parseResultLines,
 };

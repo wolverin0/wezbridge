@@ -12,7 +12,7 @@ const path = require('node:path');
 
 const {
   reportDateFor, localDateOf, isOnDate,
-  summarizeTurns, summarizeResults, summarizeQueues, sortDecisions,
+  summarizeTurns, summarizeResults, summarizeThreads, summarizeQueues, sortDecisions,
   parseSchtasksCsv, classifyCensusRow, summarizeCensus,
   renderRollup, generateRollup,
 } = require('../scripts/daily-rollup.cjs');
@@ -86,6 +86,38 @@ test('summarizeResults: junta decisions de varios results y cuenta v2/evidence; 
   assert.strictEqual(s.withEvidence, 1);
   assert.strictEqual(s.decisions.length, 1);
   assert.strictEqual(s.decisions[0].corr, 'X');
+});
+
+// ── T-0564: reader-side dedupe of amplified resends (T-0350 dedupeResultLines) ──
+
+test('summarizeResults: mismo id resendido N veces cuenta 1, no N (996509539944f94d shape)', () => {
+  const resendido = { id: 'env-1', corr: 'X', from_pane: 3, v2: 'ok', abandons: 1 };
+  const s = summarizeResults([
+    { ...resendido, time: '2026-09-02T01:56:00.000Z' },
+    { ...resendido, time: '2026-09-02T02:11:00.000Z' },
+    { ...resendido, time: '2026-09-02T02:26:00.000Z' },
+  ]);
+  assert.strictEqual(s.total, 1, 'un unico envelope reenviado 3 veces debe contar como 1 result, no 3');
+  assert.strictEqual(s.v2.ok, 1);
+  assert.strictEqual(s.abandons, 1, 'abandons no debe sumarse por cada copia del mismo envelope');
+});
+
+test('summarizeResults: lineas legacy sin id dedupean por corr+cuerpo; un retry con cuerpo DISTINTO no se colapsa', () => {
+  const s = summarizeResults([
+    { corr: 'Y', from_pane: 1, v2: 'ok', body: 'mismo cuerpo', time: '2026-09-01T00:00:00.000Z' },
+    { corr: 'Y', from_pane: 1, v2: 'ok', body: 'mismo cuerpo', time: '2026-09-01T00:15:00.000Z' },
+    { corr: 'Y', from_pane: 1, v2: 'ok', body: 'cuerpo nuevo con evidencia distinta', time: '2026-09-01T00:30:00.000Z' },
+  ]);
+  assert.strictEqual(s.total, 2, 'el resend byte-identico colapsa; el retry con cuerpo nuevo es evidencia distinta y sobrevive');
+});
+
+test('summarizeThreads: el total de hilos no se infla por duplicados exactos del mismo envelope', () => {
+  const resendido = { id: 'env-2', corr: 'Z', from_pane: 5, to_pane: 0, v2: 'ok' };
+  const threads = summarizeThreads([
+    { ...resendido, time: '2026-09-02T01:56:00.000Z' },
+    { ...resendido, time: '2026-09-02T02:11:00.000Z' },
+  ]);
+  assert.strictEqual(threads.length, 1, 'el mismo envelope reenviado sigue siendo un unico hilo');
 });
 
 // ── census ──────────────────────────────────────────────────────────────────
