@@ -1,7 +1,7 @@
-<!-- doc-head: A2A contract and executable fleet rules, T-0327, T-0377 and T-0596 -->
+<!-- doc-head: A2A contract and executable fleet rules, T-0327, T-0377, T-0596 and T-0599 -->
 2026-09-06: 900-character refusal with explicit opt-in; ticketed cross-repo provenance; registered routine evidence.
-2026-09-24 (T-0596): Orca is the default a2a_send/queue-drain transport (fleet lives in Orca
-terminals, WezTerm has 0 panes); WezTerm delivery is legacy, off unless WEZBRIDGE_WEZTERM_TRANSPORT=1.
+2026-09-24 (T-0596): Orca is the default a2a_send/queue-drain transport, WezTerm legacy behind WEZBRIDGE_WEZTERM_TRANSPORT=1.
+2026-09-24 (T-0599): decision-relay + orchestrator-waker WezTerm senders migrated/gated to match; gmail-routine-dispatch NOT migrated yet.
 Covers sender guards, result criteria, queue identity, isolated T-0377 restore evidence, and Orca transport; read before dispatch or review.
 Transport receipt is not work acceptance. Runtime activation and loaded MCP revision require separate verification.
 <!-- /doc-head -->
@@ -190,6 +190,39 @@ the only default transport**:
 
 Full operational detail (env vars, smoke-test rule, retry-id contract): `docs/operations.md`'s
 "Transporte Orca" section.
+
+## Transport: other WezTerm senders migrated to Orca (T-0599, 2026-09-24)
+
+T-0596 fixed `a2a_send`/queue-drain. A verifier pass on that PR found other senders that still
+delivered over WezTerm to an already-resolved pane id — dead deliveries now that the fleet lives
+in Orca. Disposition per sender:
+
+- **`decision-relay.cjs`** (the "operator approved/cancelled a card" envelope): now resolves and
+  delivers through the SAME shared functions as `a2a_send`/queue-drain —
+  `src/orca-target.cjs`'s `resolveOrcaTarget` and `src/orca-send.cjs`'s `sendToOrcaTerminal` —
+  by default. WezTerm (pane-identity resolution + `verified-send.cjs`) is legacy, behind
+  `WEZBRIDGE_WEZTERM_TRANSPORT=1`, same flag as T-0596. It does **not** call the `a2a_send` MCP
+  tool itself (that would take a dispatch lease and enqueue a SECOND time on the same
+  `_intel/queues/<project>.jsonl` file decision-relay already writes to — see the T-0599 brief for
+  the full reasoning); it keeps its own dedupe/attempt-cap/cooldown and durable enqueue.
+  **AC4 backlog seal:** an entry whose ruling `at` predates `ORCA_DRAIN_NOT_BEFORE` (or the
+  `WEZBRIDGE_DRAIN_NOT_BEFORE` override) is never attempted live — resolved straight to
+  `decision.undeliverable` (`reason: backlog-sealed`), same anti-replay posture as queue-drain's
+  own seal, so the 20-24/09 approvals stuck in `_intel/.decision-relay/pending.json` (undelivered
+  because WezTerm reached nobody) do NOT suddenly land now that Orca works.
+- **`orchestrator-waker.cjs`** (pokes the FIXED pane-0/orchestrator pane when a watched repo's
+  pane finishes a turn): stays WezTerm-only — Orca has no equivalent of "pane-0", it resolves by
+  project/lane name, not a fixed orchestrator identity. Its transport (wired in
+  `src/handlers/event-handlers.cjs` via `daemon-cli.cjs`'s `.verified`) is now ALSO gated behind
+  `WEZBRIDGE_WEZTERM_TRANSPORT=1`, on top of its pre-existing `WEZBRIDGE_ORCH_WAKER=1` arming —
+  both must be true for the daemon to arm it. Migrating this to Orca needs a redesign of its
+  addressing model (not a transport swap), tracked separately.
+- **`gmail-routine-dispatch.cjs`** (the daily gmail-recordatorios poke to the `wezbridge` project
+  pane): inventoried, **not migrated** — under live observation for T-0339 (runs scheduled
+  2026-09-25 and 2026-09-26 08:30 ART); do not touch before that window closes.
+- **`src/daemon-cli.cjs`/`daemon-cli-worker.cjs`**: generic transport plumbing (runs `wez.*`/
+  `verified.*` calls in a disposable child, off the daemon's main thread) — not a routing
+  decision, unchanged.
 
 ## Sending
 

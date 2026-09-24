@@ -142,13 +142,18 @@ function makeCtx(overrides = {}) {
   };
 }
 
-test('COMPOSITION ROOT: startBackgroundServices registers the waker when config arms it', () => {
+test('COMPOSITION ROOT: startBackgroundServices registers the waker when config arms it (WezTerm transport flag on)', () => {
   daemonStatus._reset();
   const prev = { ...process.env };
   process.env.WEZBRIDGE_ORCH_WAKER = '1';
   process.env.WEZBRIDGE_ORCH_WAKER_REPOS = 'brlite';
   process.env.WEZBRIDGE_INTEL_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'arming-intel-'));
   process.env.WEZBRIDGE_SESSION_SNAPSHOT = '0';
+  // T-0599: the waker's only transport is WezTerm (pane-0, no Orca equivalent)
+  // — since T-0599 that transport is ALSO gated behind WEZBRIDGE_WEZTERM_
+  // TRANSPORT=1 (fleet lives in Orca now), on top of the pre-existing
+  // WEZBRIDGE_ORCH_WAKER arming decision this test already covers.
+  process.env.WEZBRIDGE_WEZTERM_TRANSPORT = '1';
   try {
     const { ctx, logs } = makeCtx();
     createEventHandlers(ctx).startBackgroundServices();
@@ -156,6 +161,27 @@ test('COMPOSITION ROOT: startBackgroundServices registers the waker when config 
     assert.ok(snap.orchestrator_waker, 'waker must register itself at the composition root');
     assert.equal(snap.orchestrator_waker.armed, true);
     assert.ok(logs.some((l) => /orchestrator-waker armed/.test(l)), 'arming must be logged');
+  } finally {
+    process.env = prev;
+  }
+});
+
+test('T-0599: config arms the waker but WEZBRIDGE_WEZTERM_TRANSPORT is unset (default) — stays NOT armed, deliberately', () => {
+  daemonStatus._reset();
+  const prev = { ...process.env };
+  process.env.WEZBRIDGE_ORCH_WAKER = '1';
+  process.env.WEZBRIDGE_ORCH_WAKER_REPOS = 'brlite';
+  process.env.WEZBRIDGE_INTEL_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'arming-intel-'));
+  process.env.WEZBRIDGE_SESSION_SNAPSHOT = '0';
+  delete process.env.WEZBRIDGE_WEZTERM_TRANSPORT;
+  try {
+    const { ctx, logs } = makeCtx();
+    createEventHandlers(ctx).startBackgroundServices();
+    const snap = daemonStatus.snapshot();
+    assert.equal(snap.orchestrator_waker.armed, false, 'fleet lives in Orca (T-0596) — the waker has no Orca transport, so it must not silently poke a dead WezTerm pane');
+    assert.equal(snap.orchestrator_waker.deliberate, true, 'this is a decision (transport gap), not a fault');
+    assert.match(snap.orchestrator_waker.reason, /WezTerm transport disabled/);
+    assert.ok(logs.some((l) => /orchestrator-waker NOT armed/.test(l)));
   } finally {
     process.env = prev;
   }

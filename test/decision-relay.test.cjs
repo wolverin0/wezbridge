@@ -16,6 +16,14 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+// T-0599: this file exercises decision-relay's OWN dedupe/cap/eve-routing/
+// composer-gating logic with WezTerm-pane doubles (idle census, sendPrompt-
+// DeferredEnter), which is now the legacy path (Orca is default — see
+// src/decision-relay.cjs). Opt back in so this coverage keeps exercising it
+// with its existing fixtures (which also predate the T-0599 AC4 Orca backlog
+// seal — that seal only applies to the default Orca branch, see
+// test/decision-relay-orca-transport.test.cjs for its dedicated coverage).
+process.env.WEZBRIDGE_WEZTERM_TRANSPORT = '1';
 const { createRelay, EPOCH } = require('../src/decision-relay.cjs');
 
 // ── andamio ────────────────────────────────────────────────────────────────
