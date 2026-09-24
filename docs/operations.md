@@ -9,18 +9,21 @@ curandero daemon-4200-dead probea /health sin -L: ya daba 503 antes de este camb
 # Operations — env vars, restart, crash recovery, mux-wedge + GUI-hang triage (wezbridge)
 > Qué cubre: variables de entorno útiles, el gotcha de rebind del daemon :4200, latitud WSL,
 > recuperación de crash de wezterm, el triage mux-lento-vs-mux-wedgeado (firmas idénticas,
-> remedios opuestos), el tercer caso GUI colgado con mux sano (2026-09-01), y el broadcast de
-> `/mcp reconnect <server>` a todos los panes Orca Claude idle (T-0569) para cuando un MCP
-> (p.ej. MemoryMaster) queda "disconnected" en varios panes a la vez.
+> remedios opuestos), el tercer caso GUI colgado con mux sano (2026-09-01), el broadcast de
+> `/mcp reconnect <server>` a todos los panes Orca Claude idle (T-0569), y el transporte Orca
+> (T-0596: resolver, self-send guard, backlog seal, CLI para scripts, flag legado de WezTerm).
 > Leer cuando: el daemon no rebindea, wezterm crasheó, todo ETIMEDOUTea, un GUI dice "not
 > responding", hay >1 wezterm-mux-server, un MCP aparece desconectado en varios panes, vas
-> a setear env de guards/grader/inbox, o estás tocando qué despierta al Fleet (digest/waker).
+> a setear env de guards/grader/inbox, tocás qué despierta al Fleet (digest/waker), o tocás
+> quién entrega un `a2a_send`/queue-drain (Orca vs. WezTerm legado).
 > Términos clave: WEZBRIDGE_*, restore-session, probeMux, degraded, inconclusive,
 > session-snapshot, --no-auto-start, gui-watchdog, Recover-WezTermGui, mux_split,
 > espacio único de pane_id (--prefer-mux + sock, T-0260), WEZBRIDGE_PREFER_MUX=0, gui_only,
 > dead-man switch (VM omni-deadman.sh + DaemonSentinel touch, T-0529), deadman-touch.json,
 > mcp-reconnect-broadcast.cjs, skip:self-busy, ORCA_TERMINAL_HANDLE, fleet-digest, classifyEvent,
-> --count-day, orchestrator-waker (legado, desarmado).
+> --count-day, orchestrator-waker (legado, desarmado), orca-target.cjs, orca-send.cjs,
+> ORCA_DRAIN_NOT_BEFORE, WEZBRIDGE_DRAIN_NOT_BEFORE, WEZBRIDGE_WEZTERM_TRANSPORT,
+> a2a-send-cli.cjs.
 
 ## Espacio único de pane_id: el mux (T-0260, 2026-09-02)
 
@@ -162,6 +165,53 @@ del resultado del reconnect y lo empuja fuera de una ventana angosta — medido 
 T-0569) hasta 10 s: `ok` si aparece "Successfully reconnected", `fail` si aparece texto de
 error, `unknown` si se agota el tiempo sin ninguno de los dos.
 
+## Transporte Orca — a2a_send y queue-drain (T-0596, 2026-09-24)
+
+Decisión operador/Fleet 24/09: la flota vive en terminales Orca; WezTerm tiene 0 panes. Orca es
+el transporte por default para `a2a_send({to_project})` y para el drenaje de cola
+(`project-queue.cjs`'s `findTarget`/`deliverPending`, usado por `scripts/queue-drain.cjs`).
+
+- **Resolver único:** `src/orca-target.cjs`'s `resolveOrcaTarget(wanted)` — censo Orca
+  (`orca-census.cjs`) cruzado contra el roster de lanes (`lane-roster.cjs`) y resuelto con
+  `pane-identity.cjs`'s `resolveOrca`. Compartido por los DOS call sites (`a2a_send` en
+  `mcp-server.cjs` y `project-queue.cjs`'s `findTarget`) para que no diverjan — la misma clase
+  de bug que ya existía para resolución WezTerm.
+- **Entrega:** `src/orca-send.cjs`'s `sendToOrcaTerminal(handle, body)` — `orca terminal send
+  --enter` seguido de una lectura de pantalla (`orca terminal read --screen`) para VERIFICAR que
+  el cuerpo aterrizó y no quedó en el composer, mismo vocabulario `submitted`/`delivered` que
+  `verified-send.cjs`. El retry de Orca NO es un id elegido por el llamador: si Orca rehúsa con
+  "ambiguous transport failure" devuelve un `orchestrationRequestId`, y ESE es el único id válido
+  para `--retry-request` — `orca-send.cjs` reintenta internamente con ese id, una vez.
+- **Self-send guard:** un terminal Orca no puede resolverse a sí mismo como destino. Identidad
+  propia: `process.env.ORCA_TERMINAL_HANDLE` (seteado por Orca en TODO terminal que spawnea,
+  igual que la regla de self-skip de `mcp-reconnect-broadcast.cjs` arriba). `a2a_send` rehúsa
+  ANTES de transporte (no encola, no reintenta); `deliverPending` dropea la entrada con el mismo
+  motivo. No hay equivalente Orca del fallback census-corrected de `WEZTERM_PANE`: un terminal no
+  puede leer su propio handle desde `orca terminal list`.
+- **Backlog seal:** `ORCA_DRAIN_NOT_BEFORE` (constante, `2026-09-24T18:00:00Z`) o
+  `WEZBRIDGE_DRAIN_NOT_BEFORE` (env, override para tests) — ninguna entrada de cola encolada
+  ANTES de ese corte se re-entrega por la rama Orca, aunque siga dentro del `maxAgeMs` de 24h.
+  Decisión operador 24/09: las ~30 aprobaciones/relays encolados antes de que existiera el drain
+  Orca "ya están en el ledger y ejecutadas" — no deben replayearse. Scoped a la rama Orca
+  únicamente; nunca afecta tráfico WezTerm-pane del mismo día.
+- **Scripts no-MCP:** `bin/a2a-send-cli.cjs` — entry point de una sola llamada JSON-RPC contra
+  `mcp-server.cjs` real, para que los dispatchers Python (`scripts/orchestration/
+  notify_orchestrator.py`, `task_router.py`) pasen por `a2a_send` en vez de tipear `orca terminal
+  send` a mano. TODO control de `a2a_send` (gate, shape, lease, cola, self-send guard, audit)
+  aplica también a estos llamadores.
+- **WezTerm legado, apagado por default (T-0596 item 4):** la resolución/entrega vía pane WezTerm
+  en `a2a_send` y en `findTarget`/`deliverPending` está detrás de `WEZBRIDGE_WEZTERM_TRANSPORT=1`
+  (default: no seteada = off). Con el flag off, Orca se resuelve PRIMERO y es el único transporte
+  por default; un destino que solo resolvería vía WezTerm queda encolado con motivo, nunca
+  silenciosamente descartado. `send_prompt` queda marcado deprecated para mensajería de flota en
+  su descripción de tool (usar `a2a_send`) pero sigue siendo uno de los tools WezTerm-only
+  (`discover_sessions`, `send_prompt`, `read_output`, `send_key`, `get_status`, `list_projects`,
+  `kill_session`, `set_tab_title` — retirarlos es una carta aparte, no ésta).
+
+**Regla dura de smoke-testing:** nunca probar entrega en vivo contra el pane/terminal que la pide
+— usar el doble de Orca (`test/mocks/orca-mock.cjs`) o un terminal idle distinto. Un smoke que se
+manda a sí mismo mide el self-send guard, no la entrega.
+
 ## Mux-wedge — LEER ENTERO ANTES DE ACTUAR
 Observado UNA vez, 2026-07-02, en wezterm 20240203. El build instalado es muy posterior
 (chequeá `wezterm --version`; era `20260731` al 2026-08-19), así que puede no reproducir más.
@@ -267,6 +317,14 @@ como instrumento de S6** — ese log está muerto desde el 06/09 (ver el scope r
 crudos ese día (`test/fleet-digest.test.cjs`, AC4) — bien debajo del umbral de <10 de S6. El
 lane se resuelve con `src/lane-roster.cjs` (terminal → lane vía `_intel/orchestrators.json`);
 sin match, cae al `repo` del evento.
+
+**Flake conocido:** `test/fleet-digest.test.cjs` AC4 necesita un `_intel/pane-events.jsonl`
+REAL y vivo del checkout del operador para reproducir la medición de arriba — en un worktree
+aislado (sin ese archivo, o con uno distinto) el conteo no matchea y el subtest falla. No es un
+bug del digest; es una medición contra estado externo. Ver también los flakes de worktree
+documentados en briefs de T-0596 (lane-hooks p95 de timing, model-tiers.json ENOENT, daemon-cli,
+mcp-server timeouts, tasks-watcher) — todos reproducibles solo con estado del checkout real, no
+del worktree aislado.
 
 **Watcher crudo (`scripts/pane-event-watcher.py`):** sigue imprimiendo TODO evento sin filtrar
 por default (sin cambios — cambiar ese default es decisión del Fleet, no de esta carta).

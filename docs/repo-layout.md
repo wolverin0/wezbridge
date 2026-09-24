@@ -1,10 +1,11 @@
 # Repo layout + API HTTP del daemon (wezbridge)
-> Qué cubre: el mapa de módulos de src/ (origen v3.3, mayormente vigente para los leafs),
-> los agregados post-v3.3, y la lista de endpoints REST/SSE del daemon :4200 que consume el
-> MCP server. Movido desde CLAUDE.md el 2026-08-23 (T-0213, regla <200 líneas).
+> Qué cubre: el mapa de módulos de src/ (origen v3.3, mayormente vigente para los leafs), los
+> agregados post-v3.3 incl. transporte Orca (orca-census/orca-target/orca-send, a2a-send-cli),
+> y la lista de endpoints REST/SSE del daemon :4200 que consume el MCP server. Movido desde
+> CLAUDE.md el 2026-08-23 (T-0213, regla <200 líneas).
 > Leer cuando: busques dónde vive un módulo, o qué endpoint expone el daemon.
-> Términos clave: mcp-server.cjs, dashboard-server, handlers/, a2a-intel, project-queue,
-> lifecycle, action-log, /api/panes, /api/spawn, /api/events.
+> Términos clave: mcp-server.cjs, dashboard-server, a2a-intel, project-queue, orca-target,
+> orca-send, a2a-send-cli, /api/panes, /api/spawn, /api/events.
 
 ## Mapa de módulos (origen v3.3 — leafs mayormente vigentes; agregados posteriores anotados)
 ```
@@ -31,15 +32,30 @@ src/
   project-scanner.cjs, routines-config.cjs, diff-reporter.cjs
 ```
 Post-v3.3: `session-snapshot.cjs` (crash-restore, ON por default desde v3.4.1),
-`project-status-registry.cjs`, `telegram-router.cjs`, `handlers/`, `orchestrator-waker.cjs`,
+`project-status-registry.cjs`, `telegram-router.cjs`, `handlers/`, `orchestrator-waker.cjs`
+(WezTerm-only, DESARMADO desde el 20/09 — ver Fleet digest en `operations.md`),
 `action-log.cjs` (2026-08-22), `a2a-intel.cjs`, `verified-send.cjs`, `daemon-status.cjs`,
 `daemon-probe.cjs`, `pane-identity.cjs`, y el motor 2026-08-23: `project-queue.cjs` (colas
 durables por proyecto) + `lifecycle.cjs` (tope/afinidad/auto-close-shadow).
 
+**Transporte Orca (T-0596, 2026-09-24 — la flota vive en terminales Orca, WezTerm tiene 0
+panes):** `orca-census.cjs` (censo `orca terminal list`), `orca-target.cjs`
+(`resolveOrcaTarget` — resolver ÚNICO de "proyecto/lane → terminal Orca vivo", compartido por
+`a2a_send` en `mcp-server.cjs` y por `project-queue.cjs`'s `findTarget`/`deliverPending`, para
+que los dos call sites no diverjan), `orca-send.cjs` (`sendToOrcaTerminal` — último salto:
+`orca terminal send --enter` + lectura de pantalla de vuelta para verificar, mismo vocabulario
+`submitted`/`delivered` que `verified-send.cjs`). `bin/a2a-send-cli.cjs` es el entry point de
+una sola llamada JSON-RPC contra `mcp-server.cjs` para llamadores no-MCP (los dispatchers
+Python de `scripts/orchestration/`), así que TODO control de `a2a_send` (gate, shape, lease,
+cola, self-send guard, audit) aplica también ahí. El transporte WezTerm de `a2a_send`/
+`project-queue.cjs` es legado, apagado por default: ver `WEZBRIDGE_WEZTERM_TRANSPORT` en
+`operations.md`.
+
 Otros directorios: `test/` (suite; medición datada en CLAUDE.md), `bin/guard-shims/` (guards
-argv de git/gh), `scripts/` (install-hooks, orchestrator-turn, queue-drain, daily-rollup,
-sentinels, steward/gates), `docs/` (este mapa, a2a-protocol, operations, USAGE-guard, plugins,
-SETUP-omniclaude-telegram, _drafts/), `plugins/example/`, `board-app/` (cockpit :4272).
+argv de git/gh), `bin/a2a-send-cli.cjs` (CLI de `a2a_send` para scripts no-MCP), `scripts/`
+(install-hooks, orchestrator-turn, queue-drain, daily-rollup, sentinels, steward/gates),
+`docs/` (este mapa, a2a-protocol, operations, USAGE-guard, plugins, SETUP-omniclaude-telegram,
+_drafts/), `plugins/example/`, `board-app/` (cockpit :4272).
 
 ## API endpoints del daemon :4200 (consumidos por el MCP server)
 - `GET /api/panes` (alias `/api/sessions`) — lista de panes descubiertos

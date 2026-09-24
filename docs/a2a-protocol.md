@@ -1,6 +1,8 @@
-<!-- doc-head: A2A contract and executable fleet rules, T-0327 and T-0377 -->
+<!-- doc-head: A2A contract and executable fleet rules, T-0327, T-0377 and T-0596 -->
 2026-09-06: 900-character refusal with explicit opt-in; ticketed cross-repo provenance; registered routine evidence.
-Covers sender guards, result criteria, queue identity and isolated T-0377 restore evidence; read before dispatch or review.
+2026-09-24 (T-0596): Orca is the default a2a_send/queue-drain transport (fleet lives in Orca
+terminals, WezTerm has 0 panes); WezTerm delivery is legacy, off unless WEZBRIDGE_WEZTERM_TRANSPORT=1.
+Covers sender guards, result criteria, queue identity, isolated T-0377 restore evidence, and Orca transport; read before dispatch or review.
 Transport receipt is not work acceptance. Runtime activation and loaded MCP revision require separate verification.
 <!-- /doc-head -->
 
@@ -118,7 +120,7 @@ hope; a rule exists only if something deterministic fails when it's violated):
 | Decision ledger on results | `src/a2a-intel.cjs` (`detectDecisions`/`detectEvidence`) inside `a2a_send` | `decisions` (count+items with confidence) + `evidence` (count+items from criteria lines) persisted per result to `_intel/a2a-results.jsonl`; response exposes both counts |
 | Every envelope audited | same, server-side | Metadata (never bodies) appended to `Py Apps/_intel/events.jsonl` |
 | Open-thread tracking | same, server-side | `_intel/a2a-threads.json`: request opens corr → result awaits ack → ack closes; every send response lists `unacked_inbound` corrs the CALLER still owes acks for |
-| Durable project addressing | `a2a_send {to_project}` + `src/project-queue.cjs` | Pane resolved via `pane-identity` AT SEND TIME (never a stored pane id — ids reset on WezTerm restart, the misroute class); the envelope is ALWAYS appended to `_intel/queues/<project>.jsonl`, and undelivered entries are retried by `scripts/queue-drain.cjs` (cron-able one-pass drain: sha1 dedupe, attempt cap 3 → flag-and-stop, 5-min cooldown, 24h age expiry) |
+| Durable project addressing | `a2a_send {to_project}` + `src/project-queue.cjs` | Target resolved AT SEND TIME (never a stored pane id — ids reset on WezTerm restart, the misroute class). Since T-0596 (2026-09-24) resolution tries an **Orca terminal first** via `src/orca-target.cjs`'s `resolveOrcaTarget` (shared resolver, also used by the queue drain) — WezTerm pane resolution is legacy, gated behind `WEZBRIDGE_WEZTERM_TRANSPORT=1` (off by default; see "Transport: Orca vs. WezTerm" below). The envelope is ALWAYS appended to `_intel/queues/<project>.jsonl`, and undelivered entries are retried by `scripts/queue-drain.cjs` (cron-able one-pass drain: sha1 dedupe, attempt cap 3 → flag-and-stop, 5-min cooldown, 24h age expiry) |
 | Bookkeeping auto-ack on results | `a2a-intel.cjs autoAckResult`, called by `a2a_send` and the queue drain | A VERIFIED `type=result` delivery (`submitted` read back, tail intact) closes its awaiting-ack thread automatically (`a2a.thread-auto-acked` event + `auto_ack` line in `_intel/actions.jsonl`). The receipt acuse stops being an LLM turn; the requester's JUDGEMENT on the result (validate evidence, review→done) is never automated. Unverified deliveries keep the awaiting-ack nag |
 | Contract recall on receive | `~/.claude/hooks/a2a-protocol-inject.cjs` (UserPromptSubmit) | Protocol contract injected next to every inbound envelope — immune to context rot |
 | No finishing with open threads | `~/.claude/hooks/a2a-thread-gate.cjs` (Stop) | Session cannot end with an unanswered request or unacked result (max 2 blocks per corr, then warn-only) |
@@ -153,6 +155,41 @@ thread in `_intel/a2a-threads.json`; the pane-beacon hook passes `GATE:*:*`
 markers through verbatim to `_intel/pane-events.jsonl`, so an orchestrator's
 Monitor can wake on gates with zero prose parsing. The inject hook states this
 contract next to every inbound request.
+
+## Transport: Orca vs. WezTerm (T-0596, 2026-09-24)
+
+Operator/Fleet decision: every pane terminal now lives in Orca; WezTerm has 0 panes. For
+`to_project` sends and for the queue drain (`deliverPending`), **Orca is resolved first and is
+the only default transport**:
+
+- **Resolver:** `src/orca-target.cjs`'s `resolveOrcaTarget(project)` — ONE shared function used
+  by both `a2a_send` (`mcp-server.cjs`) and `project-queue.cjs`'s `findTarget`, so the two call
+  sites cannot drift the way WezTerm resolution and queue resolution once could.
+- **Delivery:** `src/orca-send.cjs`'s `sendToOrcaTerminal` — `orca terminal send --enter` +
+  screen read-back verification (same `submitted`/`delivered` vocabulary as `verified-send.cjs`).
+- **Self-send guard:** identity is `process.env.ORCA_TERMINAL_HANDLE` (stamped by Orca into every
+  spawned terminal). A `to_project` that resolves to the caller's OWN terminal is refused before
+  transport (`a2a_send`) or dropped without retry (`deliverPending`) — sending to yourself cannot
+  be delivered and would otherwise hammer a deadlock loop.
+- **Backlog seal:** entries enqueued before `ORCA_DRAIN_NOT_BEFORE` (`2026-09-24T18:00:00Z`, or
+  the `WEZBRIDGE_DRAIN_NOT_BEFORE` env override) are never re-delivered via the Orca branch, even
+  if still under the 24h `maxAgeMs` — the pre-Orca-drain backlog is already resolved on the
+  ledger and must not replay.
+- **Non-MCP callers:** `bin/a2a-send-cli.cjs` routes Python dispatchers
+  (`scripts/orchestration/notify_orchestrator.py`, `task_router.py`) through the real
+  `a2a_send` JSON-RPC call, so every fleet control (gate, shape, lease, queue, self-send guard,
+  audit) applies to them too — no hand-typed `orca terminal send`.
+- **WezTerm delivery is LEGACY, off by default (T-0596 item 4):** set
+  `WEZBRIDGE_WEZTERM_TRANSPORT=1` to restore WezTerm-pane-first resolution/delivery in both
+  `a2a_send` and the queue drain. With the flag off, a target that would only resolve via a
+  WezTerm pane stays durably queued with a reason — never silently dropped. `send_prompt`'s tool
+  description now says it is deprecated for fleet messaging (use `a2a_send`); it remains one of
+  the WezTerm-only tools (`discover_sessions`, `send_prompt`, `read_output`, `send_key`,
+  `get_status`, `list_projects`, `kill_session`, `set_tab_title`) — retiring those is a separate,
+  not-yet-scheduled card.
+
+Full operational detail (env vars, smoke-test rule, retry-id contract): `docs/operations.md`'s
+"Transporte Orca" section.
 
 ## Sending
 
