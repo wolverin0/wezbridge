@@ -10,8 +10,8 @@
  *
  * Fix: auditUnrecordedDecisions exempts a card ONLY when BOTH are true —
  * origin_key starts with `orchestrator:loop-stall:` AND evaluator_evidence
- * carries the literal marker clearStall itself writes ("la alarma de stall
- * se cierra sola (T-0283 AC6)"). origin_key alone is NOT enough (a human can
+ * carries the literal marker clearStall itself writes (CLEARSTALL_EVIDENCE_MARKER,
+ * imported below from scripts/orchestrator-turn.cjs). origin_key alone is NOT enough (a human can
  * hand-cancel a loop-stall card without clearStall ever running), which is
  * the negative control below.
  *
@@ -26,11 +26,11 @@ const os = require('node:os');
 const path = require('node:path');
 const steward = require('../scripts/fleet-steward.cjs');
 const { FINDING_CATEGORY } = require('../src/rulings.cjs');
+const { CLEARSTALL_EVIDENCE_MARKER, STALL_ORIGIN } = require('../scripts/orchestrator-turn.cjs');
 
 const NOW = Date.parse('2026-09-15T10:00:00.000Z');
 const hoursAgo = (h) => new Date(NOW - h * 3600000).toISOString();
 const CAT = 'decision-unrecorded';
-const CLEARSTALL_MARKER = 'la alarma de stall se cierra sola (T-0283 AC6)';
 
 function intelWith({ rulings = [], cards = [] }) {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'steward-stall-selfclose-'));
@@ -46,8 +46,8 @@ function intelWith({ rulings = [], cards = [] }) {
 const stallSelfClosed = (over = {}) => ({
   id: 'T-0467', repo: 'wezbridge', kind: 'question', title: 'The orchestrator loop is firing and achieving nothing',
   state: 'cancelled', gate: 'operator', blocked_by: 'operator',
-  origin_key: 'orchestrator:loop-stall:2026-09-14T09:00:00.000Z',
-  evaluator_evidence: `loop productivo de nuevo ${hoursAgo(2)}: ${CLEARSTALL_MARKER}`,
+  origin_key: `${STALL_ORIGIN}:2026-09-14T09:00:00.000Z`,
+  evaluator_evidence: `loop productivo de nuevo ${hoursAgo(2)}: ${CLEARSTALL_EVIDENCE_MARKER}`,
   lease: null, created_at: hoursAgo(30), state_changed_at: hoursAgo(5), updated_at: hoursAgo(5), ...over,
 });
 
