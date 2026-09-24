@@ -1610,6 +1610,13 @@ function handleToolCall(name, args) {
       // por CLI con timeout).
       let recordedResult = null;
       let ledgerNote = '';
+      // T-0596: which transport actually carries this envelope — WezTerm keeps
+      // its existing precedence; Orca is only tried when pane-identity.resolve()
+      // finds no live WezTerm pane for to_project. Declared here (before
+      // recordAndLinkResult) so that closure's captured `transport` reflects
+      // the value the resolution block below assigns.
+      let transport = 'wezterm';
+      let toHandle = null;
       // T-0571: id is DERIVED (entryId), not random — a random id per SEND
       // made three identical resends of the SAME envelope (same corr + same
       // body, the 151x incident class) write three DIFFERENT ids, and
@@ -1632,7 +1639,7 @@ function handleToolCall(name, args) {
           // verifica A NIVEL DE FUENTE (este archivo no exporta nada), y esa
           // asercion es lo unico que impide que un cuerpo que no es result
           // termine en a2a-results.jsonl. No lo "simplifiques".
-          if (msgType === 'result') recordedResult = a2aIntel.recordResultBody({ id: resultId, corr, fromPane, toPane: pane, v2, body });
+          if (msgType === 'result') recordedResult = a2aIntel.recordResultBody({ id: resultId, corr, fromPane, toPane: pane, v2, body, transport });
           if (!recordedResult) return;
           const resultLinker = require('./result-linker.cjs');
           const linked = resultLinker.link(
@@ -1666,39 +1673,80 @@ function handleToolCall(name, args) {
         const hit = paneIdentity.resolve(toProject, mapped);
         resolutionWarning = hit.warning;
         if (hit.paneId === null || hit.ambiguous.length) {
-          // W2: un result encolado ya paso el shape-check; aca queda REGISTRADO
-          // y ligado a su tarjeta ANTES de encolar, para que la linea de la cola
-          // pueda declarar recorded:true. La entrega puede esperar al drain; el
-          // hecho de que el trabajo termino no.
-          recordAndLinkResult(null);
-          const q = projectQueue.enqueue({
-            project: toProject, corr, type: msgType, from_pane: fromPane,
-            from_project: selfRes.project || null,
-            resolved_pane: null, submitted: null, delivered: null, ok: false, body,
-            // W4 handshake: el cuerpo YA quedo en a2a-results.jsonl, asi que
-            // deliverPending no vuelve a registrarlo al drenar. Sin la marca el
-            // mismo result se cuenta dos veces.
-            ...(recordedResult ? { recorded: true } : {}),
-          });
-          return {
-            content: [{
-              type: 'text',
-              text: JSON.stringify({
-                ok: false,
-                queued: q.ok,
-                to_project: toProject,
-                resolved_pane: null,
-                corr,
-                type: msgType,
-                note: `${hit.warning || `no live pane for "${toProject}"`} — NOT delivered now. ${q.ok
-                  ? `Durably queued in _intel/queues/: run \`node scripts/queue-drain.cjs\` (cron-able) to retry, or re-send once the pane exists.`
-                  : 'Queue append ALSO failed — this message is not persisted anywhere; re-send it.'}${ledgerNote}`,
-              }, null, 2),
-            }],
-            isError: false,
-          };
+          // T-0596: WezTerm has no live pane (or an ambiguous one) for this
+          // project. Before queue-only, try an ORCA terminal — the fleet moved
+          // there 2026-09-24 and WezTerm alone is now blind to most of it.
+          // WezTerm keeps unconditional precedence above; this only runs when
+          // it found nothing usable. Never widens beyond this ONE call site
+          // (project-queue.cjs's own queue-drain resolver is untouched).
+          let orcaHit = { handle: null, ambiguous: [], warning: null };
+          if (!hit.ambiguous.length) {
+            try {
+              const orcaCensus = require('./orca-census.cjs');
+              const laneRoster = require('./lane-roster.cjs');
+              const census = await orcaCensus.runCensus();
+              if (census.ok) {
+                const roster = laneRoster.loadRoster();
+                // Cross-match the roster's (possibly stale/renumbered) handle
+                // against the LIVE census the same way lane-roster.cjs already
+                // does for bridge_health, so a lane name resolves even when
+                // orchestrators.json's handle is a prefix of the current one.
+                const merged = laneRoster.mergeLanes(roster, {
+                  list: census.terminals.map((t) => ({ handle: t.handle, title: t.title })),
+                });
+                const laneByHandle = new Map();
+                for (const m of merged) {
+                  if (!m.live || !m.handle) continue;
+                  const full = census.terminals.find((t) => t.handle === m.handle || t.handle.startsWith(m.handle));
+                  if (full) laneByHandle.set(full.handle, m.lane);
+                }
+                const orcaTerminals = census.terminals
+                  .filter((t) => t.connected)
+                  .map((t) => ({ handle: t.handle, title: t.title, worktreePath: t.worktreePath, lane: laneByHandle.get(t.handle) || null }));
+                orcaHit = paneIdentity.resolveOrca(toProject, orcaTerminals);
+              }
+            } catch { /* orca census down -> queue-only below, same fail-soft stance as wezterm discovery */ }
+          }
+          if (orcaHit.handle && !orcaHit.ambiguous.length) {
+            transport = 'orca';
+            toHandle = orcaHit.handle;
+            resolutionWarning = orcaHit.warning;
+          } else {
+            // W2: un result encolado ya paso el shape-check; aca queda REGISTRADO
+            // y ligado a su tarjeta ANTES de encolar, para que la linea de la cola
+            // pueda declarar recorded:true. La entrega puede esperar al drain; el
+            // hecho de que el trabajo termino no.
+            recordAndLinkResult(null);
+            const q = projectQueue.enqueue({
+              project: toProject, corr, type: msgType, from_pane: fromPane,
+              from_project: selfRes.project || null,
+              resolved_pane: null, submitted: null, delivered: null, ok: false, body,
+              // W4 handshake: el cuerpo YA quedo en a2a-results.jsonl, asi que
+              // deliverPending no vuelve a registrarlo al drenar. Sin la marca el
+              // mismo result se cuenta dos veces.
+              ...(recordedResult ? { recorded: true } : {}),
+            });
+            return {
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  ok: false,
+                  queued: q.ok,
+                  to_project: toProject,
+                  resolved_pane: null,
+                  corr,
+                  type: msgType,
+                  note: `${orcaHit.warning || hit.warning || `no live pane for "${toProject}"`} — NOT delivered now. ${q.ok
+                    ? `Durably queued in _intel/queues/: run \`node scripts/queue-drain.cjs\` (cron-able) to retry, or re-send once the pane exists.`
+                    : 'Queue append ALSO failed — this message is not persisted anywhere; re-send it.'}${ledgerNote}`,
+                }, null, 2),
+              }],
+              isError: false,
+            };
+          }
+        } else {
+          toPane = hit.paneId;
         }
-        toPane = hit.paneId;
       }
 
       // Guard the raw to_pane path (mm-0dc1): an id that no live pane answers to
@@ -1773,16 +1821,33 @@ function handleToolCall(name, args) {
       }
 
       try {
-        const pinned = args.expected_cwd ? require('./pinned-send.cjs').createPinnedSend({ paneId: toPane, cwd: args.expected_cwd }) : null;
-        const delivered = await (pinned ? pinned.sendPromptDeferredEnter : sendPromptDeferredEnter)(toPane, envelope);
-        if (delivered && delivered.refused) {
-          // T-0323: composer con texto ajeno => la primitiva no escribio nada.
-          // No verificar (reintentaria Enter sobre el texto del operador).
-          log(`a2a_send pane-${fromPane} -> pane-${toPane} corr=${corr} REFUSED ${delivered.refused}: held=${JSON.stringify(String(delivered.held).slice(0, 80))}`);
-          return { content: [{ type: 'text', text: `REFUSED (${delivered.refused}): pane ${toPane} (${toProject || 'unknown project'}) composer holds UNSENT text ${JSON.stringify(String(delivered.held).slice(0, 120))} — the envelope was NOT typed (corr=${corr}). Retry after the operator submits or clears it; enqueue via the project queue if it must not be lost.` }], isError: true, submitted: 'refused', delivered: 'refused' };
+        let delivered;
+        let submitted;
+        if (transport === 'orca') {
+          // T-0596: Orca is transport only — no composer-foreign-text guard,
+          // no pinned-send (expected_cwd requires an explicit to_pane, refused
+          // at the top of this handler, so this branch never sees it).
+          // `--retry-request` is NOT a caller-chosen idempotency key (measured
+          // against the real orca.exe: a fresh id is refused as
+          // invalid_argument) — orca-send.cjs reissues internally with the id
+          // Orca itself reports on an ambiguous-transport refusal.
+          const orcaSend = require('./orca-send.cjs');
+          const orcaResult = await orcaSend.sendToOrcaTerminal(toHandle, envelope);
+          delivered = orcaResult.delivered;
+          submitted = orcaResult.submitted;
+          log(`a2a_send pane-${fromPane} -> orca:${toHandle} corr=${corr} type=${msgType} [submit:${submitted} deliver:${delivered}]${orcaResult.error ? ` error=${orcaResult.error}` : ''}`);
+        } else {
+          const pinned = args.expected_cwd ? require('./pinned-send.cjs').createPinnedSend({ paneId: toPane, cwd: args.expected_cwd }) : null;
+          delivered = await (pinned ? pinned.sendPromptDeferredEnter : sendPromptDeferredEnter)(toPane, envelope);
+          if (delivered && delivered.refused) {
+            // T-0323: composer con texto ajeno => la primitiva no escribio nada.
+            // No verificar (reintentaria Enter sobre el texto del operador).
+            log(`a2a_send pane-${fromPane} -> pane-${toPane} corr=${corr} REFUSED ${delivered.refused}: held=${JSON.stringify(String(delivered.held).slice(0, 80))}`);
+            return { content: [{ type: 'text', text: `REFUSED (${delivered.refused}): pane ${toPane} (${toProject || 'unknown project'}) composer holds UNSENT text ${JSON.stringify(String(delivered.held).slice(0, 120))} — the envelope was NOT typed (corr=${corr}). Retry after the operator submits or clears it; enqueue via the project queue if it must not be lost.` }], isError: true, submitted: 'refused', delivered: 'refused' };
+          }
+          submitted = await (pinned ? pinned.verifyPromptSubmission : verifyPromptSubmission)(toPane, envelope);
+          log(`a2a_send pane-${fromPane} -> pane-${toPane} corr=${corr} type=${msgType} [submit:${submitted} deliver:${delivered}]`);
         }
-        const submitted = await (pinned ? pinned.verifyPromptSubmission : verifyPromptSubmission)(toPane, envelope);
-        log(`a2a_send pane-${fromPane} -> pane-${toPane} corr=${corr} type=${msgType} [submit:${submitted} deliver:${delivered}]`);
         const truncated = delivered === 'truncated';
         // Control-plane enforcement (fail-soft, never blocks delivery):
         // v2 shape check on results, audit every envelope, track open threads.
@@ -1794,7 +1859,7 @@ function handleToolCall(name, args) {
         const evidence = msgType === 'result' ? a2aIntel.detectEvidence(body) : undefined;
         // T-0235: from_project is the STABLE identity in the event record —
         // pane ids die with every WezTerm restart, project names do not.
-        a2aIntel.recordEvent({ from_pane: fromPane, ...(selfRes.project ? { from_project: selfRes.project } : {}), ...(selfRes.source !== 'explicit' ? { from_source: selfRes.source } : {}), to_pane: toPane, ...(toProject ? { to_project: toProject } : {}), corr, type: msgType, submitted, delivered, ...(v2 ? { v2 } : {}) });
+        a2aIntel.recordEvent({ from_pane: fromPane, ...(selfRes.project ? { from_project: selfRes.project } : {}), ...(selfRes.source !== 'explicit' ? { from_source: selfRes.source } : {}), to_pane: toPane, ...(toProject ? { to_project: toProject } : {}), corr, type: msgType, submitted, delivered, transport, ...(v2 ? { v2 } : {}) });
         // Result bodies (the criteria: blocks) persist to the sibling
         // a2a-results.jsonl — events.jsonl stays metadata-only. Fail-soft.
         recordAndLinkResult(toPane);
@@ -1807,6 +1872,7 @@ function handleToolCall(name, args) {
             project: toProject, corr, type: msgType, from_pane: fromPane,
             from_project: selfRes.project || null,
             resolved_pane: toPane, submitted, delivered, ok: verified, body,
+            transport,
             ...(recordedResult ? { recorded: true } : {}),
           })
           : null;
@@ -1917,6 +1983,8 @@ function handleToolCall(name, args) {
               ...(selfRes.source !== 'explicit' ? { from_source: selfRes.source } : {}),
               ...(selfRes.source === 'env-corrected' ? { from_identity_note: selfRes.warning } : {}),
               to_pane: toPane,
+              transport,
+              ...(transport === 'orca' ? { to_handle: toHandle } : {}),
               ...(toProject ? { to_project: toProject, queued: queued ? queued.ok : false } : {}),
               // Raw to_pane: name WHO that id actually is, so a send that lands
               // on the wrong live session is visible instead of plausible.

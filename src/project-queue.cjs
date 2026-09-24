@@ -128,6 +128,11 @@ function enqueue(entry, { base } = {}) {
       // al encolar. La marca viaja con la linea para que el drenaje NO lo
       // registre otra vez — el linker leeria el mismo result dos veces.
       ...(entry.recorded ? { recorded: true } : {}),
+      // T-0596: which transport actually delivered this (or attempted to) —
+      // omitted entirely when the caller doesn't know (queue-only enqueue,
+      // pre-T-0596 callers), never synthesized, so a reader that doesn't know
+      // the field is unaffected.
+      ...(entry.transport ? { transport: entry.transport } : {}),
       body: String(entry.body || ''),
     });
     fs.appendFileSync(file, line + '\n');

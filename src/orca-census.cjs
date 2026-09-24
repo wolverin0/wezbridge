@@ -49,12 +49,28 @@ const ECHO_MARKERS = ['[ORCHESTRATOR]', '[MISSION]', 'emiti', 'emití', 'report=
   // T-0555: literal placeholders from the brief's close-format block, quoted back on screen.
   'task_id=T-NNNN', "q='<", 'outcome=succeeded|failed', 'running=<ids>'];
 
-/** Default CLI runner: async, bounded, never blocks the caller's event loop. */
+/**
+ * Default CLI runner: async, bounded, never blocks the caller's event loop.
+ * T-0596: a `.cjs` bin (test doubles only — the real orca.exe never ends in
+ * .cjs) is run via `node <script> <args>`: plain .cjs files have no shebang
+ * association on Windows and execFile refuses to spawn them directly (same
+ * reasoning as test/setup.cjs's mockCommand for the WezTerm double, and
+ * orca-send.cjs's defaultRunOrca).
+ */
 function defaultRunOrca(args, { bin = DEFAULT_ORCA_BIN, timeoutMs = 15000 } = {}) {
+  const [cmd, cmdArgs] = bin.endsWith('.cjs') ? [process.execPath, [bin, ...args]] : [bin, args];
   return new Promise((resolve, reject) => {
-    execFile(bin, args, { encoding: 'utf8', timeout: timeoutMs, windowsHide: true, maxBuffer: 32 * 1024 * 1024 },
+    execFile(cmd, cmdArgs, { encoding: 'utf8', timeout: timeoutMs, windowsHide: true, maxBuffer: 32 * 1024 * 1024 },
       (err, stdout, stderr) => {
-        if (err) { err.message = `${err.message}${stderr ? ` | ${String(stderr).slice(0, 200)}` : ''}`; return reject(err); }
+        // Same nuance as orca-send.cjs's defaultRunOrca: the real orca.exe can
+        // exit non-zero while still emitting a well-formed {ok:false,...} JSON
+        // body on stdout — only a truly empty stdout is a real transport
+        // failure, never discard a non-empty body.
+        if (err) {
+          if (stdout && stdout.trim()) return resolve(stdout);
+          err.message = `${err.message}${stderr ? ` | ${String(stderr).slice(0, 200)}` : ''}`;
+          return reject(err);
+        }
         resolve(stdout);
       });
   });

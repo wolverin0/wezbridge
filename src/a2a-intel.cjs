@@ -166,7 +166,7 @@ const RESULT_BODY_CAP = 16 * 1024;
  * es unico: un corr puede tener varios results legitimos, ej. reintentos con
  * cuerpo distinto).
  */
-function recordResultBody({ corr, fromPane, toPane, v2, body, id = null }) {
+function recordResultBody({ corr, fromPane, toPane, v2, body, id = null, transport = null }) {
   try {
     const text = String(body ?? '');
     const truncated = text.length > RESULT_BODY_CAP;
@@ -178,6 +178,9 @@ function recordResultBody({ corr, fromPane, toPane, v2, body, id = null }) {
       corr,
       from_pane: fromPane,
       to_pane: toPane,
+      // T-0596: last-hop transport (orca|wezterm) — omitted when the caller
+      // doesn't pass one (queue-only / pre-T-0596 callers), never synthesized.
+      ...(transport ? { transport } : {}),
       v2,
       abandons: detectAbandons(text).count,
       decisions: detectDecisions(text),

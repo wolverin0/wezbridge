@@ -7,13 +7,21 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const orcaSend = require('../src/orca-send.cjs');
 
-function fakeRunOrca({ sendOk = true, sendError = null, tailByHandle = {}, throwOnSend = null } = {}) {
+function fakeRunOrca({ sendOk = true, sendError = null, tailByHandle = {}, throwOnSend = null, ambiguousThenOk = null } = {}) {
   const calls = [];
+  let sendCallCount = 0;
   const fn = async (args) => {
     calls.push(args);
     if (args[1] === 'send') {
+      sendCallCount += 1;
       if (throwOnSend) throw new Error(throwOnSend);
-      if (!sendOk) return JSON.stringify({ ok: false, error: sendError || 'send failed' });
+      // Measured real-CLI shape: the FIRST attempt (no --retry-request) is
+      // refused with an orchestrationRequestId; a SECOND attempt reissued
+      // with EXACTLY that id (as the real contract requires) succeeds.
+      if (ambiguousThenOk && sendCallCount === 1) {
+        return JSON.stringify({ ok: false, error: { code: 'ambiguous_transport_failure', message: 'retry with the reported id', data: { orchestrationRequestId: ambiguousThenOk } } });
+      }
+      if (!sendOk) return JSON.stringify({ ok: false, error: sendError || { code: 'send_failed', message: 'send failed' } });
       return JSON.stringify({ ok: true, result: { accepted: true } });
     }
     if (args[1] === 'read') {
@@ -40,27 +48,43 @@ test('screenShowsSubmittedBody: false when the text still sits unsent in the com
   assert.equal(orcaSend.screenShowsSubmittedBody(tail, 'FinalOrchestra JOB-9: COMPLETED and done'), false);
 });
 
-test('sendToOrcaTerminal: happy path returns delivered:ok, submitted:submitted, ok:true, with screen evidence', async () => {
+test('sendToOrcaTerminal: happy path (clean first attempt) returns delivered:ok, submitted:submitted, ok:true, with screen evidence, and sends NO --retry-request', async () => {
   const body = 'smoke T-0596 transporte orca — ignorar';
   const runOrca = fakeRunOrca({ tailByHandle: { term_x: ['prior line', body, '❯ '] } });
-  const res = await orcaSend.sendToOrcaTerminal('term_x', body, { runOrca, sleep: noSleep, retryId: 'r1' });
+  const res = await orcaSend.sendToOrcaTerminal('term_x', body, { runOrca, sleep: noSleep });
   assert.equal(res.ok, true);
   assert.equal(res.submitted, 'submitted');
   assert.equal(res.delivered, 'ok');
+  assert.equal(res.retryId, null, 'a clean first attempt never reissues, so there is no orchestration id to report');
   assert.ok(Array.isArray(res.tail));
-  const sendCall = runOrca.calls.find((c) => c[1] === 'send');
-  assert.ok(sendCall.includes('--retry-request'));
-  assert.equal(sendCall[sendCall.indexOf('--retry-request') + 1], 'r1');
-  assert.ok(sendCall.includes('--enter'));
+  const sendCalls = runOrca.calls.filter((c) => c[1] === 'send');
+  assert.equal(sendCalls.length, 1);
+  assert.equal(sendCalls[0].includes('--retry-request'), false,
+    'measured against the real orca.exe: a caller-chosen --retry-request on a FIRST attempt is refused as invalid_argument');
+  assert.ok(sendCalls[0].includes('--enter'));
 });
 
-test('sendToOrcaTerminal: CLI-level send failure -> ok:false, submitted/delivered unknown, error surfaced', async () => {
-  const runOrca = fakeRunOrca({ sendOk: false, sendError: 'terminal not writable' });
+test('sendToOrcaTerminal: an ambiguous-transport refusal is reissued ONCE with the EXACT id Orca reported, and that retry succeeds', async () => {
+  const body = 'resend me';
+  const runOrca = fakeRunOrca({ ambiguousThenOk: 'orca-reported-uuid-123', tailByHandle: { term_x: [body] } });
+  const res = await orcaSend.sendToOrcaTerminal('term_x', body, { runOrca, sleep: noSleep });
+  assert.equal(res.ok, true);
+  assert.equal(res.retryId, 'orca-reported-uuid-123');
+  const sendCalls = runOrca.calls.filter((c) => c[1] === 'send');
+  assert.equal(sendCalls.length, 2, 'exactly one reissue, not an open-ended retry loop');
+  assert.equal(sendCalls[0].includes('--retry-request'), false, 'the FIRST attempt never carries a retry id');
+  assert.equal(sendCalls[1][sendCalls[1].indexOf('--retry-request') + 1], 'orca-reported-uuid-123',
+    'the reissue must use the EXACT id Orca reported, not a caller-derived one');
+});
+
+test('sendToOrcaTerminal: CLI-level send failure with NO orchestrationRequestId -> ok:false, single attempt (nothing to reissue with)', async () => {
+  const runOrca = fakeRunOrca({ sendOk: false, sendError: { code: 'terminal_not_writable', message: 'terminal not writable' } });
   const res = await orcaSend.sendToOrcaTerminal('term_x', 'body', { runOrca, sleep: noSleep });
   assert.equal(res.ok, false);
   assert.equal(res.submitted, 'unknown');
   assert.equal(res.delivered, 'unknown');
   assert.match(res.error, /terminal not writable/);
+  assert.equal(runOrca.calls.filter((c) => c[1] === 'send').length, 1, 'no orchestrationRequestId to reissue with -> no retry attempted');
 });
 
 test('sendToOrcaTerminal: transport exception (spawn ENOENT etc.) -> ok:false, never throws', async () => {
@@ -85,12 +109,17 @@ test('sendToOrcaTerminal: read-back unreadable (unknown terminal) -> ok:false, d
   assert.equal(res.delivered, 'unknown');
 });
 
-test('sendToOrcaTerminal: idempotent retry — same retryId sent twice reaches the CLI with the same --retry-request value', async () => {
-  const body = 'resend me';
-  const runOrca = fakeRunOrca({ tailByHandle: { term_x: [body] } });
-  await orcaSend.sendToOrcaTerminal('term_x', body, { runOrca, sleep: noSleep, retryId: 'stable-id' });
-  await orcaSend.sendToOrcaTerminal('term_x', body, { runOrca, sleep: noSleep, retryId: 'stable-id' });
-  const sendCalls = runOrca.calls.filter((c) => c[1] === 'send');
-  assert.equal(sendCalls.length, 2);
-  for (const c of sendCalls) assert.equal(c[c.indexOf('--retry-request') + 1], 'stable-id');
+test('defaultRunOrca: a CLI that exits non-zero but still writes a JSON body to stdout resolves with that body (measured against real orca.exe 2026-09-24 — a stale-handle refusal exits non-zero while stdout carries {ok:false,...})', async () => {
+  const path = require('node:path');
+  const script = path.join(__dirname, 'mocks', 'orca-mock-exit-nonzero.cjs');
+  const stdout = await orcaSend.defaultRunOrca(['terminal', 'send', '--terminal', 'x'], { bin: script, timeoutMs: 5000 });
+  const j = JSON.parse(stdout);
+  assert.equal(j.ok, false);
+  assert.equal(j.error.code, 'terminal_handle_stale');
+});
+
+test('defaultRunOrca: a truly empty stdout (real transport failure, e.g. spawn ENOENT) still rejects', async () => {
+  await assert.rejects(
+    () => orcaSend.defaultRunOrca(['terminal', 'list'], { bin: 'G:/no-such-orca-binary.exe', timeoutMs: 5000 }),
+  );
 });
