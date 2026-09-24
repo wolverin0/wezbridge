@@ -1610,6 +1610,12 @@ function handleToolCall(name, args) {
       // por CLI con timeout).
       let recordedResult = null;
       let ledgerNote = '';
+      // T-0571: one id per SEND, generated once outside the fail-soft try so it
+      // survives whichever branch (queued vs delivered) actually calls
+      // recordResultBody — without it dedupeResultLines fell back to
+      // corr+sha1(body), collapsing two genuinely distinct results that share
+      // a corr and body in the same cursor batch.
+      const resultId = msgType === 'result' ? require('node:crypto').randomUUID() : null;
       const recordAndLinkResult = (resolvedPane) => {
         if (msgType !== 'result' || recordedResult) return;
         const pane = resolvedPane === undefined ? null : resolvedPane;
@@ -1618,7 +1624,7 @@ function handleToolCall(name, args) {
           // verifica A NIVEL DE FUENTE (este archivo no exporta nada), y esa
           // asercion es lo unico que impide que un cuerpo que no es result
           // termine en a2a-results.jsonl. No lo "simplifiques".
-          if (msgType === 'result') recordedResult = a2aIntel.recordResultBody({ corr, fromPane, toPane: pane, v2, body });
+          if (msgType === 'result') recordedResult = a2aIntel.recordResultBody({ id: resultId, corr, fromPane, toPane: pane, v2, body });
           if (!recordedResult) return;
           const resultLinker = require('./result-linker.cjs');
           const linked = resultLinker.link(
