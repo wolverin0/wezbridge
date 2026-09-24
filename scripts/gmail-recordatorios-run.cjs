@@ -21,15 +21,31 @@ async function runGmailRoutine(options, dependencies = {}) {
   let outcome;
   try { outcome = await dispatch({ ...options, runId }); }
   catch (error) { outcome = { exit_status: 1, error: String(error.message || error).slice(0, 240) }; }
-  finally {
-    const exit = Number.isInteger(outcome?.exit_status) ? outcome.exit_status : 1;
-    outcome = { ...record, ...outcome, ended_at: new Date().toISOString(),
-      exit_status: exit, dispatch_exit_status: exit, phase: exit ? 'dispatch_failed' : outcome?.queued ? 'queued' : 'dispatched' };
-    writeJson(path.join(dir, record.findings_file), { verdict: 'void',
-      void_reason: exit ? `dispatch exited ${exit}; Gmail execution not verified` : 'dispatch accepted; Gmail execution not yet verified' });
+  const exit = Number.isInteger(outcome?.exit_status) ? outcome.exit_status : 1;
+  const current = readRecord(recordFile);
+  if (current && FINAL_PHASES.has(current.phase)) {
+    // P1: complete/fail ran DURING dispatch (headless does exactly that). The execution
+    // result owns phase/exit/counts/findings; the dispatch only adds its own fields.
+    const transport = Object.fromEntries(Object.entries(outcome || {}).filter(([k]) => !EXECUTION_FIELDS.has(k)));
+    outcome = { ...current, ...transport, dispatch_exit_status: exit, ended_at: new Date().toISOString() };
     writeJson(recordFile, outcome);
+    return outcome;
   }
+  outcome = { ...record, ...outcome, ended_at: new Date().toISOString(),
+    exit_status: exit, dispatch_exit_status: exit, phase: exit ? 'dispatch_failed' : outcome?.queued ? 'queued' : 'dispatched' };
+  writeJson(path.join(dir, record.findings_file), { verdict: 'void',
+    void_reason: exit ? `dispatch exited ${exit}; Gmail execution not verified` : 'dispatch accepted; Gmail execution not yet verified' });
+  writeJson(recordFile, outcome);
   return outcome;
+}
+
+// Written only by completeGmailRun; a dispatch outcome never overrides them.
+const FINAL_PHASES = new Set(['completed', 'execution_failed']);
+const EXECUTION_FIELDS = new Set(['routine', 'repo', 'task', 'run_id', 'cadence_hours', 'started_at', 'findings_file',
+  'phase', 'exit_status', 'dispatch_exit_status', 'counts', 'completed_at', 'ended_at']);
+
+function readRecord(file) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
 }
 
 function writeJson(file, value) {
