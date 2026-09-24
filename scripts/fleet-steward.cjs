@@ -33,6 +33,7 @@ const { auditRoutines } = require('./routine-audit.cjs');
 const { reconcileLeases, liveCensus: reconcilerCensus } = require('./lease-reconcile.cjs');
 const { lintSpecRefs, lintRulings } = require('./dispatch-lint.cjs');
 const { FINDING_CATEGORY, isOperatorRuling } = require('../src/rulings.cjs');
+const { STALL_ORIGIN, CLEARSTALL_EVIDENCE_MARKER } = require('./orchestrator-turn.cjs');
 
 const HOURS = (h) => h * 3600 * 1000;
 
@@ -590,6 +591,33 @@ function isOperatorGated(task) {
 }
 
 /**
+ * T-0479 — the ONLY exemption to decision-unrecorded: clearStall
+ * (orchestrator-turn.cjs, T-0283 AC6) mechanically cancels the loop-stall
+ * card when the loop is productive again, and that is not a decision taken
+ * in a pane — it is code closing its own alarm. Measured 2026-09-14: T-0467
+ * got flagged decision-unrecorded 24h after clearStall closed it correctly.
+ *
+ * origin_key alone is NOT proof clearStall ran — a human can hand-cancel a
+ * loop-stall card same as any other, and that IS a decision that needs a
+ * ruling. So this requires BOTH: the origin_key prefix clearStall mints
+ * (STALL_ORIGIN) AND the literal evidence marker only clearStall's own code
+ * path writes (CLEARSTALL_EVIDENCE_MARKER, orchestrator-turn.cjs). Neither
+ * constant is redefined here — importing them is what keeps this predicate
+ * from silently drifting off what clearStall actually does, the same defect
+ * class isOperatorGated() fixed for the gate read (T-0486).
+ *
+ * Deliberately NOT a new write path, NOT a new OPERATOR_SOURCES entry, and
+ * NOT touching the rulings channel at all: this reads two fields the mechanical
+ * close ALREADY persists on the task (origin_key, evaluator_evidence). No
+ * operator provenance is manufactured — T-0403 removed that shortcut and it
+ * stays removed; this is "recognise a non-decision", not "invent a ruling".
+ */
+function isStallSelfClose(task) {
+  if (!task || typeof task.origin_key !== 'string' || !task.origin_key.startsWith(`${STALL_ORIGIN}:`)) return false;
+  return typeof task.evaluator_evidence === 'string' && task.evaluator_evidence.includes(CLEARSTALL_EVIDENCE_MARKER);
+}
+
+/**
  * T-0326 — `decision-unrecorded`: el operador decidio DENTRO de un pane y el
  * pane actuo sin escribir el ruling. Medido el 2026-09-02 cuatro veces en un dia
  * (T-0253 "olvidate de eso", T-0297 "elegi renombrar", el restart de wabot,
@@ -606,7 +634,8 @@ function isOperatorGated(task) {
  * opera). El buen camino (decide / tablero) deja el ruling y des-gatea, asi
  * que no dispara. Epoca 2026-09-01 por state_changed_at: el backlog viejo no
  * se retro-flaggea. Se autolimpia: un `decidir` tardio para esa tarjeta lo
- * apaga.
+ * apaga. T-0479: la UNICA otra salida es isStallSelfClose — ver su
+ * doc-comment — porque esa "decision" nunca la tomo un humano.
  */
 function auditUnrecordedDecisions(tasks, dir = intelDir(), now = Date.now()) {
   const LEFT_GATE = new Set(['ready', 'running', 'review', 'done', 'cancelled']);
@@ -615,6 +644,7 @@ function auditUnrecordedDecisions(tasks, dir = intelDir(), now = Date.now()) {
   for (const t of tasks) {
     if (!t || !LEFT_GATE.has(t.state)) continue;
     if (!isOperatorGated(t)) continue;
+    if (isStallSelfClose(t)) continue;
     const moved = ms(t.state_changed_at);
     if (!moved || moved < DECISION_EPOCH || moved > now) continue;
     if (recorded.has(t.id)) continue;
@@ -807,7 +837,7 @@ function render(report) {
 module.exports = {
   classify, audit, render, RULES, loadTasks, loadRulings, auditTaskFiles, TASK_FILE,
   lastTransition, lastProgress, ownProgress, buildContext, auditProposals, auditResultLinks, auditDecisions,
-  auditUnrecordedDecisions, isOperatorGated,
+  auditUnrecordedDecisions, isOperatorGated, isStallSelfClose,
 };
 
 if (require.main === module) {

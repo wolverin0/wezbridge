@@ -331,6 +331,19 @@ function writeTurn(rec) {
  */
 const STALL_ORIGIN = 'orchestrator:loop-stall';
 
+/**
+ * T-0479 — the literal marker clearStall writes into a card's evidence when
+ * IT is the one closing the card (never a human). Exported so
+ * fleet-steward.cjs's decision-unrecorded audit can recognise this exact
+ * mechanical close instead of duplicating the string — a second copy is how
+ * the two silently drift apart, same defect family as gateOf() duplicating
+ * the operator-gate read before T-0486 unified it into isOperatorGated().
+ * Kept separate from STALL_ORIGIN deliberately: origin_key alone is NOT
+ * proof clearStall ran (a human can hand-cancel a loop-stall card), so the
+ * audit must see BOTH the origin_key prefix AND this marker.
+ */
+const CLEARSTALL_EVIDENCE_MARKER = 'la alarma de stall se cierra sola (T-0283 AC6)';
+
 /** First line of an error, for one-line logs. */
 const firstLine = (e) => String(e && e.message).split(String.fromCharCode(10))[0];
 
@@ -440,7 +453,7 @@ function clearStall({ productive, now = new Date().toISOString(), reason = '' } 
     try {
       ledger.update(card.id, {
         state: 'cancelled',
-        evidence: `loop productivo de nuevo ${now}${reason ? ` (${reason})` : ''}: la alarma de stall se cierra sola (T-0283 AC6)`,
+        evidence: `loop productivo de nuevo ${now}${reason ? ` (${reason})` : ''}: ${CLEARSTALL_EVIDENCE_MARKER}`,
         note: 'clearStall: turno productivo posterior a la alarma',
       });
       out.cleared.push(card.id);
@@ -650,4 +663,4 @@ async function main() {
 }
 
 if (require.main === module) main().then((code) => process.exit(code), (e) => { log(`turn crashed: ${firstLine(e)}`); process.exit(4); });
-module.exports = { reviewWakeTargets, reviewTargetsIn, readReviewObligations, deferralIsLive, classifyWake, classifyEvent, shouldWake, turnWasProductive, raiseStall, clearStall, STALL_LIMIT };
+module.exports = { reviewWakeTargets, reviewTargetsIn, readReviewObligations, deferralIsLive, classifyWake, classifyEvent, shouldWake, turnWasProductive, raiseStall, clearStall, STALL_LIMIT, STALL_ORIGIN, CLEARSTALL_EVIDENCE_MARKER };
