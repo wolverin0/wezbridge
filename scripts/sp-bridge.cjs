@@ -26,10 +26,14 @@
  *   node scripts/sp-bridge.cjs sync-briefs        # cinco briefs -> Avisos, SHA idempotente
  *   node scripts/sp-bridge.cjs sync                # decisions, intake, outcomes, briefs (schtask)
  *   node scripts/sp-bridge.cjs check-notes         # T-0494: lista fleet: con blocker desactualizado (solo lee, no toca SP)
+ *   node scripts/sp-bridge.cjs check-act-links     # T-0495: lista fleet: con act-links-v1 sobre una pregunta de opciones (solo lee)
+ *   node scripts/sp-bridge.cjs cleanup-act-links            # T-0495: dry-run del cleanup de arriba (solo lee, no toca SP)
+ *   node scripts/sp-bridge.cjs cleanup-act-links --confirm  # T-0495: cleanup EN VIVO (escribe) — autorizacion pendiente, ver brief
  */
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { hasOptionQuestion } = require('./option-question.cjs');
 
 const PROTOCOL_VERSION = 1;
 const AGENT_TAG = 'agente';
@@ -141,6 +145,11 @@ function createHub(client, { intel = INTEL, log = () => {}, boardUrl = BOARD_URL
   // Enlaces firmados de /act (aprobar/cancelar/posponer): valen como firma del
   // operador (T-0349) y abren desde el telefono si boardUrl es la URL publica.
   const ACT_LINKS_KEY = 'act-links-v1';
+  // T-0495: acordate de la SUPRESION para siempre — si un sync alguna vez la
+  // limpio a mano (cleanupOptionLinks), nunca mas se vuelven a pegar los
+  // enlaces aunque el blocker mas adelante deje de ser una pregunta de
+  // opciones (evita que un sync futuro "re-agrege" lo que un turno ya sacó).
+  const ACT_LINKS_SUPPRESSED_KEY = 'act-links-suppressed-v1';
   function actLinksBlock(taskId) {
     if (!boardToken) return '';
     try {
@@ -148,6 +157,12 @@ function createHub(client, { intel = INTEL, log = () => {}, boardUrl = BOARD_URL
       return decisionActions(boardUrl, boardToken, taskId).map((a) => `${a.label}: ${a.url}`).join('\n');
     } catch { return ''; }
   }
+  // T-0495: una tarjeta cuyo blocker ofrece 2+ opciones lettered/numeradas no
+  // es una pregunta binaria — un tap en Aprobar/Cancelar/Diferir no puede
+  // decir CUAL opcion, y ademas des-gatea o completa la tarjeta sin
+  // contestarla. Esas tarjetas NUNCA reciben los enlaces /act; se quedan con
+  // la linea de decidir.cjs que decisionNotes() ya pone siempre.
+  const linksAllowed = (c) => boardToken && !hasOptionQuestion(c && c.blocker);
   // T-0494 fix-up: el bloque delimitado NUNCA embebe los enlaces /act — quedan
   // exclusivamente a cargo de appendNoteOnce(ACT_LINKS_KEY) (abajo, en creacion
   // y en el branch de tarea existente), asi refrescar el blocker nunca duplica
@@ -204,6 +219,74 @@ function createHub(client, { intel = INTEL, log = () => {}, boardUrl = BOARD_URL
           blockerHead: cardBlocker.slice(0, 60),
         });
       }
+    }
+    return out;
+  }
+  // T-0495 AC3: detector puramente de archivo (map.json + tarjetas), igual de
+  // seguro que checkNotes — nunca toca el cliente de SP. Marca cada tarjeta
+  // fleet: abierta que tiene act-links-v1 pegado Y cuyo blocker es una
+  // pregunta de opciones (el residuo de ANTES de este fix). Una vez limpia
+  // (ACT_LINKS_SUPPRESSED_KEY) deja de aparecer.
+  function checkActLinks(cards = readCards()) {
+    const map = loadMap(intel);
+    const out = [];
+    for (const [ext, e] of Object.entries(map)) {
+      if (!ext.startsWith('fleet:') || e.doneAt) continue;
+      const appended = e.notesAppended || [];
+      if (!appended.includes(ACT_LINKS_KEY) || appended.includes(ACT_LINKS_SUPPRESSED_KEY)) continue;
+      const id = taskIdOf(ext);
+      if (activeExt(map, id) !== ext) continue;
+      const card = cards.find((x) => x && x.id === id);
+      if (!card || !hasOptionQuestion(card.blocker)) continue;
+      out.push({ id, ext, taskId: e.taskId, blockerHead: String(card.blocker || '').slice(0, 60) });
+    }
+    return out;
+  }
+  // T-0495 AC4: mismo universo que checkActLinks, con el conteo de URLs que
+  // el cleanup sacaria. Solo lectura de map.json + tarjetas (nunca del texto
+  // real de la nota): actLinksBlock() SIEMPRE pega exactamente 3 lineas, una
+  // por verbo de ACTION_VERBS (approved/cancelled/deferred) — esa es la
+  // suposicion documentada que reemplaza leer la nota real sin abrir un
+  // cliente contra el dataDir vivo.
+  function planActLinksCleanup(cards = readCards()) {
+    return checkActLinks(cards).map((v) => ({ ...v, urlsBefore: 3, urlsAfter: 0 }));
+  }
+  // Saca SOLO las 3 lineas "<Label>: <url que empieza con /act?>" que
+  // actLinksBlock()/appendNoteOnce(ACT_LINKS_KEY) pegaron — deja cualquier
+  // otra linea (blocker, Estado, Result, texto libre) byte-identica.
+  function stripActLinksLines(notes) {
+    let labels;
+    try { ({ ACTION_VERBS: labels } = require('../board-app/lib/action-links.cjs')); } catch { labels = {}; }
+    const names = Object.values(labels || {});
+    if (!names.length) return String(notes || '');
+    const re = new RegExp(`^(?:${names.map(escapeRegExp).join('|')}):\\s+\\S*/act\\?`);
+    return String(notes || '').split('\n').filter((line) => !re.test(line.trim())).join('\n');
+  }
+  // Cleanup real de UNA tarjeta (usa el cliente: escribe). Idempotente por
+  // ACT_LINKS_SUPPRESSED_KEY — una segunda pasada no hace nada.
+  async function cleanupActLinksOnce(ext) {
+    const map = loadMap(intel);
+    const e = map[ext];
+    if (!e) return false;
+    e.notesAppended = e.notesAppended || [];
+    if (!e.notesAppended.includes(ACT_LINKS_KEY) || e.notesAppended.includes(ACT_LINKS_SUPPRESSED_KEY)) return false;
+    const tasks = await client.getTasks();
+    const t = tasks.find((x) => x.id === e.taskId);
+    if (!t) return false;
+    const stripped = stripActLinksLines(t.notes || '');
+    if (stripped !== (t.notes || '')) await client.updateTask(e.taskId, { notes: stripped });
+    e.notesAppended.push(ACT_LINKS_SUPPRESSED_KEY);
+    saveMap(map, intel);
+    return true;
+  }
+  // T-0495 AC4: cleanup en lote — la limpieza retroactiva de las tarjetas de
+  // opciones que ya tenian act-links-v1 pegado (residuo de antes de este
+  // fix). Escribe: solo se corre cuando alguien lo invoca explicitamente
+  // (fixtures de test o, mas adelante, autorizacion en vivo separada).
+  async function cleanupOptionLinks(cards = readCards()) {
+    const out = { cleaned: 0, ids: [] };
+    for (const v of checkActLinks(cards)) {
+      if (await cleanupActLinksOnce(v.ext)) { out.cleaned += 1; out.ids.push(v.id); }
     }
     return out;
   }
@@ -385,18 +468,21 @@ function createHub(client, { intel = INTEL, log = () => {}, boardUrl = BOARD_URL
           m[ext].blocker = c.blocker || '';
           saveMap(m, intel);
         }
-        if (boardToken) {
+        if (linksAllowed(c)) {
           // T-0494 fix-up: los enlaces /act se pegan por appendNoteOnce igual que
           // en el branch de tarea existente — una sola fuente de verdad para la
           // key ACT_LINKS_KEY, sin marcarla "ya puesta" sin haberla escrito.
+          // T-0495: linksAllowed() ya descarto las preguntas de opciones —
+          // esas tarjetas nunca reciben approved/cancelled/deferred.
           const links = actLinksBlock(c.id);
           if (links && await appendNoteOnce(ext, links, ACT_LINKS_KEY)) out.linked += 1;
         }
       } else {
         // T-0494: tarea existente — si infra cambio el blocker, refrescarlo.
         await refreshBlockerOnce(ext, c);
-        if (boardToken) {
+        if (linksAllowed(c)) {
           // Tarea creada antes de que existieran los enlaces firmados: se le pegan UNA vez.
+          // T-0495: salvo que la pregunta (actual) sea de opciones.
           const links = actLinksBlock(c.id);
           if (links && await appendNoteOnce(ext, links, ACT_LINKS_KEY)) out.linked += 1;
         }
@@ -448,7 +534,11 @@ function createHub(client, { intel = INTEL, log = () => {}, boardUrl = BOARD_URL
   }
 
   const syncBriefs = () => require('./sp-briefs.cjs').syncBriefs({ client, intel, ensureProject, ensureTag });
-  return { ensureProject, ensureProjects, ensureTag, createTaskOnce, completeOnce, appendNoteOnce, syncDecisions, syncIntake, syncOutcomes, syncBriefs, recordDecision, readCards, checkNotes };
+  return {
+    ensureProject, ensureProjects, ensureTag, createTaskOnce, completeOnce, appendNoteOnce, syncDecisions,
+    syncIntake, syncOutcomes, syncBriefs, recordDecision, readCards, checkNotes,
+    checkActLinks, planActLinksCleanup, cleanupOptionLinks,
+  };
 }
 
 // ---------------------------------------------------------------- CLI
@@ -489,6 +579,27 @@ async function main() {
     console.log(JSON.stringify({ stale: stale.length }));
     return stale.length ? 1 : 0;
   }
+  // T-0495 AC3: igual de puro que check-notes — nunca crea un client. Falla
+  // (exit 1) si hay CUALQUIER tarjeta fleet: abierta con act-links-v1 pegado
+  // y un blocker de opciones (2+ marcadores (a)/(b)/(1)/(2) distintos).
+  if (cmd === 'check-act-links') {
+    const hub = createHub(null, {});
+    const violations = hub.checkActLinks();
+    for (const v of violations) console.log(`${v.id}\text=${v.ext}\tblocker="${v.blockerHead}"`);
+    console.log(JSON.stringify({ violations: violations.length }));
+    return violations.length ? 1 : 0;
+  }
+  // T-0495 AC4: por default SOLO lista el plan (map.json + tarjetas, sin
+  // client, sin tocar nada) — igual de seguro que check-notes/check-act-links.
+  // La limpieza real (updateTask) requiere --confirm explicito Y todavia esta
+  // pendiente de autorizacion en vivo (ver brief T-0495): no se invoca sola.
+  if (cmd === 'cleanup-act-links' && !opts.confirm) {
+    const hub = createHub(null, {});
+    const plan = hub.planActLinksCleanup();
+    for (const p of plan) console.log(`${p.id}\text=${p.ext}\turlsBefore=${p.urlsBefore}\turlsAfter=${p.urlsAfter}\tblocker="${p.blockerHead}"`);
+    console.log(JSON.stringify({ dryRun: true, wouldClean: plan.length }));
+    return 0;
+  }
   const client = createClient();
   const hub = createHub(client, { log: (m) => console.log(m), ...boardConfigFromEnv() });
   const stamp = () => new Date().toISOString();
@@ -522,7 +633,15 @@ async function main() {
       console.log(JSON.stringify(r.record));
       return r.ok ? 0 : 1;
     }
-    default: console.error('uso: sp-bridge.cjs ping|ensure-projects|task|remind|done|decided|sync-decisions|sync-intake|sync-outcomes|sync-briefs|sync|check-notes'); return 2;
+    // T-0495 AC4: limpieza EN VIVO — escribe (updateTask). Autorizacion
+    // pendiente por separado (ver brief T-0495); nadie mas que un --confirm
+    // explicito llega aca. `cleanup-act-links` sin --confirm ya devolvio
+    // arriba el dry-run puro de archivo.
+    case 'cleanup-act-links': {
+      const r = await hub.cleanupOptionLinks();
+      console.log(JSON.stringify(r)); return 0;
+    }
+    default: console.error('uso: sp-bridge.cjs ping|ensure-projects|task|remind|done|decided|sync-decisions|sync-intake|sync-outcomes|sync-briefs|sync|check-notes|check-act-links|cleanup-act-links [--confirm]'); return 2;
   }
 }
 
@@ -566,5 +685,5 @@ async function syncOnce({ hub, logDir = path.join(__dirname, '..', 'logs'), inte
   }
 }
 
-module.exports = { PROTOCOL_VERSION, PROJECTS, AGENT_TAG, resolveDataDir, createClient, createHub, loadMap, mapFile, extMarker, syncOnce };
+module.exports = { PROTOCOL_VERSION, PROJECTS, AGENT_TAG, resolveDataDir, createClient, createHub, loadMap, saveMap, mapFile, extMarker, syncOnce };
 if (require.main === module) main().then((c) => process.exit(c)).catch((e) => { console.error(`sp-bridge: ${e.message}`); process.exit(1); });
