@@ -1,0 +1,46 @@
+diff --git a/lane-guard.cjs b/lane-guard.cjs
+index 616dd59..a3bf1fd 100644
+--- a/lane-guard.cjs
++++ b/lane-guard.cjs
+@@ -110,10 +110,41 @@ function deny(tool, reason, extra) {
+   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } };
+ }
+ 
++// T-0568: catastrophic-command guard (taskkill /IM, Stop-Process -Name, pkill, shutdown, ...).
++// Runs for EVERYONE (orchestrator AND subagents), before the agent_id early return below. Prefers
++// the versioned + tested rule set in wezbridge (see wezbridge/src/catastrophic-commands.cjs and
++// wezbridge/test/catastrophic-commands.test.cjs). If that module can't be loaded (e.g. the live
++// checkout is on a branch that hasn't merged it yet), this does NOT fail closed on all Bash/
++// PowerShell — that would brick every session in the fleet. Instead it falls back to a small
++// inline conservative matcher that only denies the well-known mass-kill/shutdown patterns.
++const CATASTROPHIC_MODULE_ABS = 'G:/_OneDrive/OneDrive/Desktop/Py Apps/wezbridge/src/catastrophic-commands.cjs';
++const INLINE_CATASTROPHIC_RE = /\b(taskkill(\.exe)?\s[^\n]*[/-]im\b|stop-process\b[^\n]*-name\b|spps\b[^\n]*-name\b|pkill\b|killall\b|kill\s+-(9|kill)?\s*-1\b|shutdown\b|restart-computer\b|stop-computer\b)/i;
++function loadCatastrophicClassifier() {
++  const candidates = [];
++  if (process.env.WEZBRIDGE_REPO) candidates.push(process.env.WEZBRIDGE_REPO.replace(/[\\/]+$/, '') + '/src/catastrophic-commands.cjs');
++  candidates.push(CATASTROPHIC_MODULE_ABS);
++  for (const p of candidates) {
++    try { return require(p).classifyCatastrophic; } catch (e) { /* try next */ }
++  }
++  process.stderr.write('lane-guard: catastrophic-command module unavailable, using inline fallback\n');
++  return (command) => {
++    const m = INLINE_CATASTROPHIC_RE.exec(String(command || ''));
++    if (!m) return { deny: false, rule: null, reason: null };
++    return { deny: true, rule: 'inline-fallback', reason: `matches inline pattern: ${m[0].slice(0, 60)}` };
++  };
++}
++
+ let CURRENT_TOOL = '';
+ function main() {
+   const input = readStdin();
+   CURRENT_TOOL = input.tool_name || '';
++  const toolC = input.tool_name || '';
++  if (toolC === 'Bash' || toolC === 'PowerShell') {
++    const cmdC = (input.tool_input || {}).command || '';
++    const classify = loadCatastrophicClassifier();
++    const cat = classify(cmdC);
++    if (cat.deny) return deny(toolC, `CATASTROPHIC (${cat.rule}): ${cat.reason}`, { cmd: cmdC.slice(0, 200) });
++  }
+   if (input.agent_id) return null; // subagent: delegated work is allowed
+   const tool = input.tool_name || '';
+   const bypass = process.env.WEZ_ORCH_BYPASS === '1';
