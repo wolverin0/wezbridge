@@ -4,18 +4,25 @@ Pane-count limiting was removed by operator decision 2026-09-10; legacy env limi
 Source edits do not update already-loaded MCP processes.
 `scripts/quota-dispatcher.cjs` and `scripts/foreman-supervisor-jev.cjs` were retired (T-0582) — census found no live trigger (cron/schtasks/package.json/require/spawn).
 curandero daemon-4200-dead probea /health sin -L: ya daba 503 antes de este cambio; su correccion (usar /api/health) es T-0593 en infra.
+Sección "Automation → ledger router (T-0598)": inventario de automatizaciones programadas, el
+contrato de findings JSON (`_intel/automation-findings/<task>-<fecha>.json`) y
+`scripts/automation-router.cjs` — la única vía por la que una tarea programada entrega algo
+accionable como tarjeta del ledger + a2a_send, en vez de log muerto o sesión interactiva viva.
 <!-- /doc-head -->
 
 # Operations — env vars, restart, crash recovery, mux-wedge + GUI-hang triage (wezbridge)
 > Qué cubre: variables de entorno útiles, el gotcha de rebind del daemon :4200, latitud WSL,
 > recuperación de crash de wezterm, el triage mux-lento-vs-mux-wedgeado (firmas idénticas,
 > remedios opuestos), el tercer caso GUI colgado con mux sano (2026-09-01), el broadcast de
-> `/mcp reconnect <server>` a todos los panes Orca Claude idle (T-0569), y el transporte Orca
-> (T-0596: resolver, self-send guard, backlog seal, CLI para scripts, flag legado de WezTerm).
+> `/mcp reconnect <server>` a todos los panes Orca Claude idle (T-0569), el transporte Orca
+> (T-0596: resolver, self-send guard, backlog seal, CLI para scripts, flag legado de WezTerm), y
+> el router de automatizaciones programadas → ledger (T-0598: contrato de findings JSON,
+> `scripts/automation-router.cjs`).
 > Leer cuando: el daemon no rebindea, wezterm crasheó, todo ETIMEDOUTea, un GUI dice "not
 > responding", hay >1 wezterm-mux-server, un MCP aparece desconectado en varios panes, vas
-> a setear env de guards/grader/inbox, tocás qué despierta al Fleet (digest/waker), o tocás
-> quién entrega un `a2a_send`/queue-drain (Orca vs. WezTerm legado).
+> a setear env de guards/grader/inbox, tocás qué despierta al Fleet (digest/waker), tocás quién
+> entrega un `a2a_send`/queue-drain (Orca vs. WezTerm legado), o vas a agregar/migrar una tarea
+> programada que produce algo accionable.
 > Términos clave: WEZBRIDGE_*, restore-session, probeMux, degraded, inconclusive,
 > session-snapshot, --no-auto-start, gui-watchdog, Recover-WezTermGui, mux_split,
 > espacio único de pane_id (--prefer-mux + sock, T-0260), WEZBRIDGE_PREFER_MUX=0, gui_only,
@@ -23,7 +30,8 @@ curandero daemon-4200-dead probea /health sin -L: ya daba 503 antes de este camb
 > mcp-reconnect-broadcast.cjs, skip:self-busy, ORCA_TERMINAL_HANDLE, fleet-digest, classifyEvent,
 > --count-day, orchestrator-waker (legado, desarmado), orca-target.cjs, orca-send.cjs,
 > ORCA_DRAIN_NOT_BEFORE, WEZBRIDGE_DRAIN_NOT_BEFORE, WEZBRIDGE_WEZTERM_TRANSPORT,
-> a2a-send-cli.cjs.
+> a2a-send-cli.cjs, automation-router.cjs, automation-finding-schema.cjs, emit-finding.cjs,
+> automation-findings, router-state.json.
 
 ## Espacio único de pane_id: el mux (T-0260, 2026-09-02)
 
@@ -331,3 +339,125 @@ por default (sin cambios — cambiar ese default es decisión del Fleet, no de e
 `--kinds suborch_question,suborch_done,worker-done` restringe la salida a esos `event`. Tests:
 `scripts/test_pane_event_watcher.py -v` (no corre dentro de `npm test`, mismo patrón que
 `scripts/orchestration/test_codex_worker.py`).
+
+## Automation → ledger router (T-0598, 2026-09-24)
+
+> Qué cubre: por qué existía el problema (tareas programadas que producen algo accionable y
+> nadie lo convierte en trabajo), el inventario de automatizaciones vivas, el contrato de
+> findings JSON, y `scripts/automation-router.cjs`. Leer cuando: vas a agregar una automatización
+> programada nueva, o a migrar una existente al contrato (Fase B).
+
+Regla del operador (24/09): toda tarea programada (PC Task Scheduler, cron de la VM, Hermes,
+crons de panes) que corre para algo que requiere acción **tiene que entregarlo al carril/proyecto
+dueño** — nunca como un log que nadie lee, ni como una sesión interactiva que queda viva sin
+convertir nada en trabajo (medido: el curador nocturno WISP corrió como sesión interactiva y
+quedó viva 8h sin entregar nada).
+
+### Inventario (Fase A)
+
+`wezbridge/_intel/briefs/audit-automations-2026-09-22/{A-local,B-vm,C-hermes}.md` — la fuente que
+el pedido original nombraba — **no existe en ningún branch** (verificado con `git log --all
+--diff-filter=A`). La tabla de abajo se reconstruyó de fuentes primarias que sí existen; las filas
+sin medición directa de este trabajo están marcadas `inferred`.
+
+| Automatización | Dónde corre | Trigger | Salida hoy | ¿Accionable? | Repo dueño |
+|---|---|---|---|---|---|
+| Curador nocturno WISP (`wisp-nocturnal-rf-sweep`) | VM (Hermes/cron) | cron nocturno (medido: latido 03:15 ART) | log (`~/logs/wisp-nocturnal-rf-sweep.log`) + antes: sesión interactiva viva ~8h sin cerrar | Sí — hallazgos de RF/drift accionables | whatsappbot-final (inferred: dueño del dominio WISP) |
+| `winback_watcher.py` | VM, cron cada minuto | minuto a minuto | acciones directas (reactiva/factura) cuando hay SÍ explícito con oferta calzada | Sí, pero ya actúa él mismo (no es un finding sin dueño) | whatsappbot-final |
+| `WezBridge-DaemonSentinel` | PC, schtask cada 5 min | node, cada 5 min | toca `deadman-touch.json`; ya avisó una caída real del daemon :4200 (last=1 medido) | Sí (daemon caído es accionable) | wezbridge |
+| `wezbridge-fleet-steward` / `-steward-gate` | PC, schtask diario 09:00 + gate 09:05 | diario | findings del steward (ya integrados al ledger vía su propio camino) | Ya migrado a su propio contrato — fuera de alcance de este router | wezbridge |
+| `wezbridge-queue-drain` | PC, schtask cada 5 min | cada 5 min | reintenta sobres A2A encolados | No es un finding — es infraestructura de entrega | wezbridge |
+| `routine-test-strength-wezbridge` | PC, schtask semanal (sáb 04:00) | semanal | `_intel/routine-findings/*.json`, consumidos por `routine-audit.cjs` (mecanismo C, ya contractual) | Ya migrado (mecanismo C) — fuera de alcance | wezbridge |
+| gmail-recordatorios (`src/gmail-routine-*.cjs`) | wezbridge (headless, T-0339) | según config del routine | resultado del envío (éxito/fallo) | Sí (fallo de envío es accionable) | wezbridge — **bajo observación T-0339, no migrar antes del 26/09 08:30 ART** |
+| `hermes-centinela-tick` (perfil `centinela`) | Hermes desktop (PC) | ~10 min | `centinela-signals.py` corre solo si cambia la salida | Sí, si el signal cambia | wezbridge (inferred: consumidor del centinela) |
+| `hermes wabot-curador-6h` | Hermes desktop (PC), workdir `whatsappbot-final` | diario 01:00 | `wabot-curador-signals.py` | Sí (inferred) | whatsappbot-final |
+| `MemoryMasterWeeklyDigest`, `MemoryMaster-HermesSync-AM/PM` | PC, schtask | semanal / 2x diario | sync/digest de memoria | No accionable por sí solo (mantenimiento) | memorymaster |
+| `NAS-Backup-wolverin0`, `NAS-Sync-PyApps` | PC, schtask diario | diario 03:15/02:00 | backup/sync | No accionable salvo fallo (inferred: si falla sí) | infra |
+| `infra-coolify-drift-check` | PC, schtask cada 15 min | cada 15 min | drift check (**last=2** medido, i.e. viene fallando) | Sí — drift es accionable | infra |
+| `PyApps-Intel-Sweeper` | PC, schtask diario 08:00 | diario | flags de graphify/health | Parcial (inferred) | wezbridge/infra según flag |
+| yolo26 `WarehouseVisionKitchen*` | PC, schtask (4 deshabilitadas desde 24-08) | variable | vision pipeline | Fuera de alcance (deshabilitadas) | — |
+
+Mecanismo C (`scripts/routine-registry.cjs` + `routine-audit.cjs`, `_intel/routine-findings/`) y
+el steward (`wezbridge-fleet-steward`) YA convierten sus hallazgos en trabajo por su propio
+camino — no se migran a este router, que cubre el resto: automatizaciones que hoy solo escriben
+log/Telegram/sesión sin dueño.
+
+### Contrato de findings JSON
+
+Cada automatización que detecta algo accionable escribe UN archivo en
+`_intel/automation-findings/<task>-<YYYYMMDD[-HHMM]>.json`:
+
+```json
+{
+  "task": "wisp-nocturnal-sweep",
+  "repo_owner": "whatsappbot-final",
+  "actionable": true,
+  "summary": "RF drift detected on sector 12",
+  "evidence": "kuma check #124 flapped 3x between 02:00-03:00 ART",
+  "severity": "high",
+  "fingerprint": "opcional — ver regla abajo",
+  "kind": "opcional — default 'general', ver KIND_MAP en scripts/automation-router.cjs"
+}
+```
+
+Campos requeridos: `task`, `repo_owner`, `actionable` (bool), `summary`, `evidence`, `severity`
+(`low|medium|high|critical`). Validado por `src/automation-finding-schema.cjs` — inválido o
+`repo_owner` ausente ⇒ el router lo pone en cuarentena, nunca crashea.
+
+**Regla de fingerprint** (para dedupe): si el finding trae `fingerprint`, se usa tal cual (la
+automatización conoce mejor su propia identidad — p.ej. un id de servicio UISP). Si no, se
+deriva: `sha256(task + "|" + normalize(summary)).slice(0,16)`, con `normalize` = trim + lowercase
++ colapsar espacios. Dos findings con el mismo `task` y el mismo `summary` (salvo espacios/mayús-
+culas) dedupean al mismo fingerprint.
+
+Helper para emitir un finding desde cualquier automatización: `bin/emit-finding.cjs` (ver su
+propio doc-head para el flag-by-flag).
+
+### `scripts/automation-router.cjs`
+
+```
+node scripts/automation-router.cjs [--dir <findings-dir>] [--file <path>]
+  [--ledger-cli <path>] [--a2a-cli <path>] [--state-file <path>] [--from-pane <n>]
+```
+
+- Escanea `_intel/automation-findings/*.json`, o procesa un único `--file` (para invocarlo al
+  final de UNA automatización, sin esperar el barrido de 15 min).
+- JSON inválido, o falta un campo requerido (p.ej. `repo_owner`) ⇒ **cuarentena**
+  (`_intel/automation-findings/quarantine/`) + línea en `router-log.jsonl`. El proceso sigue con
+  el resto de los archivos — un finding roto nunca frena la corrida.
+- `actionable:false` ⇒ solo log (`_intel/automation-findings/non-actionable.jsonl`), 0 tarjetas,
+  0 sends; el archivo se mueve a `processed/`.
+- `actionable:true` ⇒ **una** tarjeta `ready` en el repo dueño vía `_docs-curation/ledger.cjs
+  create --origin <fingerprint>` (el ledger YA es idempotente por `origin_key`: reimportar el
+  mismo fingerprint devuelve la tarjeta existente en vez de duplicarla) + un `a2a_send` al carril
+  dueño vía `bin/a2a-send-cli.cjs --corr <cardId>`. El estado de entrega (`delivered`) por
+  fingerprint se persiste en `_intel/automation-findings/.router-state.json`: si el `a2a_send`
+  falla, la tarjeta YA existe y el archivo del finding se queda en su lugar — la corrida
+  siguiente reintenta SOLO el send, nunca crea una segunda tarjeta. El archivo se mueve a
+  `processed/` recién cuando `delivered:true`.
+- `--ledger-cli` / `--a2a-cli` (o los mismos paths por defecto, resueltos junto a este repo) son
+  inyectables a propósito: los tests (`test/automation-router.test.cjs`) los apuntan a un doble
+  de ledger (`test/mocks/fake-ledger-cli.cjs`, que graba cada invocación y no toca el ledger real)
+  y al `bin/a2a-send-cli.cjs` real pero apuntado a los mocks de WezTerm/Orca que ya usa
+  `test/a2a-send-cli.test.cjs` — así ningún test crea una tarjeta real ni manda un a2a real.
+- `--from-pane`: un run programado no tiene pane WezTerm propio, así que `a2a_send` no puede
+  probar identidad por censo — hace falta un `--from-pane` explícito (o
+  `WEZBRIDGE_AUTOMATION_FROM_PANE`). Fase B lo fija al registrar el schtask del router.
+- Seguro de correr cada 15 min: nunca borra un finding (se mueve a `processed/` o `quarantine/`,
+  nunca `unlink`).
+
+Mapeo `kind` (finding → `ledger create --kind`): `bug → test-repair`, `incident → general`,
+`observability → observability`, `docs → docs`; cualquier otro string se pasa tal cual (el propio
+ledger lo resuelve contra `_intel/kinds.json` — un kind desconocido cae a `general` con flag); sin
+`kind` en el finding, default `general`. Ver `KIND_MAP` en `scripts/automation-router.cjs`.
+
+### Plan Fase B (NO ejecutado en esta entrega — solo el plan)
+
+| Automatización | Cambio exacto | Cómo probarlo | Riesgo |
+|---|---|---|---|
+| Curador nocturno WISP | Migrar la sesión interactiva a un turno `claude -p` headless que termina solo y al final llama `bin/emit-finding.cjs` con el hallazgo del sweep | Corrida real en la VM → tarjeta aparece en whatsappbot-final con evidencia del sweep, a2a delivered:true | Toca RF/UISP de clientes reales; un finding mal formado en cuarentena silenciosa no avisa a nadie — Fase B debería además loguear cuarentena a Telegram |
+| DaemonSentinel | Al detectar el daemon caído, además de tocar `deadman-touch.json`, emitir un finding (`actionable:true`, repo `wezbridge`) | Matar el daemon a propósito, esperar el próximo tick (5 min), ver la tarjeta | Un blip transitorio generaría ruido — necesita un umbral antes de emitir, no cada tick |
+| gmail-recordatorios | Al final del run headless, emitir un finding con el resultado (recordatorio enviado/fallido) | Corrida real → tarjeta en el repo dueño del contacto | **Bajo observación de T-0339 con corridas reales programadas 25/09 y 26/09 08:30 ART — migrarlo antes del 26/09 08:30 ART podría confundir esa observación. Recomendado: esperar a después de esa fecha.** |
+
+Registrar el router en Task Scheduler (cada 15 min) y cualquier corrida real de las tres
+automatizaciones de arriba quedan fuera de esta entrega — son Fase B, dispatch separado.
