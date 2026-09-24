@@ -4,11 +4,14 @@ Pane-count limiting was removed by operator decision 2026-09-10; legacy env limi
 Source edits do not update already-loaded MCP processes. `scripts/quota-dispatcher.cjs`/`foreman-supervisor-jev.cjs` retired (T-0582).
 T-0599 (2026-09-24): decision-relay + orchestrator-waker WezTerm-sender disposition, see "Otros senders migrados a Orca". Fixup: daemon-heartbeat-sentinel.cjs's deliverPoke (missed originally) migrated too.
 curandero daemon-4200-dead probea /health sin -L: ya daba 503 antes de este cambio; su correccion (usar /api/health) es T-0593 en infra.
-Sección "Automation → ledger router (T-0598)": inventario, contrato de findings JSON
-(`_intel/automation-findings/<task>-<fecha>.json`), `scripts/automation-router.cjs` — única vía
-por la que una tarea programada entrega algo accionable como tarjeta del ledger + a2a_send.
+Sección "Automation → ledger router (T-0598)": inventario de automatizaciones programadas, el
+contrato de findings JSON (`_intel/automation-findings/<task>-<fecha>.json`) y
+`scripts/automation-router.cjs` — la única vía por la que una tarea programada entrega algo
+accionable como tarjeta del ledger + a2a_send, en vez de log muerto o sesión interactiva viva.
 Fase B (2026-09-24): schtask `Wezbridge-AutomationRouter` YA registrado (cada 15 min, ver "Fase B
 — el schtask... YA está registrado"); DaemonSentinel migrado al contrato; gap de sender T-0600.
+Sección "Recursive-delete / git-stash guard (T-0602)": catastrophic-commands.cjs ahora también
+deniega `rm -rf` del scratch root compartido T:/claudecodetemp y todo `git stash` mutante.
 <!-- /doc-head -->
 
 # Operations — env vars, restart, crash recovery, mux-wedge + GUI-hang triage (wezbridge)
@@ -102,6 +105,19 @@ misma pane era 11 en `sock` y 4 en la GUI). Resolver un id contra "la GUI viva d
   Exit del run: 0 ok · 3 spawn · 4 claude salio sin complete/fail o con error · 8 timeout (15 min) ·
   9 otro run sigue `dispatching` (no lanza un segundo hijo) · 10 completo sin ninguna busqueda Gmail
   (findings void "completion sin consulta a Gmail"). El registro guarda solo metadata: conteos por herramienta y bytes.
+
+## Recursive-delete / git-stash guard (T-0602, 2026-09-24)
+`src/catastrophic-commands.cjs` (consumed by `C:/Users/pauol/.claude/hooks/lane-guard.cjs`,
+T-0568) also denies: recursive delete (`rm -r/-rf`, PowerShell `Remove-Item -Recurse`/aliases,
+`rmdir|rd /s`) of the shared scratch root `T:/claudecodetemp` (any spelling), the shared
+`claude/` session dir and its direct children, or another session's own scratchpad subtree; and
+any mutating `git stash` form (push/save/pop/apply/drop/clear/-u — `list`/`show` stay allowed).
+`classifyCatastrophic(command, { cwd, sessionId })` uses the caller's own cwd/session id (from
+the hook's PreToolUse payload) to allow deletes inside the caller's own worktree or own
+session-scoped scratchpad; without that context it still blocks the explicit shared roots but
+does not block `rm -r` generally. See `_intel/briefs/2026-09-24-T0602-guard.md` for the incident,
+design notes and the `lane-guard.cjs` patch (operator-applied — `C:/Users/pauol/.claude/` is not
+this repo).
 
 ## Restart-on-port-conflict (daemon no rebindea a :4200)
 Matar toda instancia stale:
