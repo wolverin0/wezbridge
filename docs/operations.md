@@ -2,7 +2,7 @@
 Read for environment settings, MCP reload boundaries, mux identity, GUI recovery and Orca transport.
 Pane-count limiting was removed by operator decision 2026-09-10; legacy env limits are ignored. Gmail routine transport: headless (T-0339, unmigrated).
 Source edits do not update already-loaded MCP processes. `scripts/quota-dispatcher.cjs`/`foreman-supervisor-jev.cjs` retired (T-0582).
-T-0599 (2026-09-24): decision-relay + orchestrator-waker WezTerm-sender disposition, see "Otros senders migrados a Orca".
+T-0599 (2026-09-24): decision-relay + orchestrator-waker WezTerm-sender disposition, see "Otros senders migrados a Orca". Fixup: daemon-heartbeat-sentinel.cjs's deliverPoke (missed originally) migrated too.
 curandero daemon-4200-dead probea /health sin -L: ya daba 503 antes de este cambio; su correccion (usar /api/health) es T-0593 en infra.
 <!-- /doc-head -->
 
@@ -230,6 +230,14 @@ contra un pane id ya resuelto — muertos con la flota en Orca. Por sender:
   deliberate:true` en vez de armarlo contra un transporte muerto.
 - **`gmail-routine-dispatch.cjs`**: inventariado, SIN TOCAR — bajo observacion en vivo para
   T-0339 hasta que corran las pasadas del 25 y 26/09 08:30 ART.
+- **`scripts/daemon-heartbeat-sentinel.cjs`'s `deliverPoke`** (fixup, faltaba del inventario
+  original): el poke de la tarea programada de Windows `WezBridge-DaemonSentinel` (cada 5 min)
+  entregaba directo contra un pane WezTerm resuelto por `findOrchestratorPane()`, sin flag ni
+  camino Orca — con la flota en Orca, el poke no llegaba a nadie. Ahora `deliverPoke` despacha a
+  `deliverPokeOrca` (default, mismas `resolveOrcaTarget`/`sendToOrcaTerminal` que `a2a_send`,
+  proyecto `wezbridge`/`WEZBRIDGE_ORCH_REPO`, self-send guard vía `ORCA_TERMINAL_HANDLE`) o a
+  `deliverPokeWezTerm` (legado, detrás de `WEZBRIDGE_WEZTERM_TRANSPORT=1`). Dedupe/cooldown/
+  deadman de `evaluate()` sin tocar.
 
 ## Mux-wedge — LEER ENTERO ANTES DE ACTUAR
 Observado UNA vez, 2026-07-02, en wezterm 20240203. El build instalado es muy posterior

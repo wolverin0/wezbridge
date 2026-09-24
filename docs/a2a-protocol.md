@@ -2,6 +2,7 @@
 2026-09-06: 900-character refusal with explicit opt-in; ticketed cross-repo provenance; registered routine evidence.
 2026-09-24 (T-0596): Orca is the default a2a_send/queue-drain transport, WezTerm legacy behind WEZBRIDGE_WEZTERM_TRANSPORT=1.
 2026-09-24 (T-0599): decision-relay + orchestrator-waker WezTerm senders migrated/gated to match; gmail-routine-dispatch NOT migrated yet.
+2026-09-24 (T-0599 fixup): daemon-heartbeat-sentinel.cjs's deliverPoke (missed by the original T-0599 inventory) migrated to Orca by default, WezTerm gated.
 Covers sender guards, result criteria, queue identity, isolated T-0377 restore evidence, and Orca transport; read before dispatch or review.
 Transport receipt is not work acceptance. Runtime activation and loaded MCP revision require separate verification.
 <!-- /doc-head -->
@@ -223,6 +224,24 @@ in Orca. Disposition per sender:
 - **`src/daemon-cli.cjs`/`daemon-cli-worker.cjs`**: generic transport plumbing (runs `wez.*`/
   `verified.*` calls in a disposable child, off the daemon's main thread) — not a routing
   decision, unchanged.
+
+## Transport: daemon-heartbeat-sentinel.cjs (T-0599 fixup, 2026-09-24)
+
+Missed by the original T-0599 inventory pass. `scripts/daemon-heartbeat-sentinel.cjs`'s
+`deliverPoke()` — the poke a Windows scheduled task (`WezBridge-DaemonSentinel`, every 5
+min) sends when the daemon liveness check alerts (`DAEMON DOWN`/`WEDGED`/`HTTP
+UNRESPONSIVE`) — resolved a WezTerm pane via `findOrchestratorPane()` (`pane-discovery.cjs`'s
+census filtered by `isClaude` + project basename `wezbridge`) with no Orca path and no
+transport flag, so with the fleet living in Orca (T-0596) this alert reached nobody.
+
+Now split: `deliverPoke()` dispatches to `deliverPokeOrca()` by default — resolving the
+`wezbridge` project via the SAME `src/orca-target.cjs`'s `resolveOrcaTarget` and delivering
+via `src/orca-send.cjs`'s `sendToOrcaTerminal`, same self-send guard
+(`process.env.ORCA_TERMINAL_HANDLE`) as every other Orca sender, even though this runs from
+Task Scheduler rather than a live Orca terminal (so the guard is normally a no-op here) — or
+to the legacy `deliverPokeWezTerm()` behind `WEZBRIDGE_WEZTERM_TRANSPORT=1`, same flag as
+every other sender in this section. `evaluate()`'s dedupe/cooldown/deadman-switch logic is
+unchanged; only the delivery leg moved.
 
 ## Sending
 
