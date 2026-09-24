@@ -1610,6 +1610,20 @@ function handleToolCall(name, args) {
       // por CLI con timeout).
       let recordedResult = null;
       let ledgerNote = '';
+      // T-0571: id is DERIVED (entryId), not random — a random id per SEND
+      // made three identical resends of the SAME envelope (same corr + same
+      // body, the 151x incident class) write three DIFFERENT ids, and
+      // dedupeResultLines kept all three instead of collapsing them. Using
+      // project-queue.cjs's entryId({project, corr, type, from_pane, body})
+      // makes the direct-write id equal the queue's id for the same
+      // envelope, so a resend collapses (same key) while a genuinely
+      // different result (different body) still gets its own id. Accepted
+      // limitation: two DISTINCT results with byte-identical body for the
+      // same corr are indistinguishable from a resend without a
+      // sender-supplied id, and will collapse.
+      const resultId = msgType === 'result'
+        ? require('./project-queue.cjs').entryId({ project: toProject, corr, type: msgType, from_pane: fromPane, body })
+        : null;
       const recordAndLinkResult = (resolvedPane) => {
         if (msgType !== 'result' || recordedResult) return;
         const pane = resolvedPane === undefined ? null : resolvedPane;
@@ -1618,7 +1632,7 @@ function handleToolCall(name, args) {
           // verifica A NIVEL DE FUENTE (este archivo no exporta nada), y esa
           // asercion es lo unico que impide que un cuerpo que no es result
           // termine en a2a-results.jsonl. No lo "simplifiques".
-          if (msgType === 'result') recordedResult = a2aIntel.recordResultBody({ corr, fromPane, toPane: pane, v2, body });
+          if (msgType === 'result') recordedResult = a2aIntel.recordResultBody({ id: resultId, corr, fromPane, toPane: pane, v2, body });
           if (!recordedResult) return;
           const resultLinker = require('./result-linker.cjs');
           const linked = resultLinker.link(
