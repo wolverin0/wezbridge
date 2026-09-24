@@ -1565,7 +1565,41 @@ function handleToolCall(name, args) {
       });
       const fromPane = selfRes.paneId;
       if (!Number.isInteger(fromPane)) {
-        return { content: [{ type: 'text', text: `Error: from_pane not given, WEZTERM_PANE env not set, and the census could not resolve this session (${selfRes.warning || 'no match'}) — pass from_pane explicitly` }], isError: true };
+        // T-0600: a headless sender running INSIDE an Orca terminal (the
+        // Fleet — no WezTerm pane exists at all, so nothing above could ever
+        // resolve) can still prove identity: Orca stamps ORCA_TERMINAL_HANDLE
+        // into every terminal's env at spawn (the same fact the self-send
+        // guard below already relies on), and orca-target.cjs's
+        // resolveOrcaSender turns that handle into a lane/project via the
+        // SAME census+roster merge resolveOrcaTarget uses for the destination
+        // side, so the two directions cannot drift. An explicit --from-project
+        // still wins outright (documented headless-sender path, unchanged).
+        // SECURITY: this resolves WHO is sending, nothing more — the dispatch
+        // gate and decision-authority checks a few blocks below run exactly
+        // as they do for any other sender, keyed on the envelope's corr/
+        // ruling, not on how from_project was resolved. This path cannot
+        // grant authority a from_pane-carrying sender didn't already have.
+        const explicitFromProject = typeof args.from_project === 'string' && args.from_project.trim()
+          ? args.from_project.trim() : null;
+        if (explicitFromProject) {
+          selfRes.project = explicitFromProject;
+          selfRes.source = 'explicit-project';
+        } else if (process.env.ORCA_TERMINAL_HANDLE) {
+          const orcaSelf = await require('./orca-target.cjs').resolveOrcaSender(process.env.ORCA_TERMINAL_HANDLE);
+          if (!orcaSelf.project) {
+            return {
+              content: [{
+                type: 'text',
+                text: `Error: from_pane not given, WEZTERM_PANE env not set, and ORCA_TERMINAL_HANDLE="${process.env.ORCA_TERMINAL_HANDLE}" could not be resolved to a project/lane (${orcaSelf.warning || 'no census match'}) — pass from_pane or from_project explicitly`,
+              }],
+              isError: true,
+            };
+          }
+          selfRes.project = orcaSelf.project;
+          selfRes.source = 'orca-terminal';
+        } else {
+          return { content: [{ type: 'text', text: `Error: from_pane not given, WEZTERM_PANE env not set, and the census could not resolve this session (${selfRes.warning || 'no match'}) — pass from_pane explicitly` }], isError: true };
+        }
       }
       if (selfRes.source === 'env-corrected') {
         log(`a2a_send self-identity corrected: ${selfRes.warning}`);

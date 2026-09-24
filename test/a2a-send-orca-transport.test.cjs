@@ -217,6 +217,85 @@ test('AC3: delivery records (queue line + a2a-results.jsonl for type=result) car
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+// ── T-0600 U3: Orca sender identity without --from-pane ─────────────────────
+
+test('T-0600 U3: no --from-pane, ORCA_TERMINAL_HANDLE resolvable via census+roster -> from_project = that lane, envelope delivered', async () => {
+  const { root, intel, orcaState } = sandbox();
+  try {
+    writeRoster(intel, [
+      { lane: 'wezbridge-fleet', repos: ['wezbridge'], handle: 'term_fleet', state: 'live' },
+      { lane: 'drillrepo', repos: ['drillrepo'], handle: 'term_drill1', state: 'live' },
+    ]);
+    const terminalsFile = writeTerminals(root, [
+      { handle: 'term_fleet', title: 'fleet', worktreePath: 'G:/Py Apps/wezbridge', connected: true, writable: true },
+      { handle: 'term_drill1', title: 'orchestrator', worktreePath: 'G:/Py Apps/drillrepo', connected: true, writable: true },
+    ]);
+    const res = await callTool('a2a_send', {
+      to_project: 'drillrepo', type: 'progress', corr: 'T-0600:u3:sender', body: 'sent headless from the Fleet Orca terminal',
+      // NO from_pane at all — the exact precondition this fixes.
+    }, envFor(intel, orcaState, terminalsFile, { ORCA_TERMINAL_HANDLE: 'term_fleet' }));
+    assert.equal(res.result.isError, false, resultText(res));
+    const payload = JSON.parse(resultText(res));
+    assert.equal(payload.ok, true, JSON.stringify(payload));
+    assert.equal(payload.from_project, 'wezbridge-fleet');
+    assert.equal(payload.from_source, 'orca-terminal');
+    assert.equal(payload.from_pane, null);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('T-0600 U3: no --from-pane and ORCA_TERMINAL_HANDLE points at an unknown/dead terminal -> clear error, isError:true', async () => {
+  const { root, intel, orcaState } = sandbox();
+  try {
+    writeRoster(intel, []);
+    const terminalsFile = writeTerminals(root, []); // handle is nowhere in the live census
+    const res = await callTool('a2a_send', {
+      to_project: 'drillrepo', type: 'progress', corr: 'T-0600:u3:unknown', body: 'should never leave',
+    }, envFor(intel, orcaState, terminalsFile, { ORCA_TERMINAL_HANDLE: 'term_ghost' }));
+    assert.equal(res.result.isError, true, resultText(res));
+    assert.match(resultText(res), /from_pane not given/);
+    assert.match(resultText(res), /term_ghost/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('T-0600 U3: explicit --from-project still wins over ORCA_TERMINAL_HANDLE census resolution', async () => {
+  const { root, intel, orcaState } = sandbox();
+  try {
+    writeRoster(intel, [{ lane: 'wezbridge-fleet', repos: ['wezbridge'], handle: 'term_fleet', state: 'live' }]);
+    const terminalsFile = writeTerminals(root, [
+      { handle: 'term_fleet', title: 'fleet', worktreePath: 'G:/Py Apps/wezbridge', connected: true, writable: true },
+      { handle: 'term_drill1', title: 'orchestrator', worktreePath: 'G:/Py Apps/drillrepo', connected: true, writable: true },
+    ]);
+    const res = await callTool('a2a_send', {
+      to_project: 'drillrepo', type: 'progress', corr: 'T-0600:u3:explicit', body: 'explicit wins',
+      from_project: 'a-manually-named-sender',
+    }, envFor(intel, orcaState, terminalsFile, { ORCA_TERMINAL_HANDLE: 'term_fleet' }));
+    const payload = JSON.parse(resultText(res));
+    assert.equal(payload.ok, true, JSON.stringify(payload));
+    assert.equal(payload.from_project, 'a-manually-named-sender');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('T-0600 U3 SECURITY: sender-identity resolution via ORCA_TERMINAL_HANDLE does NOT widen dispatch authority — a blocked card still refuses the send', async () => {
+  const { root, intel, orcaState } = sandbox();
+  try {
+    writeRoster(intel, [{ lane: 'wezbridge-fleet', repos: ['wezbridge'], handle: 'term_fleet', state: 'live' }]);
+    const terminalsFile = writeTerminals(root, [
+      { handle: 'term_fleet', title: 'fleet', worktreePath: 'G:/Py Apps/wezbridge', connected: true, writable: true },
+      { handle: 'term_drill1', title: 'orchestrator', worktreePath: 'G:/Py Apps/drillrepo', connected: true, writable: true },
+    ]);
+    fs.writeFileSync(path.join(intel, 'tasks', 'T-0600.json'), JSON.stringify({
+      id: 'T-0600', state: 'blocked', blocker: 'operator has not approved this yet',
+    }));
+    const res = await callTool('a2a_send', {
+      to_project: 'drillrepo', type: 'request', corr: 'T-0600:blocked-dispatch', body: 'try to dispatch anyway',
+      // Sender identity resolved via the NEW orca-terminal path (no from_pane) —
+      // must not skip the dispatch gate that already runs for every other sender.
+    }, envFor(intel, orcaState, terminalsFile, { ORCA_TERMINAL_HANDLE: 'term_fleet' }));
+    assert.equal(res.result.isError, true, resultText(res));
+    assert.match(resultText(res), /dispatch-gate: BLOCKED a2a_send/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('an OLD (>24h) queued entry is not auto-redelivered as a side effect of the transport field addition', async () => {
   // Belt-and-suspenders per the brief: project-queue.cjs's enqueue() gained an
   // additive `transport` field only — the drain/TTL logic (queue-drain.cjs,
