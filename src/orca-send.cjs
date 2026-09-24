@@ -23,7 +23,7 @@
  * expose a caller-supplied retry id.
  */
 const { execFile } = require('node:child_process');
-const { inputBoxContent } = require('./verified-send.cjs');
+const { inputBoxContent, operatorQuestionVisible, composerHoldsForeignText } = require('./verified-send.cjs');
 
 const DEFAULT_ORCA_BIN = process.env.ORCA_CLI
   || 'C:/Users/pauol/AppData/Local/Programs/orca/resources/bin/orca.exe';
@@ -98,6 +98,28 @@ function orchestrationRequestId(errJson) {
 }
 
 /**
+ * T-0600: true when the terminal's screen is NOT a plain idle composer —
+ * either a modal/menu overlay (verified-send.cjs's operatorQuestionVisible:
+ * a numbered `❯ N. …` menu line followed by an `Enter to select … Esc to
+ * cancel` footer — this is the SAME shape Claude Code's own overlays render,
+ * e.g. its Agent picker or a permission prompt, both of which "eat" the next
+ * keystrokes instead of accepting a send) OR the composer already holds
+ * unsent foreign text (composerHoldsForeignText). Fired live 2026-09-24
+ * (T-0598, corr T-0598): the Agent overlay was open in the destination pane,
+ * a2a_send typed into it anyway, and the envelope was never actually
+ * delivered to the underlying session despite Orca reporting a clean submit.
+ * Reusing verified-send.cjs's two predicates instead of inventing new marker
+ * regexes: Orca's screen read-back is the same rendered TUI text WezTerm's
+ * getFullText returns, just delivered as an array of lines instead of one
+ * string — joined back into one string here, the predicates apply unchanged.
+ */
+function screenShowsOverlay(tailLines) {
+  if (!Array.isArray(tailLines) || !tailLines.length) return false;
+  const tail = tailLines.join('\n');
+  return operatorQuestionVisible(tail) || composerHoldsForeignText(tail);
+}
+
+/**
  * Send `body` to an Orca terminal and verify via a screen read-back.
  *
  * Returns { ok, submitted: 'submitted'|'unknown', delivered: 'ok'|'unknown',
@@ -116,6 +138,23 @@ async function sendToOrcaTerminal(handle, body, {
   let retryId = null;
   let sendJson = null;
   let lastError = null;
+
+  // T-0600: read BEFORE typing anything. An overlay/menu or leftover foreign
+  // composer text means this terminal is not ready to receive a send — typing
+  // now would land inside the overlay or splice onto someone else's unsent
+  // text, same failure class verified-send.cjs's blockedInput guards on the
+  // WezTerm side. Deferred, not failed: no attempt is spent here, no retry id
+  // is burned, and the caller (project-queue's drain / a2a_send's immediate
+  // path) retries next pass. Fail-open when the screen can't be read at all —
+  // a guard that can't see never blocks (same stance as every other Orca
+  // primitive in this file).
+  const preTail = await readScreenTail(handle, { runOrca });
+  if (preTail && screenShowsOverlay(preTail)) {
+    return {
+      ok: false, submitted: 'unknown', delivered: 'unknown', handle, retryId: null, tail: preTail, error: null,
+      deferred: true, reason: 'overlay-or-foreign-text',
+    };
+  }
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     const args = ['terminal', 'send', '--terminal', handle, '--text', text, '--enter', '--json'];
@@ -154,4 +193,4 @@ async function sendToOrcaTerminal(handle, body, {
   };
 }
 
-module.exports = { DEFAULT_ORCA_BIN, defaultRunOrca, screenShowsSubmittedBody, readScreenTail, sendToOrcaTerminal };
+module.exports = { DEFAULT_ORCA_BIN, defaultRunOrca, screenShowsSubmittedBody, screenShowsOverlay, readScreenTail, sendToOrcaTerminal };
