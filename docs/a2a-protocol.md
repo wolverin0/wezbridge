@@ -3,6 +3,7 @@
 2026-09-24 (T-0596): Orca is the default a2a_send/queue-drain transport, WezTerm legacy behind WEZBRIDGE_WEZTERM_TRANSPORT=1.
 2026-09-24 (T-0599): decision-relay + orchestrator-waker WezTerm senders migrated/gated to match; gmail-routine-dispatch NOT migrated yet.
 2026-09-24 (T-0599 fixup): daemon-heartbeat-sentinel.cjs's deliverPoke (missed by the original T-0599 inventory) migrated to Orca by default, WezTerm gated.
+2026-09-24 (T-0600): Orca 'unknown' delivery is no longer treated as delivered (strict verdict + stays queued for retry); pre-send overlay/foreign-text guard on the Orca transport; a2a_send/CLI sender identity resolves via ORCA_TERMINAL_HANDLE when from_pane is absent (no widened dispatch authority).
 Covers sender guards, result criteria, queue identity, isolated T-0377 restore evidence, and Orca transport; read before dispatch or review.
 Transport receipt is not work acceptance. Runtime activation and loaded MCP revision require separate verification.
 <!-- /doc-head -->
@@ -191,6 +192,61 @@ the only default transport**:
 
 Full operational detail (env vars, smoke-test rule, retry-id contract): `docs/operations.md`'s
 "Transporte Orca" section.
+
+## Orca delivery verdict, overlay guard and sender identity (T-0600, 2026-09-24)
+
+Live incident (T-0598 verifier pass, 24/09 17:51Z, corr T-0598): an `a2a_send`/queue-drain Orca
+send reported `submitted=unknown delivered=unknown`, was written to
+`_intel/queues/state/<project>/delivered.json` anyway, and never retried — the destination pane
+had its Agent overlay open (see below) and ate the send. Three fixes:
+
+- **Unknown ≠ delivered.** `submitted`/`delivered` for the Orca transport use their OWN
+  vocabulary (`submitted`: `'submitted'`|`'unknown'`, no `'stuck'`; `delivered`: `'ok'`|`'unknown'`,
+  no `'truncated'`). `a2a_send`'s immediate (non-queued) verdict used to reuse the WezTerm-shaped
+  check (`submitted !== 'stuck' && !truncated`), which counted an Orca `'unknown'` as verified
+  because it merely wasn't `'stuck'`. Fixed: for `transport === 'orca'`, delivered requires the
+  STRICT verdict `submitted === 'submitted' && delivered === 'ok'`; anything else is `ok:false`
+  and stays durably queued (`_intel/queues/<project>.jsonl`, `ok:false`) for
+  `scripts/queue-drain.cjs` to retry — never tombstoned into `delivered.json`. `project-queue.cjs`'s
+  drain path already used the strict verdict (`orcaResult.ok`, the screen read-back), so only the
+  immediate `a2a_send` path needed the fix. Retries are bounded by the existing attempt cap
+  (default 3, `maxAttempts`) and idempotent — same `entryId()` hash (project+corr+type+from_pane+
+  body), never a random id.
+- **Pre-send overlay/foreign-text guard.** `src/orca-send.cjs`'s `sendToOrcaTerminal` now reads
+  the destination screen BEFORE typing anything (`screenShowsOverlay`). Two markers, both reused
+  from `verified-send.cjs` rather than invented fresh so WezTerm and Orca share one definition:
+  - `operatorQuestionVisible` — a numbered `❯ N. …` menu line followed by an `Enter to select …
+    Esc to cancel` footer. This is the SAME shape Claude Code's own overlays render (its Agent
+    picker, a permission prompt) — the exact class that ate the T-0598 send.
+  - `composerHoldsForeignText` — the composer already holds unsent text that isn't a known TUI
+    placeholder (someone typed something and hasn't hit Enter).
+  Either marker present ⇒ the send is **deferred**, not attempted: result carries `deferred:true`,
+  no `--send` call is made, no attempt is spent, no `--retry-request` id is burned. Fail-open when
+  the screen can't be read at all (same stance as every other guard here — a check that can't see
+  never blocks). `project-queue.cjs`'s drain propagates `deferred` the same way it already defers
+  on a WezTerm composer holding foreign text: the whole pass stops for that project, no cooldown
+  starts, retried next drain tick.
+- **Sender identity without `--from-pane`.** An Orca-hosted headless sender (the Fleet itself —
+  no WezTerm pane exists at all, so `pane-identity.cjs`'s `resolveSelfPane` had nothing to
+  resolve) can now call `a2a_send` / `bin/a2a-send-cli.cjs` without `--from-pane`. Resolution
+  order when `from_pane` is absent: (1) explicit `--from-project` (unchanged, still wins
+  outright); (2) `process.env.ORCA_TERMINAL_HANDLE` (stamped by Orca into every terminal's env at
+  spawn — the same fact the self-send guard already relies on) resolved to a project/lane via
+  `src/orca-target.cjs`'s NEW `resolveOrcaSender(handle)` — the reverse of `resolveOrcaTarget`,
+  sharing the same census+roster merge so the two directions cannot drift; (3) a clear
+  non-zero-exit error naming what was tried (unresolvable handle, or neither given) — never a
+  silent default. `from_pane` itself stays `null` for these sends (`a2a-intel.cjs`'s
+  `buildEnvelope` already renders the envelope header by `from_project` name when one is present,
+  ignoring the numeric pane, so no downstream code needed a non-null pane id). `bin/a2a-send-cli.cjs`
+  needed no code change — it spawns `mcp-server.cjs` inheriting the caller's env, so
+  `ORCA_TERMINAL_HANDLE` reaches the same resolution path automatically.
+  **Security:** this resolves WHO is sending, nothing more. `checkDispatchGate` and
+  `decisionDisposition` (against `rulings.jsonl`) run exactly as they do for any other sender,
+  keyed on the envelope's `corr`/`ruling` — resolving identity via `ORCA_TERMINAL_HANDLE` grants
+  no dispatch authority a `from_pane`-carrying sender didn't already have (a blocked task card
+  still refuses the send the same way).
+
+Fleet live-smoke procedure for this card: see the PR description.
 
 ## Transport: other WezTerm senders migrated to Orca (T-0599, 2026-09-24)
 
