@@ -1610,12 +1610,20 @@ function handleToolCall(name, args) {
       // por CLI con timeout).
       let recordedResult = null;
       let ledgerNote = '';
-      // T-0571: one id per SEND, generated once outside the fail-soft try so it
-      // survives whichever branch (queued vs delivered) actually calls
-      // recordResultBody — without it dedupeResultLines fell back to
-      // corr+sha1(body), collapsing two genuinely distinct results that share
-      // a corr and body in the same cursor batch.
-      const resultId = msgType === 'result' ? require('node:crypto').randomUUID() : null;
+      // T-0571: id is DERIVED (entryId), not random — a random id per SEND
+      // made three identical resends of the SAME envelope (same corr + same
+      // body, the 151x incident class) write three DIFFERENT ids, and
+      // dedupeResultLines kept all three instead of collapsing them. Using
+      // project-queue.cjs's entryId({project, corr, type, from_pane, body})
+      // makes the direct-write id equal the queue's id for the same
+      // envelope, so a resend collapses (same key) while a genuinely
+      // different result (different body) still gets its own id. Accepted
+      // limitation: two DISTINCT results with byte-identical body for the
+      // same corr are indistinguishable from a resend without a
+      // sender-supplied id, and will collapse.
+      const resultId = msgType === 'result'
+        ? require('./project-queue.cjs').entryId({ project: toProject, corr, type: msgType, from_pane: fromPane, body })
+        : null;
       const recordAndLinkResult = (resolvedPane) => {
         if (msgType !== 'result' || recordedResult) return;
         const pane = resolvedPane === undefined ? null : resolvedPane;

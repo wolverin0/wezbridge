@@ -559,11 +559,15 @@ test('dedupeResultLines: mismo id repetido N veces colapsa a 1 (id gana sobre cu
   assert.equal(out[0].time, '2026-09-02T01:00:00.000Z', 'la copia mas temprana sobrevive');
 });
 
-// T-0571: distinct results carrying distinct ids must survive even when corr
-// AND body are byte-identical — the id-fallback (corr + sha1(body)) key is
-// what collapsed two genuinely different results in one cursor batch when
-// callers didn't pass id (see T-0571 brief).
-test('dedupeResultLines: mismo corr y mismo body pero id DISTINTO no colapsan — son results distintos', () => {
+// T-0571: this asserts a property of dedupeResultLines ITSELF (id, when
+// distinct, always wins as the key) — it does NOT claim that two live
+// a2a_send calls with the same corr+body get distinct ids. As of the T-0571
+// fixup, mcp-server.cjs derives the id from the envelope (entryId), so two
+// REAL sends with identical corr+body now get the SAME id and DO collapse
+// (see a2a-result-id-at-write.test.cjs). A caller that supplies its own
+// distinct ids for a same corr+body pair (e.g. a future explicit dedupe-key
+// override) still survives here, by construction of the function.
+test('dedupeResultLines: given two lines with the SAME corr+body but caller-supplied DISTINCT ids, both survive (id is the key)', () => {
   const { dedupeResultLines } = require('../src/a2a-intel.cjs');
   const lines = [
     { id: 'r-1', corr: 'c-same', time: '2026-09-02T01:00:00.000Z', body: 'criteria:\n- a: pass' },
