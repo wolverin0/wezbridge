@@ -25,6 +25,16 @@
  * `rm -rf /t/claudecodetemp` (root of every session's scratchpad/task-output/ad-hoc worktrees);
  * separately, 5 agents ran bare `git stash` despite prose bans (the stash stack is shared across
  * worktrees/sessions). See _intel/briefs/2026-09-24-T0602-guard.md.
+ *
+ * T-0602 fixup (verifier findings): closed 3 bypasses. (a) A glob target (`*`) resolved via
+ * `cd`/`pushd` + join is now re-checked against protected roots AFTER joining, not just as the
+ * literal raw token (`cd /t/claudecodetemp && rm -rf *`, `pushd ... && rm -rf *`) — see
+ * `stripTrailingGlobSegments`. (b) `find <protected-path> -delete` / `-exec rm ... {} ;|+` is
+ * treated as a recursive delete of `<protected-path>` — see `extractFindDeleteTargets`. (c) `cmd
+ * /c|/k` and `powershell|pwsh -Command|-c` wrapper shells are now unwrapped even when unquoted,
+ * and `git stash` is recognized behind `git -c key=val stash` (arbitrary config overrides), not
+ * just `git -C dir stash`. `node -e`/`python -c` one-liners remain a documented, out-of-scope
+ * limitation (no shell-safe way to statically parse an arbitrary embedded language).
  */
 
 // Optional prefix before a command name: `sudo `, and/or a path-like prefix ending in / or \.
@@ -37,12 +47,17 @@ function rx(src, flags) {
 // --- shell-chain / wrapper unwrapping (quote-aware) -----------------------------------------
 
 const WRAPPERS = [
-  rx(String.raw`^cmd(?:\.exe)?\s+/c\s+"([\s\S]*)"$`),
-  rx(String.raw`^cmd(?:\.exe)?\s+/c\s+'([\s\S]*)'$`),
+  rx(String.raw`^cmd(?:\.exe)?\s+/[ck]\s+"([\s\S]*)"$`),
+  rx(String.raw`^cmd(?:\.exe)?\s+/[ck]\s+'([\s\S]*)'$`),
   rx(String.raw`^(?:powershell|pwsh)(?:\.exe)?\s+(?:-NoProfile\s+)?(?:-ExecutionPolicy\s+\S+\s+)?(?:-Command|-c)\s+"([\s\S]*)"$`),
   rx(String.raw`^(?:powershell|pwsh)(?:\.exe)?\s+(?:-NoProfile\s+)?(?:-ExecutionPolicy\s+\S+\s+)?(?:-Command|-c)\s+'([\s\S]*)'$`),
   rx(String.raw`^(?:bash|sh)\s+-c\s+"([\s\S]*)"$`),
   rx(String.raw`^(?:bash|sh)\s+-c\s+'([\s\S]*)'$`),
+  // T-0602 fixup: unquoted `cmd /c|/k <rest>` and `powershell|pwsh -Command|-c <rest>` — quoted
+  // variants above are tried first (returned via short-circuit in unwrapOnce), so these only fire
+  // when the command has no wrapping quotes at all.
+  rx(String.raw`^cmd(?:\.exe)?\s+/[ck]\s+([\s\S]*)$`),
+  rx(String.raw`^(?:powershell|pwsh)(?:\.exe)?\s+(?:-NoProfile\s+)?(?:-ExecutionPolicy\s+\S+\s+)?(?:-Command|-c)\s+([\s\S]*)$`),
 ];
 
 function unwrapOnce(str) {
@@ -184,7 +199,7 @@ const ANCHORED_RULES = [
   {
     name: 'git_stash_mutating',
     test: (s) => {
-      const m = s.match(rx(String.raw`^${PREFIX}git\s+(?:-C\s+\S+\s+)?stash\b(.*)$`, 'is'));
+      const m = s.match(rx(String.raw`^${PREFIX}git\s+(?:(?:-C\s+\S+|-c\s+\S+)\s+)*stash\b(.*)$`, 'is'));
       if (!m) return false;
       const sub = (m[1] || '').trim().split(/\s+/)[0] || '';
       return sub !== 'list' && sub !== 'show';
@@ -212,7 +227,7 @@ function normalizePath(raw) {
   if ((p.startsWith('"') && p.endsWith('"') && p.length > 1) || (p.startsWith("'") && p.endsWith("'") && p.length > 1)) {
     p = p.slice(1, -1);
   }
-  p = p.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/\*$/, '');
+  p = p.replace(/\\/g, '/').replace(/\/+/g, '/');
   if (p.length > 1) p = p.replace(/\/$/, '');
   p = p.toLowerCase();
   let m = p.match(/^\/mnt\/([a-z])(\/.*)?$/);
@@ -233,13 +248,27 @@ function joinPath(base, rel) {
   return r ? `${b}/${r}` : b;
 }
 
-/** Resolve a raw shell path token to a normalized absolute-ish path, or null if it can't be
- * resolved (relative path with no known tracked cwd) — callers must not guess in that case. */
+/** Strip trailing whole-segment glob components (`/*`, `/**`, `/.*`) so a glob deletion of a
+ * protected root's direct children (`rm -rf T:/claudecodetemp/*`, incl. after a `cd`+join) is
+ * evaluated against the root it actually empties, not the literal glob string. Only strips a
+ * segment that IS the glob (not a partial pattern like `/*.tmp`), repeatedly (for `/**`). */
+function stripTrailingGlobSegments(p) {
+  let out = p;
+  while (/\/(\*+|\.\*)$/.test(out)) {
+    out = out.replace(/\/(\*+|\.\*)$/, '');
+  }
+  return out;
+}
+
+/** Resolve a raw shell path token to a normalized absolute-ish path (with any trailing
+ * whole-segment glob stripped to the root it would empty — see stripTrailingGlobSegments), or
+ * null if it can't be resolved (relative path with no known tracked cwd) — callers must not
+ * guess in that case. */
 function resolveTarget(rawTarget, trackedCwd) {
   const t = normalizePath(rawTarget);
   if (!t) return null;
-  if (isAbsoluteNorm(t)) return t;
-  if (trackedCwd) return joinPath(trackedCwd, t);
+  if (isAbsoluteNorm(t)) return stripTrailingGlobSegments(t);
+  if (trackedCwd) return stripTrailingGlobSegments(joinPath(trackedCwd, t));
   return null;
 }
 
@@ -281,6 +310,38 @@ function extractRecursiveDeleteTargets(stage) {
     targets.push(t);
   }
   return recursive ? targets : null;
+}
+
+/** Returns the list of path-target tokens if `stage` is a `find <path...> -delete` or
+ * `find <path...> -exec rm ... {} ;|+` invocation (both recursively delete under <path> by
+ * default, with no separate recursive flag to check); null otherwise. Paths are the leading
+ * non-flag tokens right after `find` (standard `find <path> [path2...] <expression>` syntax). */
+function extractFindDeleteTargets(stage) {
+  const toks = tokenize(stage);
+  if (!toks.length) return null;
+  let idx = 0;
+  if (/^sudo$/i.test(toks[0])) idx = 1;
+  const progTok = toks[idx];
+  if (!progTok) return null;
+  const prog = progTok.replace(/^.*[\\/]/, '').replace(/\.exe$/i, '').toLowerCase();
+  if (prog !== 'find') return null;
+  const rest = toks.slice(idx + 1);
+  const paths = [];
+  let i = 0;
+  while (i < rest.length && !rest[i].startsWith('-')) {
+    paths.push(rest[i]);
+    i += 1;
+  }
+  if (!paths.length) return null;
+  const hasDelete = rest.some((t) => t.toLowerCase() === '-delete');
+  let hasExecRm = false;
+  for (let j = i; j < rest.length; j += 1) {
+    if (rest[j].toLowerCase() === '-exec') {
+      const next = (rest[j + 1] || '').replace(/^.*[\\/]/, '').replace(/\.exe$/i, '').toLowerCase();
+      if (next === 'rm') { hasExecRm = true; break; }
+    }
+  }
+  return (hasDelete || hasExecRm) ? paths : null;
 }
 
 /** True if `rawTarget` resolves to the shared temp root/claude dir, a foreign session's
@@ -332,7 +393,7 @@ function classifyCatastrophic(command, context) {
       for (const rule of ANCHORED_RULES) {
         if (rule.test(stage)) return { deny: true, rule: rule.name, reason: rule.reason };
       }
-      const delTargets = extractRecursiveDeleteTargets(stage);
+      const delTargets = extractRecursiveDeleteTargets(stage) || extractFindDeleteTargets(stage);
       if (delTargets) {
         for (const target of delTargets) {
           if (isDangerousTarget(target, trackedCwd, ctx)) {
@@ -348,7 +409,7 @@ function classifyCatastrophic(command, context) {
         }
       }
     }
-    const cdMatch = seg.match(rx(String.raw`^${PREFIX}cd\s+(.+)$`, 'is'));
+    const cdMatch = seg.match(rx(String.raw`^${PREFIX}(?:cd|pushd)\s+(.+)$`, 'is'));
     if (cdMatch) {
       const resolved = resolveTarget(cdMatch[1].trim(), trackedCwd);
       if (resolved) trackedCwd = resolved;
