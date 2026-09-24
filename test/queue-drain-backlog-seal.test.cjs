@@ -6,9 +6,14 @@
  * ejecutadas") — the plain 24h/maxAgeMs expiry alone does not stop them,
  * because several are still under 24h old at the moment this fix lands.
  * project-queue.cjs seals any entry whose queue `time` is before
- * ORCA_DRAIN_NOT_BEFORE (overridable via WEZBRIDGE_DRAIN_NOT_BEFORE): it is
- * tombstoned via the SAME expiry/anti-replay accounting maxAgeMs already
- * uses (deliveredSet ring) — never delivered, never re-queued, no new store.
+ * ORCA_DRAIN_NOT_BEFORE (overridable via WEZBRIDGE_DRAIN_NOT_BEFORE), scoped
+ * to the ORCA delivery branch only — it is dropped via the SAME
+ * dropEntry()/dead-letter accounting every other undeliverable-this-pass
+ * reason in deliverPending() already uses (queue.entry_dropped audit event),
+ * never delivered, never re-queued, no new store, and no rewrite of the live
+ * queue .jsonl files. Scoping to the Orca branch (not the pre-existing
+ * WezTerm-pane path) matters operationally too: it keeps same-day WezTerm
+ * traffic from unrelated projects from being wrongly caught by the cutoff.
  * Fixtures below are modeled on the real backlog: pedrito T-0587
  * (decision_at 2026-09-24T12:11:42Z) and whatsappbot-final T-0482
  * (2026-09-23T18:59:13Z).
@@ -71,7 +76,10 @@ test('backlog seal: T-0587/T-0482-shaped pre-cutoff entries are NOT delivered by
   assert.equal(outcome.delivered, 0, JSON.stringify(outcome));
   assert.equal(outcome.pending, 0, JSON.stringify(outcome));
   assert.equal(f.orcaCalls.length, 0, 'sealed backlog must never reach the orca send primitive');
-  assert.equal(outcome.sealed, 2, JSON.stringify(outcome));
+  assert.equal(outcome.dropped, 2, JSON.stringify(outcome));
+  const events = fs.readFileSync(path.join(f.base, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  const sealedDrops = events.filter((e) => e.event === 'queue.entry_dropped' && /backlog sealed/.test(e.reason || ''));
+  assert.equal(sealedDrops.length, 2, JSON.stringify(events));
 });
 
 test('backlog seal: an entry enqueued AFTER the cutoff IS delivered via the orca double', async (t) => {
@@ -80,7 +88,7 @@ test('backlog seal: an entry enqueued AFTER the cutoff IS delivered via the orca
   const consumer = pq.createConsumer(f.config);
   const outcome = await consumer.drain();
   assert.equal(outcome.delivered, 1, JSON.stringify(outcome));
-  assert.equal(outcome.sealed, 0, JSON.stringify(outcome));
+  assert.equal(outcome.dropped, 0, JSON.stringify(outcome));
   assert.equal(f.orcaCalls.length, 1);
   assert.match(f.orcaCalls[0].body, /fresh post-cutoff dispatch/);
 });
@@ -94,7 +102,7 @@ test('backlog seal: WEZBRIDGE_DRAIN_NOT_BEFORE env override moves the cutoff', a
     const consumer = pq.createConsumer(f.config);
     const outcome = await consumer.drain();
     assert.equal(outcome.delivered, 0, JSON.stringify(outcome));
-    assert.equal(outcome.sealed, 1, JSON.stringify(outcome));
+    assert.equal(outcome.dropped, 1, JSON.stringify(outcome));
   } finally {
     if (prior === undefined) delete process.env.WEZBRIDGE_DRAIN_NOT_BEFORE; else process.env.WEZBRIDGE_DRAIN_NOT_BEFORE = prior;
   }

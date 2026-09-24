@@ -58,6 +58,29 @@ const DEFAULTS = {
 // failed) is left alone to avoid dropping envelopes this ticket never measured.
 const STALE_DISPATCH_STATES = new Set(['blocked', 'done', 'cancelled']);
 
+// T-0596 paso 2 FIX-UP (V5): operator decision 24/09 — none of the
+// decision-relay approvals queued BEFORE the Orca drain existed may be
+// re-delivered ("ya estan en el ledger y ejecutadas"). The plain 24h
+// maxAgeMs expiry above is NOT enough: several of the still-live backlog
+// entries the verifier found (pedrito T-0587 decision_at 2026-09-24T12:11:42Z,
+// T-0590 11:31:32Z; whatsappbot-final T-0489 2026-09-23T15:51:01Z, T-0423
+// 15:51:47Z, T-0482 18:59:13Z, T-0565 11:01:47Z) are still under 24h old at
+// the moment this drain first runs. A hard cutoff seals every entry whose
+// queue `time` predates it — chosen after all backlog entries and before any
+// post-merge traffic. Sealed entries reuse the SAME anti-replay tombstone
+// (deliveredSet ring) the maxAgeMs guard already uses two lines below this
+// comment's call sites — no new store, never delivered, never re-queued.
+const ORCA_DRAIN_NOT_BEFORE = '2026-09-24T18:00:00Z';
+
+/** Resolves the effective backlog-seal cutoff: per-consumer override (tests) >
+ * WEZBRIDGE_DRAIN_NOT_BEFORE env (read live, not at module load, so a test
+ * that sets it right before createConsumer() takes effect) > the constant. */
+function drainNotBeforeCutoff(cfg) {
+  const raw = cfg.sealedNotBefore || process.env.WEZBRIDGE_DRAIN_NOT_BEFORE || ORCA_DRAIN_NOT_BEFORE;
+  const t = Date.parse(raw);
+  return Number.isNaN(t) ? Date.parse(ORCA_DRAIN_NOT_BEFORE) : t;
+}
+
 /** Queue files live under <intel>/queues; consumer state under queues/state/<project>/. */
 function queuesDir(base) {
   return path.join(base || intelDir(), 'queues');
@@ -578,6 +601,25 @@ function createConsumer(opts) {
         // deadlock class a2a_send refuses before transport.
         if (process.env.ORCA_TERMINAL_HANDLE && targetHit.handle === process.env.ORCA_TERMINAL_HANDLE) {
           dropEntry(id, entry, 'self-send: destination resolved to this consumer\'s own Orca terminal — refused, not retried');
+          dropped += 1; continue;
+        }
+        // T-0596 V5 (backlog seal, operator decision 24/09): "ya estan en el
+        // ledger y ejecutadas" — none of the decision-relay approvals queued
+        // BEFORE the Orca drain existed may be re-delivered. Plain maxAgeMs
+        // (24h) is not enough: several still-live backlog entries the
+        // verifier found (pedrito T-0587 decision_at 2026-09-24T12:11:42Z,
+        // T-0590 11:31:32Z; whatsappbot-final T-0489 2026-09-23T15:51:01Z,
+        // T-0423 15:51:47Z, T-0482 18:59:13Z, T-0565 11:01:47Z) are still
+        // under 24h old. Scoped to the ORCA branch only (never the WezTerm
+        // pane path above, which pre-dates T-0596 and was never broken) so
+        // this cutoff cannot seal unrelated same-day WezTerm-pane traffic.
+        // Reuses dropEntry — the SAME dead-letter/drop accounting every other
+        // undeliverable-this-pass reason in this function already uses; no
+        // new store, no rewrite of the live queue .jsonl files.
+        const sealCutoff = drainNotBeforeCutoff(cfg);
+        const entryTime = Date.parse(entry.time || '');
+        if (!Number.isNaN(entryTime) && entryTime < sealCutoff) {
+          dropEntry(id, entry, `backlog sealed — enqueued before the ${new Date(sealCutoff).toISOString()} drain cutoff (T-0596 V5, operator decision 24/09)`);
           dropped += 1; continue;
         }
         const orcaDecision = screenDecision(id, entry);

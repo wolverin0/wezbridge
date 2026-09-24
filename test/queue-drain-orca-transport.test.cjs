@@ -19,7 +19,11 @@ const pq = require('../src/project-queue.cjs');
 function fixture(t) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'queue-orca-'));
   t.after(() => { assert.equal(path.dirname(base), os.tmpdir()); fs.rmSync(base, { recursive: true, force: true }); });
-  let clock = Date.now();
+  // T-0596 V5: pinned past the ORCA_DRAIN_NOT_BEFORE backlog-seal cutoff
+  // (project-queue.cjs) — an unmocked Date.now() would fall BEFORE that
+  // cutoff for a real window around 2026-09-24 and wrongly seal this test's
+  // freshly-enqueued entry, which is not what this file is testing.
+  let clock = Date.parse('2026-09-25T00:00:00Z');
   const orcaCalls = [];
   const config = {
     base, project: 'drillrepo', now: () => clock,
