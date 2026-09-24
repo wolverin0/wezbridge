@@ -11,13 +11,14 @@ Source edits do not update already-loaded MCP processes.
 > `/mcp reconnect <server>` a todos los panes Orca Claude idle (T-0569) para cuando un MCP
 > (p.ej. MemoryMaster) queda "disconnected" en varios panes a la vez.
 > Leer cuando: el daemon no rebindea, wezterm crasheó, todo ETIMEDOUTea, un GUI dice "not
-> responding", hay >1 wezterm-mux-server, un MCP aparece desconectado en varios panes, o vas
-> a setear env de guards/grader/inbox.
+> responding", hay >1 wezterm-mux-server, un MCP aparece desconectado en varios panes, vas
+> a setear env de guards/grader/inbox, o estás tocando qué despierta al Fleet (digest/waker).
 > Términos clave: WEZBRIDGE_*, restore-session, probeMux, degraded, inconclusive,
 > session-snapshot, --no-auto-start, gui-watchdog, Recover-WezTermGui, mux_split,
 > espacio único de pane_id (--prefer-mux + sock, T-0260), WEZBRIDGE_PREFER_MUX=0, gui_only,
 > dead-man switch (VM omni-deadman.sh + DaemonSentinel touch, T-0529), deadman-touch.json,
-> mcp-reconnect-broadcast.cjs, skip:self-busy, ORCA_TERMINAL_HANDLE.
+> mcp-reconnect-broadcast.cjs, skip:self-busy, ORCA_TERMINAL_HANDLE, fleet-digest, classifyEvent,
+> --count-day, orchestrator-waker (legado, desarmado).
 
 ## Espacio único de pane_id: el mux (T-0260, 2026-09-02)
 
@@ -208,3 +209,57 @@ shell limpio o dejá que el GUI lo levante solo al adjuntar el dominio.
 ```
 cdb -pv -p <PID> -c "~~[<TID hex>]s; k 40; !runaway 7; q"
 ```
+
+## Fleet digest (T-0409, S6) — qué despierta al Fleet, y qué no
+
+`src/fleet-digest.cjs` + `scripts/fleet-digest.cjs` clasifican cada línea de
+`_intel/pane-events.jsonl` (escrita por `src/orca-census.cjs` — `worker-done`, `suborch_done`,
+`suborch_question`, `suborch_status`, `suborch_handoff`) en `immediate` | `digest` | `drop`:
+
+- **`immediate`** (se envía al toque): `suborch_question`, y `worker-done`/`suborch_done` con
+  `outcome=failed`.
+- **`digest`** (se acumula y sale UN mensaje cada 30 min, `--window`, agrupado por lane):
+  `worker-done`/`suborch_done` con `outcome` succeeded o ausente, y `suborch_handoff`. Un
+  `immediate` también aparece en el digest de su ventana — se manda solo Y queda listado.
+  Una ventana sin eventos `digest` no genera nada (nunca un digest vacío).
+- **`drop`** (nunca despierta a nadie): `suborch_status`, `turn-end`, `permission-wait`, y
+  cualquier línea que sea un eco de brief/plantilla (`ECHO_MARKERS`, reusado de
+  `orca-census.cjs`). Un `event` NUEVO que el archivo nunca tuvo antes cae en `digest` por
+  default (superficie, no desaparece en silencio) — ver el comentario de `classifyEvent`.
+
+**Por qué reemplaza al waker.** El `orchestrator-waker` viejo (poke a un pane WezTerm) está
+DESARMADO desde el 20/09 y no puede alcanzar terminales Orca — ver
+`_intel/briefs/2026-09-24-T0409-scope-REPORT.md`. Sigue en el repo como legado WezTerm-only;
+NO se re-arma acá. `pane-events.jsonl` ya recibe los eventos de Orca (T-0525/T-0555); este
+digest es el reemplazo.
+
+**Uso:**
+```
+node scripts/fleet-digest.cjs                                          # un tick dry-run (default; imprime, no manda nada)
+node scripts/fleet-digest.cjs --send                                   # un tick REAL (llama notify_orchestrator.py) — nada en este repo lo programa
+node scripts/fleet-digest.cjs --dry-run --replay --from <iso> --to <iso>   # predicción SIN estado, sobre el pane-events.jsonl real
+node scripts/fleet-digest.cjs --count-day YYYY-MM-DD                   # envíos registrados ese día UTC
+```
+`--dry-run` es el modo por default. `--send` es el ÚNICO modo que llama a
+`scripts/orchestration/notify_orchestrator.py` (la cola de outbox durable que ya usa Foreman);
+esta carta no registra ningún schtask/loop que lo dispare — eso queda gateado al operador,
+mismo precedente que T-0418.
+
+**Estado durable** en `_intel/.fleet-digest/` (nunca tocado por `--replay`, que es de solo
+lectura): `cursor.json` (mismo shape que el cursor de `orchestrator-waker.cjs`: `{bytes, tail:
+{len, hash}}` — detecta rotación/truncamiento del jsonl), `pending-digest.json` (ventana en
+curso) y `sent.jsonl` (una línea por envío: `{at, kind, n_events, lanes, message_sha1,
+delivered}`; `delivered` es `null` en dry-run). **`--count-day` reemplaza a `daemon-err.log`
+como instrumento de S6** — ese log está muerto desde el 06/09 (ver el scope report).
+
+**Medición S6 (réplica, sin mandar nada):** `--dry-run --replay --from 2026-09-23T00:00Z --to
+2026-09-24T00:00Z` contra el `pane-events.jsonl` real predijo **4 envíos/día** sobre 397 eventos
+crudos ese día (`test/fleet-digest.test.cjs`, AC4) — bien debajo del umbral de <10 de S6. El
+lane se resuelve con `src/lane-roster.cjs` (terminal → lane vía `_intel/orchestrators.json`);
+sin match, cae al `repo` del evento.
+
+**Watcher crudo (`scripts/pane-event-watcher.py`):** sigue imprimiendo TODO evento sin filtrar
+por default (sin cambios — cambiar ese default es decisión del Fleet, no de esta carta).
+`--kinds suborch_question,suborch_done,worker-done` restringe la salida a esos `event`. Tests:
+`scripts/test_pane_event_watcher.py -v` (no corre dentro de `npm test`, mismo patrón que
+`scripts/orchestration/test_codex_worker.py`).
