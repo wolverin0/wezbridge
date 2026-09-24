@@ -5,6 +5,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+// T-0596 item 4: legacy WezTerm-pane queue delivery, gated off by default — opt in for this file.
+process.env.WEZBRIDGE_WEZTERM_TRANSPORT = '1';
 const q = require('../src/project-queue.cjs');
 
 function setup(t) {

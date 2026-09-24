@@ -20,6 +20,8 @@ const path = require('node:path');
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 't0354-stale-dispatch-'));
 process.env.WEZBRIDGE_INTEL_DIR = TMP;
+// T-0596 item 4: legacy WezTerm-pane queue delivery, gated off by default — opt in for this file.
+process.env.WEZBRIDGE_WEZTERM_TRANSPORT = '1';
 const pq = require('../src/project-queue.cjs');
 
 const IDLE_PANE = { paneId: 7, agent: 'claude', status: 'idle', project: 'G:/x/wezbridge', tabTitle: null, title: null };

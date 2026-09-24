@@ -6,6 +6,8 @@ const os = require('node:os');
 const path = require('node:path');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 't0377-routing-'));
 process.env.WEZBRIDGE_INTEL_DIR = root;
+// T-0596 item 4: legacy WezTerm-pane queue delivery, gated off by default — opt in for this file.
+process.env.WEZBRIDGE_WEZTERM_TRANSPORT = '1';
 const pq = require('../src/project-queue.cjs');
 const pane = (paneId, project, title = project) => ({ paneId, project: 'G:/projects/' + project,
   agent: 'claude', status: 'idle', tabTitle: title });
