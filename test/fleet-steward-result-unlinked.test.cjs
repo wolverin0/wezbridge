@@ -132,6 +132,27 @@ test('T-0319 AC2 RED: como maximo tres resultados recientes quedan individuales'
   ]);
 });
 
+// ── T-0564: un envelope reenviado N veces (996509539944f94d shape) en
+// a2a-results.jsonl no debe multiplicar el hallazgo ni distorsionar su edad ──
+
+test('T-0564: un envelope resendido 3 veces (mismo id, distinto time) en a2a-results.jsonl produce UN solo hallazgo con la edad del PRIMER intento', () => {
+  const corr = 'eve-piloto-d006-final-20260829';
+  const resendido = { id: 'env-996509539944f94d', corr, type: 'result', body: 'persistido' };
+  const dir = intelWith(
+    [unlinked({ corr, time: hoursAgo(1), reason: 'no-task-corr' })],
+    [],
+    [
+      { ...resendido, time: hoursAgo(90) },
+      { ...resendido, time: hoursAgo(75) },
+      { ...resendido, time: hoursAgo(60) },
+    ],
+  );
+  const f = steward.audit([], NOW, dir).findings;
+  assert.strictEqual(f.length, 1, 'el reenvio no debe crear mas de un hallazgo');
+  assert.strictEqual(f[0].id, 'result:unlinked-archive');
+  assert.strictEqual(f[0].age_hours, 90, 'la edad se cuenta desde la copia MAS VIEJA, no una promediada ni la mas nueva');
+});
+
 test('W2: result-unlinked rankea junto a lo que el operador debe, no en el fondo del backlog', () => {
   const dir = intelWith([unlinked()]);
   const idle = {
