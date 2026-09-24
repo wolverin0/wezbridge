@@ -19,6 +19,11 @@
 const projectQueue = require('../src/project-queue.cjs');
 const discovery = require('../src/pane-discovery.cjs');
 const send = require('../src/verified-send.cjs');
+// T-0596 paso 2: same Orca resolver + last-hop primitive a2a_send uses — wired
+// here explicitly (not as a project-queue.cjs default) so existing unit tests
+// that don't pass these opts never reach a real CLI they never opted into.
+const { resolveOrcaTarget } = require('../src/orca-target.cjs');
+const orcaSend = require('../src/orca-send.cjs');
 
 async function main() {
   const argv = process.argv.slice(2);
@@ -38,6 +43,8 @@ async function main() {
       project,
       discoverPanes: discovery.discoverRoutingPanes,
       send,
+      resolveOrcaTarget,
+      orcaSend,
       log: (msg) => console.log(msg),
     });
     const out = await consumer.drain({ dryRun });

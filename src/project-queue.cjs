@@ -385,7 +385,13 @@ function createConsumer(opts) {
   }
 
   // ── 2. target: re-resolve the project's pane AT DELIVERY TIME ────────────
-  function findTarget(panes, destination) {
+  // T-0596 paso 2: async now — when WezTerm has no live pane owning this
+  // project's cwd, try an Orca terminal via the SAME resolver a2a_send uses
+  // (src/orca-target.cjs) before declaring the project not-live. Only wired
+  // when the caller passes `resolveOrcaTarget` (scripts/queue-drain.cjs does;
+  // existing tests that don't pass it are unaffected — no default that would
+  // reach a real CLI from a test that never opted in).
+  async function findTarget(panes, destination) {
     const { resolve, projectFromCwd } = require('./pane-identity.cjs');
     const canonical = projectFromCwd(destination);
     const mapped = (panes || [])
@@ -398,7 +404,15 @@ function createConsumer(opts) {
     const hit = resolve(canonical, mapped);
     // A restored tab can retain another project's title. Only a matching cwd
     // proves that this live pane owns the queued destination.
-    if (hit.matchedBy !== 'cwd') return { paneId: null, missing: true };
+    if (hit.matchedBy !== 'cwd') {
+      if (cfg.resolveOrcaTarget) {
+        const orcaHit = await cfg.resolveOrcaTarget(canonical);
+        if (orcaHit.handle && !orcaHit.ambiguous.length) {
+          return { paneId: null, missing: false, transport: 'orca', handle: orcaHit.handle };
+        }
+      }
+      return { paneId: null, missing: true };
+    }
     if (cfg.resolveTarget) {
       const paneId = cfg.resolveTarget(panes);
       const chosen = mapped.find(pane => pane.pane_id === paneId);
@@ -555,8 +569,70 @@ function createConsumer(opts) {
         if (!Array.isArray(panes)) throw new Error('invalid pane census');
       } catch (err) { log(`project-queue[${project}]: discovery failed: ${err.message}`); break; }
       const destination = entry.project || project;
-      const targetHit = findTarget(panes, destination);
+      const targetHit = await findTarget(panes, destination);
       if (targetHit.missing) { dropEntry(id, entry, 'project-not-live'); dropped += 1; continue; }
+      if (targetHit.transport === 'orca') {
+        // T-0596 paso 2: self-send guard mirrors a2a_send's — this consumer
+        // itself can run inside an Orca terminal (a lane-orchestrator's own
+        // queue-drain), and delivering into its own terminal is the same
+        // deadlock class a2a_send refuses before transport.
+        if (process.env.ORCA_TERMINAL_HANDLE && targetHit.handle === process.env.ORCA_TERMINAL_HANDLE) {
+          dropEntry(id, entry, 'self-send: destination resolved to this consumer\'s own Orca terminal — refused, not retried');
+          dropped += 1; continue;
+        }
+        const orcaDecision = screenDecision(id, entry);
+        flagged += orcaDecision.flagged;
+        if (!orcaDecision.allowed) continue;
+        const orcaEnvelope = require('./a2a-intel.cjs').buildEnvelope({
+          fromPane: entry.from_pane, fromProject: entry.from_project,
+          toPane: null, toProject: destination, corr: entry.corr, type: entry.type, body: entry.body,
+        });
+        let orcaOk = false;
+        let orcaSubmitted = 'unknown';
+        try {
+          const orcaSend = cfg.orcaSend || require('./orca-send.cjs');
+          // Retry id: NOT random — orca-send.cjs reissues internally with the
+          // orchestrationRequestId Orca itself reports on an ambiguous-transport
+          // refusal (same contract a2a_send uses), never a caller-chosen id.
+          const orcaResult = await orcaSend.sendToOrcaTerminal(targetHit.handle, orcaEnvelope);
+          orcaOk = orcaResult.ok;
+          orcaSubmitted = orcaResult.submitted;
+        } catch (err) { log(`project-queue[${project}]: orca send failed: ${err.message}`); }
+        state.lastAttemptAt = now();
+        if (orcaOk) {
+          delete state.pending[id];
+          deliveredSet.add(id);
+          state.delivered.push(id);
+          persistPending(); persistDelivered();
+          if (!Object.keys(state.pending).length) require('./queue-route.cjs').reportRoute(base, project, null);
+          delivered += 1;
+          if (entry.from_project === 'decision-relay' && entry.ruling) {
+            recordEvent({ event: 'decision.delivered', task: entry.corr, project, pane: null, transport: 'orca', ruling: entry.ruling });
+          }
+          logActionFn('queue_deliver', {
+            target: `orca:${targetHit.handle}`,
+            why: `corr=${entry.corr}`,
+            extra: { project, type: entry.type, id, attempts: entry.attempts + 1, transport: 'orca' },
+          });
+          try {
+            recordResultOnce(id, { ...entry, resolved_pane: null });
+            updateThreads({ fromPane: entry.from_pane, toPane: null, corr: entry.corr, type: entry.type, body: entry.body });
+            if (entry.type === 'result' && orcaSubmitted === 'submitted' && autoAckResult({ corr: entry.corr, byPane: entry.from_pane })) {
+              logActionFn('auto_ack', { target: `corr=${entry.corr}`, why: 'verified queue redelivery (orca transport) of type=result — bookkeeping acuse automated (B1)' });
+            }
+          } catch { /* advisory — never breaks the drain */ }
+        } else {
+          entry.attempts += 1;
+          if (entry.attempts >= cfg.maxAttempts) {
+            flagCapExhausted(id, entry);
+            delete state.pending[id];
+            flagged += 1;
+          }
+          persistPending();
+          break; // same stance as the WezTerm path: not accepting input, stop the pass
+        }
+        continue;
+      }
       const targetId = targetHit.paneId;
       const target = panes.find(pane => (pane.paneId ?? pane.pane_id) === targetId);
       if (!target || target.status !== 'idle') break;
